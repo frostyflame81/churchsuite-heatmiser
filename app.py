@@ -13,12 +13,8 @@ import os  # Import the os module
 OPENWEATHERMAP_API_KEY = os.environ.get("OPENWEATHERMAP_API_KEY")
 OPENWEATHERMAP_CITY = os.environ.get("OPENWEATHERMAP_CITY")
 CHURCHSUITE_URL = os.environ.get("CHURCHSUITE_URL")  # Combined URL
-NEOHUB_ADDRESS_MAIN = os.environ.get("NEOHUB_ADDRESS_MAIN")
-NEOHUB_API_KEY_MAIN = os.environ.get("NEOHUB_API_KEY_MAIN")
-NEOHUB_ADDRESS_CHURCH_HALL = os.environ.get("NEOHUB_ADDRESS_CHURCH_HALL")
-NEOHUB_API_KEY_CHURCH_HALL = os.environ.get("NEOHUB_API_KEY_CHURCH_HALL")
 PREHEAT_TIME_MINUTES = int(os.environ.get("PREHEAT_TIME_MINUTES", 30))
-DEFAULT_TEMPERATURE = int(os.environ.get("DEFAULT_TEMPERATURE", 20))
+DEFAULT_TEMPERATURE = int(os.environ.get("DEFAULT_TEMPERATURE", 19))  # Changed to 19
 ECO_TEMPERATURE = int(os.environ.get("ECO_TEMPERATURE", 16))
 TEMPERATURE_SENSITIVITY = int(os.environ.get("TEMPERATURE_SENSITIVITY", 10))
 PREHEAT_ADJUSTMENT_MINUTES_PER_DEGREE = float(
@@ -26,7 +22,27 @@ PREHEAT_ADJUSTMENT_MINUTES_PER_DEGREE = float(
 )
 CONFIG_FILE = os.environ.get("CONFIG_FILE", "config/config.json")
 
-# Global variables
+# Neohub Configuration from Environment Variables
+NEOHUBS = {}
+neohub_count = 1
+while True:
+    neohub_name = os.environ.get(f"NEOHUB_{neohub_count}_NAME")
+    neohub_address = os.environ.get(f"NEOHUB_{neohub_count}_ADDRESS")
+    neohub_port = os.environ.get(f"NEOHUB_{neohub_count}_PORT", "4243")  # Default port
+    neohub_token = os.environ.get(f"NEOHUB_{neohub_count}_TOKEN")
+    if not neohub_name or not neohub_address or not neohub_token:
+        if neohub_count == 1:
+            logging.warning("No Neohub configuration found in environment variables.  Ensure NEOHUB_1_NAME, NEOHUB_1_ADDRESS, and NEOHUB_1_TOKEN are set.")
+        break  # Stop if any essential variable is missing
+    NEOHUBS[neohub_name] = {
+        "address": neohub_address,
+        "port": int(neohub_port),
+        "token": neohub_token,
+    }
+    neohub_count += 1
+if not NEOHUBS:
+    logging.warning("No Neohub configurations were loaded.")
+    # Global variables
 neohub_connections = {}  # Store websocket connections for each Neohub
 config = None  # Make config a global variable
 
@@ -35,7 +51,14 @@ def load_config(config_file):
     """Loads configuration data from a JSON file."""
     try:
         with open(config_file, "r") as f:
-            return json.load(f)
+            loaded_config = json.load(f)
+            # Merge Neohub config from environment variables into the loaded config.
+            #  This allows for a hybrid approach, where some neohubs might be in the file, and others in env vars.
+            if "neohubs" in loaded_config:
+                loaded_config["neohubs"].update(NEOHUBS)
+            else:
+                loaded_config["neohubs"] = NEOHUBS  #If there are no neohubs, set to the env vars
+            return loaded_config
     except FileNotFoundError:
         logging.error(f"Configuration file not found: {config_file}")
         return None
@@ -50,9 +73,7 @@ def load_config(config_file):
 async def connect_to_neohub(neohub_name, neohub_config):
     """Connects to a Neohub via websocket and authenticates."""
     global neohub_connections
-    # Use 4243 as the default, and allow override from config
-    port = neohub_config.get("port", 4243)
-    uri = f"wss://{neohub_config['address']}:{port}"
+    uri = f"wss://{neohub_config['address']}:{neohub_config['port']}"
     try:
         ws = await websockets.connect(uri, ssl=False)
         logging.info(f"Connected to Neohub: {neohub_name}")
@@ -130,7 +151,6 @@ async def set_temperature(neohub_name, zone_name, temperature):
     return None
 
 
-
 async def get_live_data(neohub_name):
     """Gets the live data."""
     command = {"GET_LIVE_DATA": 0}
@@ -150,7 +170,7 @@ async def close_connections():
     neohub_connections = {}
 
 
-async def get_external_temperature():
+def get_external_temperature():
     """Gets the current external temperature."""
     try:
         response = requests.get(
@@ -256,7 +276,7 @@ async def apply_schedule_to_heating(schedule):
             await set_temperature(
                 neohub_name, event["zone_name"], event["temperature"]
             )
-
+        
 
 def update_heating_schedule():
     """Updates the heating schedule based on upcoming bookings."""
@@ -292,6 +312,7 @@ def update_heating_schedule():
         logging.info("No data received from ChurchSuite.")
 
 
+
 async def main():
     """Main application function."""
     logging.basicConfig(level=logging.INFO)
@@ -317,16 +338,6 @@ async def main():
 
     # Connect to all Neohubs on startup
     for neohub_name, neohub_config in config["neohubs"].items():
-        neohub_config["address"] = (
-            os.environ.get(f"NEOHUB_ADDRESS_{neohub_name.upper()}")
-            or neohub_config["address"]
-        )
-        neohub_config["token"] = (
-            os.environ.get(f"NEOHUB_API_KEY_{neohub_name.upper()}")
-            or neohub_config["token"]
-        )
-        # Set the port to 4243, or use the value in the config file.
-        neohub_config["port"] = neohub_config.get("port", 4243)
         if not await connect_to_neohub(neohub_name, neohub_config):
             logging.error(f"Failed to connect to Neohub: {neohub_name}. Exiting.")
             exit()
