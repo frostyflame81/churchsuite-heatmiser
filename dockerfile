@@ -10,12 +10,14 @@ COPY requirements.txt /app/requirements.txt
 # Install the Python dependencies.  Use --no-cache-dir to keep the image size down.
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
-# Copy the rest of your application code into the container.  This should be done *after* installing dependencies.
+# Copy the application code into the container.
 COPY . /app
 
-# Expose the port that your application listens on.  If your app doesn't listen on a port, you can remove this.
-# IMPORTANT:  Change 5000 to the actual port your Flask app uses, if it's different.
+# Make a directory for config files
+RUN mkdir /config
+
+# Expose the port that your application listens on.
 EXPOSE 5000
 
-# Define the command to run your application.  This is what starts your app when the container runs.
-CMD ["python", "app.py"]
+# Define the command to run your application.  Now, we specify the config file as a command-line argument.
+CMD ["python", "app.py", "--config", "/config/config.json"]
