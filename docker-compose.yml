@@ -1,0 +1,18 @@
+version: '3.8'
+services:
+  web:
+    build: .
+    ports:
+      - "5000:5000"
+    volumes:
+      - .:/app
+      - ./config:/config  # Mount the config directory
+    environment:
+      - OPENWEATHERMAP_API_KEY=${OPENWEATHERMAP_API_KEY}
+      - OPENWEATHERMAP_CITY=${OPENWEATHERMAP_CITY}
+      - CHURCHSUITE_URL=${CHURCHSUITE_URL}  # Add the ChurchSuite URL here
+      - NEOHUB_ADDRESS_MAIN=${NEOHUB_ADDRESS_MAIN} # Add main Neohub address
+      - NEOHUB_API_KEY_MAIN=${NEOHUB_API_KEY_MAIN} # Add main Neohub API key
+      - NEOHUB_ADDRESS_CHURCH_HALL=${NEOHUB_ADDRESS_CHURCH_HALL} # Add church hall Neohub address
+      - NEOHUB_API_KEY_CHURCH_HALL=${NEOHUB_API_KEY_CHURCH_HALL} # Add church hall Neohub API key
+    restart: unless-stopped
