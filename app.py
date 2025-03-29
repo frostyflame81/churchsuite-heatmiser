@@ -6,22 +6,30 @@ import time
 import requests
 from apscheduler.schedulers.background import BackgroundScheduler
 import websockets
-import argparse # Import the argparse module
-import os # Import the os module
+import argparse  # Import the argparse module
+import os  # Import the os module
 
 # Configuration
-OPENWEATHERMAP_API_KEY = "YOUR_OPENWEATHERMAP_API_KEY"
-OPENWEATHERMAP_CITY = "London"
-CHURCHSUITE_URL = "URL_OF_BOOKINGS_AND_LOCATIONS_JSON_FEED" # Combined URL
-DEFAULT_CONFIG_FILE = "config/config.json" # added default
-NEOHUB_ADDRESS_MAIN = os.environ.get('NEOHUB_ADDRESS_MAIN')
-NEOHUB_API_KEY_MAIN = os.environ.get('NEOHUB_API_KEY_MAIN')
-NEOHUB_ADDRESS_CHURCH_HALL = os.environ.get('NEOHUB_ADDRESS_CHURCH_HALL')
-NEOHUB_API_KEY_CHURCH_HALL = os.environ.get('NEOHUB_API_KEY_CHURCH_HALL')
+OPENWEATHERMAP_API_KEY = os.environ.get("OPENWEATHERMAP_API_KEY")
+OPENWEATHERMAP_CITY = os.environ.get("OPENWEATHERMAP_CITY")
+CHURCHSUITE_URL = os.environ.get("CHURCHSUITE_URL")  # Combined URL
+NEOHUB_ADDRESS_MAIN = os.environ.get("NEOHUB_ADDRESS_MAIN")
+NEOHUB_API_KEY_MAIN = os.environ.get("NEOHUB_API_KEY_MAIN")
+NEOHUB_ADDRESS_CHURCH_HALL = os.environ.get("NEOHUB_ADDRESS_CHURCH_HALL")
+NEOHUB_API_KEY_CHURCH_HALL = os.environ.get("NEOHUB_API_KEY_CHURCH_HALL")
+PREHEAT_TIME_MINUTES = int(os.environ.get("PREHEAT_TIME_MINUTES", 30))
+DEFAULT_TEMPERATURE = int(os.environ.get("DEFAULT_TEMPERATURE", 20))
+ECO_TEMPERATURE = int(os.environ.get("ECO_TEMPERATURE", 16))
+TEMPERATURE_SENSITIVITY = int(os.environ.get("TEMPERATURE_SENSITIVITY", 10))
+PREHEAT_ADJUSTMENT_MINUTES_PER_DEGREE = float(
+    os.environ.get("PREHEAT_ADJUSTMENT_MINUTES_PER_DEGREE", 5)
+)
+CONFIG_FILE = os.environ.get("CONFIG_FILE", "config/config.json")
 
 # Global variables
 neohub_connections = {}  # Store websocket connections for each Neohub
-config = None # Make config a global variable
+config = None  # Make config a global variable
+
 
 def load_config(config_file):
     """Loads configuration data from a JSON file."""
@@ -38,10 +46,13 @@ def load_config(config_file):
         logging.error(f"An unexpected error occurred: {e}")
         return None
 
+
 async def connect_to_neohub(neohub_name, neohub_config):
     """Connects to a Neohub via websocket and authenticates."""
     global neohub_connections
-    uri = f"wss://{neohub_config['address']}:{neohub_config['port']}"
+    # Use 4243 as the default, and allow override from config
+    port = neohub_config.get("port", 4243)
+    uri = f"wss://{neohub_config['address']}:{port}"
     try:
         ws = await websockets.connect(uri, ssl=False)
         logging.info(f"Connected to Neohub: {neohub_name}")
@@ -51,30 +62,39 @@ async def connect_to_neohub(neohub_name, neohub_config):
         logging.error(f"Error connecting to Neohub {neohub_name}: {e}")
         return False
 
+
 async def send_command(neohub_name, command, command_id=1):
     """Sends a command to the specified Neohub."""
     global neohub_connections, config
-    if neohub_name not in neohub_connections or neohub_connections[neohub_name].closed:
-        logging.error(f"Not connected to Neohub: {neohub_name}.  Attempting to reconnect...")
+    if (
+        neohub_name not in neohub_connections
+        or neohub_connections[neohub_name].closed
+    ):
+        logging.error(
+            f"Not connected to Neohub: {neohub_name}.  Attempting to reconnect..."
+        )
         # Try to reconnect
         if config and neohub_name in config["neohubs"]:
-            if not await connect_to_neohub(neohub_name, config["neohubs"][neohub_name]):
+            if not await connect_to_neohub(
+                neohub_name, config["neohubs"][neohub_name]
+            ):
                 logging.error(f"Failed to reconnect to Neohub {neohub_name}.")
                 return None
         else:
-            logging.error(f"Neohub {neohub_name} not found in config, or config error.")
+            logging.error(
+                f"Neohub {neohub_name} not found in config, or config error."
+            )
             return None
 
     ws = neohub_connections[neohub_name]
     message = {
         "message_type": "hm_get_command_queue",
-        "message": json.dumps({
-            "token": config["neohubs"][neohub_name]["token"],
-            "COMMANDS": [{
-                "COMMAND": command,
-                "COMMANDID": command_id
-            }]
-        })
+        "message": json.dumps(
+            {
+                "token": config["neohubs"][neohub_name]["token"],
+                "COMMANDS": [{"COMMAND": command, "COMMANDID": command_id}],
+            }
+        ),
     }
     try:
         await ws.send(json.dumps(message))
@@ -83,6 +103,7 @@ async def send_command(neohub_name, command, command_id=1):
     except Exception as e:
         logging.error(f"Error sending command to Neohub {neohub_name}: {e}")
         return None
+
 
 async def get_zones(neohub_name):
     """Retrieves zone names from the Neohub."""
@@ -93,9 +114,12 @@ async def get_zones(neohub_name):
             zones = response["response"]
             return zones
         except KeyError:
-            logging.error(f"Unexpected response format for GET_ZONES from {neohub_name}")
+            logging.error(
+                f"Unexpected response format for GET_ZONES from {neohub_name}"
+            )
             return None
     return None
+
 
 async def set_temperature(neohub_name, zone_name, temperature):
     """Sets the temperature for a specified zone."""
@@ -105,6 +129,8 @@ async def set_temperature(neohub_name, zone_name, temperature):
         return response
     return None
 
+
+
 async def get_live_data(neohub_name):
     """Gets the live data."""
     command = {"GET_LIVE_DATA": 0}
@@ -112,6 +138,7 @@ async def get_live_data(neohub_name):
     if response:
         return response
     return None
+
 
 async def close_connections():
     """Closes all websocket connections."""
@@ -121,6 +148,7 @@ async def close_connections():
             await ws.close()
             logging.info(f"Disconnected from Neohub: {neohub_name}")
     neohub_connections = {}
+
 
 async def get_external_temperature():
     """Gets the current external temperature."""
@@ -138,6 +166,7 @@ async def get_external_temperature():
         logging.error("Unexpected response format from OpenWeatherMap")
         return None
 
+
 def get_json_data(url):
     """Fetches JSON data from a given URL."""
     try:
@@ -148,9 +177,11 @@ def get_json_data(url):
         logging.error(f"Error fetching JSON data from {url}: {e}")
         return None
 
+
 def get_bookings_and_locations():
     """Fetches bookings and locations data from ChurchSuite."""
     return get_json_data(CHURCHSUITE_URL)
+
 
 def calculate_schedule(booking, config, external_temperature):
     """Calculates the heating schedule for a single booking."""
@@ -167,17 +198,17 @@ def calculate_schedule(booking, config, external_temperature):
 
     start_time = datetime.datetime.fromisoformat(booking["start_time"])
     end_time = datetime.datetime.fromisoformat(booking["end_time"])
-    preheat_time = datetime.timedelta(minutes=config["preheat_time_minutes"])
+    preheat_time = datetime.timedelta(minutes=PREHEAT_TIME_MINUTES)
 
     # Adjust preheat time based on external temperature
     if (
         external_temperature is not None
-        and external_temperature < config["temperature_sensitivity"]
+        and external_temperature < TEMPERATURE_SENSITIVITY
         and external_temperature < min_external_temp
     ):
-        temp_diff = config["temperature_sensitivity"] - external_temperature
+        temp_diff = TEMPERATURE_SENSITIVITY - external_temperature
         adjustment = (
-            temp_diff * config["preheat_adjustment_minutes_per_degree"]
+            temp_diff * PREHEAT_ADJUSTMENT_MINUTES_PER_DEGREE
         ) * heat_loss_factor
         preheat_time += datetime.timedelta(minutes=adjustment)
         logging.info(
@@ -191,7 +222,7 @@ def calculate_schedule(booking, config, external_temperature):
                 "neohub_name": neohub_name,  # Include Neohub name
                 "zone_name": zone_name,
                 "time": start_time - preheat_time,
-                "temperature": config["default_temperature"],
+                "temperature": DEFAULT_TEMPERATURE,
                 "action": "heat",
             }
         )
@@ -200,11 +231,12 @@ def calculate_schedule(booking, config, external_temperature):
                 "neohub_name": neohub_name,
                 "zone_name": zone_name,
                 "time": end_time,
-                "temperature": config["eco_temperature"],
+                "temperature": ECO_TEMPERATURE,
                 "action": "cool-down",
             }
         )
     return schedule
+
 
 async def apply_schedule_to_heating(schedule):
     """Applies the heating schedule to the Heatmiser system."""
@@ -225,6 +257,7 @@ async def apply_schedule_to_heating(schedule):
                 neohub_name, event["zone_name"], event["temperature"]
             )
 
+
 def update_heating_schedule():
     """Updates the heating schedule based on upcoming bookings."""
     global config
@@ -239,8 +272,8 @@ def update_heating_schedule():
 
     data = get_bookings_and_locations()
     if data:
-        bookings = data.get('bookings', [])
-        locations = data.get('locations', [])
+        bookings = data.get("bookings", [])
+        locations = data.get("locations", [])
 
         if not bookings:
             logging.info("No bookings to process.")
@@ -259,16 +292,17 @@ def update_heating_schedule():
         logging.info("No data received from ChurchSuite.")
 
 
-
 async def main():
     """Main application function."""
     logging.basicConfig(level=logging.INFO)
 
     # Parse command-line arguments
-    parser = argparse.ArgumentParser(description="Run the ChurchSuite Heatmiser Integration App")
+    parser = argparse.ArgumentParser(
+        description="Run the ChurchSuite Heatmiser Integration App"
+    )
     parser.add_argument(
         "--config",
-        default=DEFAULT_CONFIG_FILE,
+        default=CONFIG_FILE,
         help="Path to the configuration file (default: config/config.json)",
     )
     args = parser.parse_args()
@@ -283,6 +317,16 @@ async def main():
 
     # Connect to all Neohubs on startup
     for neohub_name, neohub_config in config["neohubs"].items():
+        neohub_config["address"] = (
+            os.environ.get(f"NEOHUB_ADDRESS_{neohub_name.upper()}")
+            or neohub_config["address"]
+        )
+        neohub_config["token"] = (
+            os.environ.get(f"NEOHUB_API_KEY_{neohub_name.upper()}")
+            or neohub_config["token"]
+        )
+        # Set the port to 4243, or use the value in the config file.
+        neohub_config["port"] = neohub_config.get("port", 4243)
         if not await connect_to_neohub(neohub_name, neohub_config):
             logging.error(f"Failed to connect to Neohub: {neohub_name}. Exiting.")
             exit()
@@ -306,6 +350,7 @@ async def main():
         logging.info("Closing Neohub connections...")
         await close_connections()
         logging.info("Exiting...")
+
 
 if __name__ == "__main__":
     asyncio.run(main())
