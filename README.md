@@ -40,7 +40,7 @@ Follow these steps to get the application running:
 Clone the repository to your local machine:
 
 ```
-git clone [https://github.com/frostyflame81/churchsuite-heatmiser](https://github.com/frostyflame81/churchsuite-heatmiser)
+git clone https://github.com/frostyflame81/churchsuite-heatmiser
 cd churchsuite-heatmiser
 ```
 
