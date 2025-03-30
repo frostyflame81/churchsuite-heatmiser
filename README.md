@@ -33,6 +33,7 @@ Before you begin, ensure you have the following installed and configured:
 * **Remote Heatmiser neo Hubs:** If you need to control Heatmiser neo hubs on a remote network (e.g., in a separate building), you will need to:
     * Configure your router at the remote location to forward port 4243 (the default Heatmiser neo port) to the internal IP address of the Heatmiser neo hub.
     * Use a Dynamic DNS service (e.g., DuckDNS, No-IP) to provide a stable hostname for the remote network's public IP address.
+    * You will also need your heatmiser system to be using a 7-day program with 6 comfort zones, the software will fail if this configuration is not present. Please note, changing this setting on your heatmiser app will delete all current programs so please be aware.
 
 ## Installation and Setup
 
@@ -57,7 +58,9 @@ cd churchsuite-heatmiser
         "locations": {
             "Location Name in ChurchSuite": {
                 "neohub": "neohub_name",
-                "zones": ["Zone Name in Heatmiser"]
+                "zones": ["Zone Name in Heatmiser"],
+                "heat_loss_factor": 1.5,
+                "min_external_temp": 7
             }
         },
         "preheat_time_minutes": 30,
@@ -71,6 +74,8 @@ cd churchsuite-heatmiser
     * **`locations`**: A dictionary mapping ChurchSuite location names to Heatmiser neo hub names and zone names.
         * `neohub`: The name you will use to refer to this Heatmiser neo hub in the `docker-compose.yml` file.
         * `zones`: A list of Heatmiser neo zone names that correspond to this ChurchSuite location.
+        * `heat_loss_factor`: an adjustment to compenstate pre-heat time based on heat loss.
+        * `min_external_temp`: a location specific value, used together with temperature sensitivity.
     * **`preheat_time_minutes`**: The default time in minutes to start heating a venue before a booking.
     * **`default_temperature`**: The target temperature in degrees Celsius when a room is occupied.
     * **`eco_temperature`**: The temperature to set when a room is not occupied.
