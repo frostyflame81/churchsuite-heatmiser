@@ -1,5 +1,8 @@
 # ChurchSuite Heatmiser Integration
 
+## Status
+This product is pre-alpha - it currently compiles and runs with errors - this is the bug fix phase to actually get it working!
+
 ## Purpose
 
 This application automates the control of Heatmiser neo heating systems based on bookings in ChurchSuite. It fetches booking data from ChurchSuite and adjusts the heating schedule for your venue, ensuring rooms are heated only when needed.
