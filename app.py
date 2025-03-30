@@ -323,11 +323,8 @@ def calculate_schedule(
 
 
 
-async def apply_schedule_to_heating(neohub_name: str, schedule_data: Dict[str, Any]) -> None:
+async def apply_schedule_to_heating(neohub_name: str, profile_name: str, schedule_data: Dict[str, Any]) -> None:
     """Applies the heating schedule to the Heatmiser system by storing the profile."""
-
-    # Profile name can be a constant or generated dynamically
-    profile_name = "WeeklySchedule"
     logging.info(f"Storing profile {profile_name} on Neohub {neohub_name}")
     response = await store_profile(neohub_name, profile_name, schedule_data)
 
@@ -343,9 +340,8 @@ async def check_neohub_compatibility(neohub_name: str) -> bool:
     Checks if the Neohub is compatible with the required schedule format (7-day, 6 events).
     Returns True if compatible, False otherwise.
     """
-    # Check profile structure
-    profile_name = "WeeklySchedule"  # Or any default profile name to check
-    profile_data = await get_profile(neohub_name, profile_name)
+    # Use GET_PROFILE_0 to retrieve profile data
+    profile_data = await get_profile(neohub_name, "0")  # Get profile 0
 
     if profile_data:
         # Check if it is a 7 day profile
@@ -360,16 +356,11 @@ async def check_neohub_compatibility(neohub_name: str) -> bool:
                     f"Neohub {neohub_name} does not have 6 events per day. Found {len(profile_data[day])} for {day}."
                 )
                 return False
-    else:  #check live data
-        live_data = await get_live_data(neohub_name)
-        if live_data:
-            #check prog_mode
-            if live_data["prog_mode"] != 1: # 1 = 7 day
-                logging.error(f"Neohub {neohub_name} is not configured for a 7-day schedule.")
-                return False
-        else:
-            logging.error(f"Failed to retrieve profile or live data from Neohub {neohub_name} to check compatibility.")
-            return False
+    else:
+        logging.error(
+            f"Failed to retrieve profile data from Neohub {neohub_name} to check compatibility."
+        )
+        return False
     return True
 
 
@@ -381,10 +372,11 @@ def update_heating_schedule() -> None:
         logging.error("Configuration not loaded.  Exiting.")
         return
 
-    today = datetime.datetime.now().strftime("%Y-%m-%d")
-    next_week = (datetime.datetime.now() + datetime.timedelta(days=7)).strftime(
-        "%Y-%m-%d"
-    )
+    today = datetime.datetime.now()
+    current_week_start = today - datetime.timedelta(days=today.weekday())  # Start of current week (Monday)
+    current_week_end = current_week_start + datetime.timedelta(days=6)  # End of current week (Sunday)
+    next_week_start = current_week_end + datetime.timedelta(days=1)  # Start of next week (Monday)
+    next_week_end = next_week_start + datetime.timedelta(days=6)
 
     data = get_bookings_and_locations()
     if data:
@@ -399,9 +391,24 @@ def update_heating_schedule() -> None:
             logging.info("No locations to process.")
             return
 
-        for booking in bookings:
+        # Separate bookings for current and next week
+        current_week_bookings = [
+            b
+            for b in bookings
+            if current_week_start <= datetime.datetime.fromisoformat(b["start_time"]) <= current_week_end
+        ]
+        next_week_bookings = [
+            b
+            for b in bookings
+            if next_week_start <= datetime.datetime.fromisoformat(b["start_time"]) <= next_week_end
+        ]
+
+        neohub_names = set() # set to hold unique neohub names
+        # Process current week bookings
+        for booking in current_week_bookings:
             location_name = booking["location"]
             neohub_name = config["locations"][location_name]["neohub"]
+            neohub_names.add(neohub_name) # add neohub name
 
             # Check compatibility before proceeding
             if not asyncio.run(check_neohub_compatibility(neohub_name)):
@@ -413,7 +420,34 @@ def update_heating_schedule() -> None:
             external_temperature = asyncio.run(get_external_temperature())
             schedule_data = calculate_schedule(booking, config, external_temperature)
             if schedule_data:
-                asyncio.run(apply_schedule_to_heating(neohub_name, schedule_data))
+                asyncio.run(apply_schedule_to_heating(neohub_name, "Current Week", schedule_data))
+
+        # Process next week bookings
+        for booking in next_week_bookings:
+            location_name = booking["location"]
+            neohub_name = config["locations"][location_name]["neohub"]
+            neohub_names.add(neohub_name)
+
+            # Check compatibility before proceeding.  This check is now redundant, but kept for consistency.
+            if not asyncio.run(check_neohub_compatibility(neohub_name)):
+                logging.error(
+                    f"Neohub {neohub_name} is not compatible with the required schedule format.  Please adjust its settings."
+                )
+                continue  # Skip this Neohub and booking
+
+            external_temperature = asyncio.run(get_external_temperature())
+            schedule_data = calculate_schedule(booking, config, external_temperature)
+            if schedule_data:
+                asyncio.run(apply_schedule_to_heating(neohub_name, "Next Week", schedule_data))
+
+        # After processing all bookings, set "Current Week" as active.
+        for neohub_name in neohub_names:
+            command = {"RUN_PROFILE": "Current Week"}  # Set "Current Week" as active
+            response = asyncio.run(send_command(neohub_name, command))
+            if response:
+                logging.info(f"Successfully set profile 'Current Week' as active on Neohub {neohub_name}.")
+            else:
+                logging.error(f"Failed to set profile 'Current Week' as active on Neohub {neohub_name}.")
     else:
         logging.info("No data received from ChurchSuite.")
 
