@@ -75,7 +75,7 @@ async def connect_to_neohub(neohub_name, neohub_config):
     global neohub_connections
     uri = f"wss://{neohub_config['address']}:{neohub_config['port']}"
     try:
-        ws = await websockets.connect(uri, sslopt = {"cert_reqs": ssl.CERT_NONE})
+        ws = await websockets.connect(uri, ssl=True, sslopt = {"cert_reqs": ssl.CERT_NONE})
         logging.info(f"Connected to Neohub: {neohub_name}")
         neohub_connections[neohub_name] = ws  # Store the connection
         return True
