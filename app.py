@@ -8,6 +8,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 import websockets
 import argparse  # Import the argparse module
 import os  # Import the os module
+import ssl  # Import the ssl module
 
 # Configuration
 OPENWEATHERMAP_API_KEY = os.environ.get("OPENWEATHERMAP_API_KEY")
