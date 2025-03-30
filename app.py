@@ -76,7 +76,13 @@ async def connect_to_neohub(neohub_name, neohub_config):
     global neohub_connections
     uri = f"wss://{neohub_config['address']}:{neohub_config['port']}"
     try:
-        ws = await websockets.connect(uri, ssl = True, sslopt = {"cert_reqs": ssl.CERT_NONE})
+        # Create an SSL context that doesn't require certificate verification.
+        ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)  # Or use a specific protocol
+        ssl_context.check_hostname = False  # Disable hostname checking
+        ssl_context.verify_mode = ssl.CERT_NONE  # Don't verify the server's certificate
+
+        # Pass the SSL context to websockets.connect()
+        ws = await websockets.connect(uri, ssl=ssl_context)
         logging.info(f"Connected to Neohub: {neohub_name}")
         neohub_connections[neohub_name] = ws  # Store the connection
         return True
