@@ -18,8 +18,8 @@
         }
     },
     "preheat_time_minutes": 30,
-    "default_temperature": 20,
-    "eco_temperature": 16,
+    "default_temperature": 19,
+    "eco_temperature": 12,
     "temperature_sensitivity": 10,
     "preheat_adjustment_minutes_per_degree": 5
 }
