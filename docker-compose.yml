@@ -2,8 +2,8 @@ version: '3.8'
 services:
   web:
     build: .
-    #ports:
-    #  - "5000:5000"
+    ports:
+      - "4243:4243"
     volumes:
       - .:/app
       - ./config:/config  # Mount the config directory
