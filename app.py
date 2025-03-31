@@ -11,6 +11,7 @@ import os  # Import the os module
 import ssl  # Import the ssl module
 from typing import Dict, Any, List, Optional
 
+
 # Configuration
 OPENWEATHERMAP_API_KEY = os.environ.get("OPENWEATHERMAP_API_KEY")
 OPENWEATHERMAP_CITY = os.environ.get("OPENWEATHERMAP_CITY")
@@ -76,6 +77,7 @@ def load_config(config_file: str) -> Optional[Dict[str, Any]]:
         return None
 
 
+
 async def connect_to_neohub(
     neohub_name: str, neohub_config: Dict[str, Any]
 ) -> bool:
@@ -92,10 +94,14 @@ async def connect_to_neohub(
         ws = await websockets.connect(uri, ssl=ssl_context)
         logging.info(f"Connected to Neohub: {neohub_name}")
         neohub_connections[neohub_name] = ws  # Store the connection
+        print(
+            f"connect_to_neohub: neohub_name = {neohub_name}, ws = {ws}, type(ws) = {type(ws)}"
+        )  # Add this line
         return True
     except Exception as e:
         logging.error(f"Error connecting to Neohub {neohub_name}: {e}")
         return False
+
 
 
 async def send_command(
@@ -103,6 +109,7 @@ async def send_command(
 ) -> Optional[Dict[str, Any]]:
     """Sends a command to the specified Neohub."""
     global neohub_connections, config
+    print(f"send_command: neohub_name = {neohub_name}")  # Add this line
     if (
         neohub_name not in neohub_connections
         or neohub_connections[neohub_name].closed
@@ -124,6 +131,9 @@ async def send_command(
             return None
 
     ws = neohub_connections[neohub_name]
+    print(f"send_command: ws = {ws}, type(ws) = {type(ws)}")
+    print(f"send_command: dir(ws) = {dir(ws)}")  # Print all attributes of the ws object.
+
     message = {
         "message_type": "hm_get_command_queue",
         "message": json.dumps(
@@ -145,6 +155,7 @@ async def send_command(
 
 async def get_zones(neohub_name: str) -> Optional[List[str]]:
     """Retrieves zone names from the Neohub."""
+    print(f"get_zones: neohub_name = {neohub_name}")  # Add this line
     command = {"GET_ZONES": 0}
     response = await send_command(neohub_name, command)
     if response:
@@ -159,7 +170,10 @@ async def get_zones(neohub_name: str) -> Optional[List[str]]:
     return None
 
 
-async def set_temperature(neohub_name: str, zone_name: str, temperature: float) -> Optional[Dict[str, Any]]:
+
+async def set_temperature(
+    neohub_name: str, zone_name: str, temperature: float
+) -> Optional[Dict[str, Any]]:
     """Sets the temperature for a specified zone."""
     command = {"SET_TEMP": [temperature, zone_name]}
     response = await send_command(neohub_name, command)
@@ -293,17 +307,22 @@ def calculate_schedule(
         profile_data[day] = {}  # Initialize each day
 
     # Create a function to add events, handling the 6-event limit
-    def add_event(day_data: Dict[str, Any], event_name: str, event_time: datetime.datetime, temperature: float):
+    def add_event(
+        day_data: Dict[str, Any],
+        event_name: str,
+        event_time: datetime.datetime,
+        temperature: float,
+    ):
         """Adds an event to the day's schedule, handling the 6-event limit."""
         if len(day_data) < 6:
             day_data[event_name] = [
                 event_time.strftime("%H:%M"),
                 temperature,
                 0,  # Assume 0 for some flag
-                False, # Assume False for some flag
+                False,  # Assume False for some flag
             ]
             return True
-        return False # Indicate that the event was not added
+        return False  # Indicate that the event was not added
 
     # Add events for each day.  For simplicity, assume the same schedule for all days.
     for day in days:
@@ -323,13 +342,17 @@ def calculate_schedule(
 
 
 
-async def apply_schedule_to_heating(neohub_name: str, profile_name: str, schedule_data: Dict[str, Any]) -> None:
+async def apply_schedule_to_heating(
+    neohub_name: str, profile_name: str, schedule_data: Dict[str, Any]
+) -> None:
     """Applies the heating schedule to the Heatmiser system by storing the profile."""
     logging.info(f"Storing profile {profile_name} on Neohub {neohub_name}")
     response = await store_profile(neohub_name, profile_name, schedule_data)
 
     if response:
-        logging.info(f"Successfully stored profile {profile_name} on Neohub {neohub_name}")
+        logging.info(
+            f"Successfully stored profile {profile_name} on Neohub {neohub_name}"
+        )
     else:
         logging.error(f"Failed to store profile {profile_name} on Neohub {neohub_name}")
 
@@ -346,7 +369,9 @@ async def check_neohub_compatibility(neohub_name: str) -> bool:
     if profile_data:
         # Check if it is a 7 day profile
         if len(profile_data.keys()) != 7:
-            logging.error(f"Neohub {neohub_name} is not configured for a 7-day schedule.")
+            logging.error(
+                f"Neohub {neohub_name} is not configured for a 7-day schedule."
+            )
             return False
 
         # Check number of events per day.
@@ -373,9 +398,15 @@ def update_heating_schedule() -> None:
         return
 
     today = datetime.datetime.now()
-    current_week_start = today - datetime.timedelta(days=today.weekday())  # Start of current week (Monday)
-    current_week_end = current_week_start + datetime.timedelta(days=6)  # End of current week (Sunday)
-    next_week_start = current_week_end + datetime.timedelta(days=1)  # Start of next week (Monday)
+    current_week_start = today - datetime.timedelta(
+        days=today.weekday()
+    )  # Start of current week (Monday)
+    current_week_end = current_week_start + datetime.timedelta(
+        days=6
+    )  # End of current week (Sunday)
+    next_week_start = current_week_end + datetime.timedelta(
+        days=1
+    )  # Start of next week (Monday)
     next_week_end = next_week_start + datetime.timedelta(days=6)
 
     data = get_bookings_and_locations()
@@ -395,20 +426,24 @@ def update_heating_schedule() -> None:
         current_week_bookings = [
             b
             for b in bookings
-            if current_week_start <= datetime.datetime.fromisoformat(b["start_time"]) <= current_week_end
+            if current_week_start
+            <= datetime.datetime.fromisoformat(b["start_time"])
+            <= current_week_end
         ]
         next_week_bookings = [
             b
             for b in bookings
-            if next_week_start <= datetime.datetime.fromisoformat(b["start_time"]) <= next_week_end
+            if next_week_start
+            <= datetime.datetime.fromisoformat(b["start_time"])
+            <= next_week_end
         ]
 
-        neohub_names = set() # set to hold unique neohub names
+        neohub_names = set()  # set to hold unique neohub names
         # Process current week bookings
         for booking in current_week_bookings:
             location_name = booking["location"]
             neohub_name = config["locations"][location_name]["neohub"]
-            neohub_names.add(neohub_name) # add neohub name
+            neohub_names.add(neohub_name)  # add neohub name
 
             # Check compatibility before proceeding
             if not asyncio.run(check_neohub_compatibility(neohub_name)):
@@ -420,7 +455,11 @@ def update_heating_schedule() -> None:
             external_temperature = asyncio.run(get_external_temperature())
             schedule_data = calculate_schedule(booking, config, external_temperature)
             if schedule_data:
-                asyncio.run(apply_schedule_to_heating(neohub_name, "Current Week", schedule_data))
+                asyncio.run(
+                    apply_schedule_to_heating(
+                        neohub_name, "Current Week", schedule_data
+                    )
+                )
 
         # Process next week bookings
         for booking in next_week_bookings:
@@ -438,16 +477,22 @@ def update_heating_schedule() -> None:
             external_temperature = asyncio.run(get_external_temperature())
             schedule_data = calculate_schedule(booking, config, external_temperature)
             if schedule_data:
-                asyncio.run(apply_schedule_to_heating(neohub_name, "Next Week", schedule_data))
+                asyncio.run(
+                    apply_schedule_to_heating(neohub_name, "Next Week", schedule_data)
+                )
 
         # After processing all bookings, set "Current Week" as active.
         for neohub_name in neohub_names:
             command = {"RUN_PROFILE": "Current Week"}  # Set "Current Week" as active
             response = asyncio.run(send_command(neohub_name, command))
             if response:
-                logging.info(f"Successfully set profile 'Current Week' as active on Neohub {neohub_name}.")
+                logging.info(
+                    f"Successfully set profile 'Current Week' as active on Neohub {neohub_name}."
+                )
             else:
-                logging.error(f"Failed to set profile 'Current Week' as active on Neohub {neohub_name}.")
+                logging.error(
+                    f"Failed to set profile 'Current Week' as active on Neohub {neohub_name}."
+                )
     else:
         logging.info("No data received from ChurchSuite.")
 
