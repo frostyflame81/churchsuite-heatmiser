@@ -5,12 +5,12 @@ import logging
 import time
 import requests
 from apscheduler.schedulers.background import BackgroundScheduler
-import websockets
-import argparse  # Import the argparse module
-import os  # Import the os module
-import ssl  # Import the ssl module
+import websockets  # Import websockets first
+import argparse
+import os
+import ssl
 from typing import Dict, Any, List, Optional
-from websockets.protocol import ConnectionState # Import the ConnectionState
+from websockets.protocol import ConnectionState # Import ConnectionState after websockets
 
 
 # Configuration
