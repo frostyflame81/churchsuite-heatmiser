@@ -10,6 +10,7 @@ import argparse  # Import the argparse module
 import os  # Import the os module
 import ssl  # Import the ssl module
 from typing import Dict, Any, List, Optional
+from websockets.protocol import ConnectionState # Import the ConnectionState
 
 
 # Configuration
@@ -112,7 +113,7 @@ async def send_command(
     print(f"send_command: neohub_name = {neohub_name}")  # Add this line
     if (
         neohub_name not in neohub_connections
-        or neohub_connections[neohub_name].closed
+        or neohub_connections[neohub_name].state == ConnectionState.CLOSED # change made here
     ):
         logging.error(
             f"Not connected to Neohub: {neohub_name}.  Attempting to reconnect..."
