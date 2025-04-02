@@ -110,10 +110,9 @@ async def send_command(
     """Sends a command to the specified Neohub."""
     global neohub_connections, config
     print(f"send_command: neohub_name = {neohub_name}")  # Add this line
-    if (
-        neohub_name not in neohub_connections
-        or not neohub_connections[neohub_name].open
-    ):
+    ws = neohub_connections.get(neohub_name)  # Get, don't assume it exists.
+
+    if ws is None or ws.closed:
         logging.error(
             f"Not connected to Neohub: {neohub_name}.  Attempting to reconnect..."
         )
@@ -129,8 +128,11 @@ async def send_command(
                 f"Neohub {neohub_name} not found in config, or config error."
             )
             return None
+        ws = neohub_connections.get(neohub_name)  # re-get after reconnect
+        if ws is None:
+            return None # If reconnect also failed.
+            
 
-    ws = neohub_connections[neohub_name]
     print(f"send_command: ws = {ws}, type(ws) = {type(ws)}")
     print(f"send_command: dir(ws) = {dir(ws)}")  # Print all attributes of the ws object.
 
@@ -347,7 +349,7 @@ async def apply_schedule_to_heating(
 ) -> None:
     """Applies the heating schedule to the Heatmiser system by storing the profile."""
     logging.info(f"Storing profile {profile_name} on Neohub {neohub_name}")
-    response = await store_profile(neohub_name, profile_name, schedule_data)
+    response = await store_profile(neohub_name, neohub_name, schedule_data)
 
     if response:
         logging.info(
