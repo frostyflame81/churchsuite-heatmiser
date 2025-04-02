@@ -10,7 +10,8 @@ import argparse
 import os
 import ssl
 from typing import Dict, Any, List, Optional
-from websockets.protocol import ConnectionState  # Import ConnectionState
+# from websockets.protocol import ConnectionState  # Import ConnectionState #commenting out the problematic import
+import websockets.exceptions
 
 
 # Configuration
@@ -105,7 +106,7 @@ async def send_command(
     global neohub_connections, config
     print(f"send_command: neohub_name = {neohub_name}")
     ws = neohub_connections.get(neohub_name) # change
-    if ws is None or ws.state == ConnectionState.CLOSED: # change
+    if ws is None or ws.closed: # change
         logging.error(
             f"Not connected to Neohub: {neohub_name}.  Attempting to reconnect..."
         )
