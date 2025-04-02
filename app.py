@@ -12,7 +12,6 @@ import ssl  # Import the ssl module
 from typing import Dict, Any, List, Optional
 
 
-
 # Configuration
 OPENWEATHERMAP_API_KEY = os.environ.get("OPENWEATHERMAP_API_KEY")
 OPENWEATHERMAP_CITY = os.environ.get("OPENWEATHERMAP_CITY")
