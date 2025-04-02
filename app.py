@@ -1,4 +1,3 @@
-
 import datetime
 import json
 import asyncio
@@ -11,6 +10,7 @@ import argparse  # Import the argparse module
 import os  # Import the os module
 import ssl  # Import the ssl module
 from typing import Dict, Any, List, Optional
+from websockets.protocol import ConnectionState # Import the ConnectionState
 
 
 # Configuration
@@ -553,3 +553,4 @@ async def main() -> None:
 
 if __name__ == "__main__":
     asyncio.run(main())
+
