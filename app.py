@@ -112,7 +112,7 @@ async def send_command(
     print(f"send_command: neohub_name = {neohub_name}")  # Add this line
     if (
         neohub_name not in neohub_connections
-        or neohub_connections[neohub_name].closed
+        or not neohub_connections[neohub_name].open
     ):
         logging.error(
             f"Not connected to Neohub: {neohub_name}.  Attempting to reconnect..."
