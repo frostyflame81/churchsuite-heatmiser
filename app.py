@@ -9,8 +9,8 @@ from typing import Any, Dict, List, Optional
 import argparse
 import requests
 import apscheduler.schedulers.background
-import websockets
-from websockets.protocol import ConnectionState
+import websockets  # Changed from websockets.protocol
+from websockets.protocol import ConnectionState # Added this back in
 
 # Configuration
 OPENWEATHERMAP_API_KEY = os.environ.get("OPENWEATHERMAP_API_KEY")
