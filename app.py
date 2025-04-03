@@ -1,15 +1,16 @@
+import asyncio
 import datetime
 import json
 import logging
-import time
-import requests
-from apscheduler.schedulers.background import BackgroundScheduler
-import argparse
 import os
 import ssl
-from typing import Dict, Any, List, Optional
-import websocket  # Import the websocket-client library
-
+import time
+from typing import Any, Dict, List, Optional
+import argparse
+import requests
+import apscheduler.schedulers.background
+import websockets
+from websockets.protocol import ConnectionState
 
 # Configuration
 OPENWEATHERMAP_API_KEY = os.environ.get("OPENWEATHERMAP_API_KEY")
@@ -48,7 +49,7 @@ if not NEOHUBS:
     logging.warning("No Neohub configurations were loaded.")
     # Global variables
 neohub_connections = {}
-config = None
+config = None  # Make config a global variable
 
 
 def load_config(config_file: str) -> Optional[Dict[str, Any]]:
@@ -56,10 +57,14 @@ def load_config(config_file: str) -> Optional[Dict[str, Any]]:
     try:
         with open(config_file, "r") as f:
             loaded_config = json.load(f)
+            # Merge Neohub config from environment variables into the loaded config.
+            #  This allows for a hybrid approach, where some neohubs might be in the file, and others in env vars.
             if "neohubs" in loaded_config:
                 loaded_config["neohubs"].update(NEOHUBS)
             else:
-                loaded_config["neohubs"] = NEOHUBS
+                loaded_config["neohubs"] = (
+                    NEOHUBS  # If there are no neohubs, set to the env vars
+                )
             return loaded_config
     except FileNotFoundError:
         logging.error(f"Configuration file not found: {config_file}")
@@ -73,18 +78,25 @@ def load_config(config_file: str) -> Optional[Dict[str, Any]]:
 
 
 
-def connect_to_neohub(neohub_name: str, neohub_config: Dict[str, Any]) -> bool:
+async def connect_to_neohub(
+    neohub_name: str, neohub_config: Dict[str, Any]
+) -> bool:
     """Connects to a Neohub via websocket and authenticates."""
     global neohub_connections
     uri = f"wss://{neohub_config['address']}:{neohub_config['port']}"
     try:
-        ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        ssl_context.check_hostname = False
-        ssl_context.verify_mode = ssl.CERT_NONE
-        ws = websocket.create_connection(uri, sslopt={"cert_reqs": ssl.CERT_NONE})  # Changed
+        # Create an SSL context that doesn't require certificate verification.
+        ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)  # Or use a specific protocol
+        ssl_context.check_hostname = False  # Disable hostname checking
+        ssl_context.verify_mode = ssl.CERT_NONE  # Don't verify the server's certificate
+
+        # Pass the SSL context to websockets.connect()
+        ws = await websockets.connect(uri, ssl=ssl_context)
         logging.info(f"Connected to Neohub: {neohub_name}")
-        neohub_connections[neohub_name] = ws  # Store the connection object itself
-        print(f"connect_to_neohub: neohub_name = {neohub_name}, ws = {ws}, type(ws) = {type(ws)}")
+        neohub_connections[neohub_name] = ws  # Store the connection
+        logging.debug(
+            f"connect_to_neohub: neohub_name = {neohub_name}, ws = {ws}, type(ws) = {type(ws)}"
+        )  # Add this line
         return True
     except Exception as e:
         logging.error(f"Error connecting to Neohub {neohub_name}: {e}")
@@ -92,19 +104,24 @@ def connect_to_neohub(neohub_name: str, neohub_config: Dict[str, Any]) -> bool:
 
 
 
-def send_command(
+async def send_command(
     neohub_name: str, command: Dict[str, Any], command_id: int = 1
 ) -> Optional[Dict[str, Any]]:
     """Sends a command to the specified Neohub."""
     global neohub_connections, config
-    print(f"send_command: neohub_name = {neohub_name}")
-    ws = neohub_connections.get(neohub_name)
-    if ws is None or not ws.connected:  # Changed: Check for connection with websocket-client
+    logging.debug(f"send_command: neohub_name = {neohub_name}, command = {command}")  # Add this line
+    if (
+        neohub_name not in neohub_connections
+        or neohub_connections[neohub_name].closed
+    ):
         logging.error(
             f"Not connected to Neohub: {neohub_name}.  Attempting to reconnect..."
         )
+        # Try to reconnect
         if config and neohub_name in config["neohubs"]:
-            if not connect_to_neohub(neohub_name, config["neohubs"][neohub_name]):  # Changed
+            if not await connect_to_neohub(
+                neohub_name, config["neohubs"][neohub_name]
+            ):
                 logging.error(f"Failed to reconnect to Neohub {neohub_name}.")
                 return None
         else:
@@ -112,24 +129,25 @@ def send_command(
                 f"Neohub {neohub_name} not found in config, or config error."
             )
             return None
-        ws = neohub_connections.get(neohub_name)
-        if ws is None:
-            return None
 
-    print(f"send_command: ws = {ws}, type(ws) = {type(ws)}")
+    ws = neohub_connections[neohub_name]
+    logging.debug(f"send_command: ws = {ws}, type(ws) = {type(ws)}")
+    logging.debug(f"send_command: dir(ws) = {dir(ws)}")  # Print all attributes of the ws object.
 
-    command_payload = {
+    message = {
         "message_type": "hm_get_command_queue",
         "message": json.dumps(
             {
                 "token": config["neohubs"][neohub_name]["token"],
-                "COMMANDS": [{"COMMAND": json.dumps(command), "COMMANDID": command_id}],  # Correctly formatted command
+                "COMMANDS": [{"COMMAND": command, "COMMANDID": command_id}],
             }
         ),
     }
     try:
-        ws.send(json.dumps(command_payload))  # Changed: use send method of websocket-client
-        response = ws.recv()  # Changed: use recv method of websocket-client
+        logging.info(f"Sending command to Neohub {neohub_name}: {message}") # Log the complete message being sent
+        await ws.send(json.dumps(message))
+        response = await ws.recv()
+        logging.info(f"Received response from Neohub {neohub_name}: {response}")  # Log the response
         return json.loads(response)
     except Exception as e:
         logging.error(f"Error sending command to Neohub {neohub_name}: {e}")
@@ -137,14 +155,15 @@ def send_command(
 
 
 
-def get_zones(neohub_name: str) -> Optional[List[str]]:
+async def get_zones(neohub_name: str) -> Optional[List[str]]:
     """Retrieves zone names from the Neohub."""
-    print(f"get_zones: neohub_name = {neohub_name}")
+    logging.debug(f"get_zones: neohub_name = {neohub_name}")  # Add this line
     command = {"GET_ZONES": 0}
-    response = send_command(neohub_name, command)  # Changed: No await
+    response = await send_command(neohub_name, command)
     if response:
         try:
             zones = response["response"]
+            logging.debug(f"get_zones: Zones from {neohub_name}: {zones}")
             return zones
         except KeyError:
             logging.error(
@@ -155,44 +174,46 @@ def get_zones(neohub_name: str) -> Optional[List[str]]:
 
 
 
-def set_temperature(
+async def set_temperature(
     neohub_name: str, zone_name: str, temperature: float
 ) -> Optional[Dict[str, Any]]:
     """Sets the temperature for a specified zone."""
     command = {"SET_TEMP": [temperature, zone_name]}
-    response = send_command(neohub_name, command)  # Changed: No await
+    response = await send_command(neohub_name, command)
     if response:
         return response
     return None
 
 
-def get_live_data(neohub_name: str) -> Optional[Dict[str, Any]]:
+async def get_live_data(neohub_name: str) -> Optional[Dict[str, Any]]:
     """Gets the live data."""
     command = {"GET_LIVE_DATA": 0}
-    response = send_command(neohub_name, command)  # Changed: No await
+    response = await send_command(neohub_name, command)
     if response:
         return response
     return None
 
 
-def store_profile(
+async def store_profile(
     neohub_name: str, profile_name: str, profile_data: Dict[str, Any]
 ) -> Optional[Dict[str, Any]]:
     """Stores a heating profile on the Neohub."""
     command = {"STORE_PROFILE": {"name": profile_name, "info": profile_data}}
-    response = send_command(neohub_name, command)  # Changed: No await
+    response = await send_command(neohub_name, command)
     if response:
         return response
     return None
 
 
-def get_profile(neohub_name: str, profile_name: str) -> Optional[Dict[str, Any]]:
+async def get_profile(neohub_name: str, profile_name: str) -> Optional[Dict[str, Any]]:
     """Retrieves a heating profile from the Neohub."""
     command = {"GET_PROFILE": profile_name}
-    response = send_command(neohub_name, command)  # Changed: No await
+    response = await send_command(neohub_name, command)
     if response:
         try:
-            profile_data = response["response"]
+            # Assuming the profile data is nested within the response
+            profile_data = response["response"]  # Adjust key as necessary
+            logging.debug(f"get_profile: Profile data from {neohub_name}: {profile_data}")
             return response["response"]
         except KeyError:
             logging.error(
@@ -203,15 +224,14 @@ def get_profile(neohub_name: str, profile_name: str) -> Optional[Dict[str, Any]]
 
 
 
-def close_connections() -> None:
+async def close_connections() -> None:
     """Closes all websocket connections."""
     global neohub_connections
     for neohub_name, ws in neohub_connections.items():
         if ws:
-            ws.close()  # Changed:  Use close() of websocket-client
+            await ws.close()
             logging.info(f"Disconnected from Neohub: {neohub_name}")
     neohub_connections = {}
-
 
 
 def get_external_temperature() -> Optional[float]:
@@ -260,7 +280,7 @@ def calculate_schedule(
         return None
 
     location_config = config["locations"][location_name]
-    neohub_name = location_config["neohub"]
+    neohub_name = location_config["neohub"]  # Get Neohub name
     zones = location_config["zones"]
     heat_loss_factor = location_config["heat_loss_factor"]
     min_external_temp = location_config["min_external_temp"]
@@ -268,6 +288,8 @@ def calculate_schedule(
     start_time = datetime.datetime.fromisoformat(booking["start_time"])
     end_time = datetime.datetime.fromisoformat(booking["end_time"])
     preheat_time = datetime.timedelta(minutes=PREHEAT_TIME_MINUTES)
+
+    # Adjust preheat time based on external temperature
     if (
         external_temperature is not None
         and external_temperature < TEMPERATURE_SENSITIVITY
@@ -281,11 +303,14 @@ def calculate_schedule(
         logging.info(
             f"Adjusted preheat time for {location_name} by {adjustment:.0f} minutes due to external temperature."
         )
+
+    # Construct profile data structure
     profile_data = {}
     days = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
     for day in days:
-        profile_data[day] = {}
+        profile_data[day] = {}  # Initialize each day
 
+    # Create a function to add events, handling the 6-event limit
     def add_event(
         day_data: Dict[str, Any],
         event_name: str,
@@ -297,32 +322,37 @@ def calculate_schedule(
             day_data[event_name] = [
                 event_time.strftime("%H:%M"),
                 temperature,
-                0,
-                False,
+                0,  # Assume 0 for some flag
+                False,  # Assume False for some flag
             ]
             return True
-        return False
+        return False  # Indicate that the event was not added
 
+    # Add events for each day.  For simplicity, assume the same schedule for all days.
     for day in days:
         day_schedule = profile_data[day]
         add_event(day_schedule, "wake", start_time - preheat_time, DEFAULT_TEMPERATURE)
         add_event(day_schedule, "end", end_time, ECO_TEMPERATURE)
+
+        # If there are less than 6 events, fill the remaining slots.
         if len(day_schedule) < 6:
             last_event_time = end_time
             last_event_temp = ECO_TEMPERATURE
             for i in range(len(day_schedule), 6):
+                # Create a generic name like "fill_x"
                 fill_event_name = f"fill_{i}"
                 add_event(day_schedule, fill_event_name, last_event_time, last_event_temp)
-    return profile_data
+    return profile_data  # Return the profile data
 
 
 
-def apply_schedule_to_heating(
+async def apply_schedule_to_heating(
     neohub_name: str, profile_name: str, schedule_data: Dict[str, Any]
 ) -> None:
     """Applies the heating schedule to the Heatmiser system by storing the profile."""
     logging.info(f"Storing profile {profile_name} on Neohub {neohub_name}")
-    response = store_profile(neohub_name, profile_name, schedule_data)  # Changed: No await
+    response = await store_profile(neohub_name, profile_name, schedule_data)
+
     if response:
         logging.info(
             f"Successfully stored profile {profile_name} on Neohub {neohub_name}"
@@ -332,18 +362,23 @@ def apply_schedule_to_heating(
 
 
 
-def check_neohub_compatibility(neohub_name: str) -> bool:
+async def check_neohub_compatibility(neohub_name: str) -> bool:
     """
     Checks if the Neohub is compatible with the required schedule format (7-day, 6 events).
     Returns True if compatible, False otherwise.
     """
-    profile_data = get_profile(neohub_name, "0")  # Changed: No await
+    # Use GET_PROFILE_0 to retrieve profile data
+    profile_data = await get_profile(neohub_name, "0")  # Get profile 0
+
     if profile_data:
+        # Check if it is a 7 day profile
         if len(profile_data.keys()) != 7:
             logging.error(
                 f"Neohub {neohub_name} is not configured for a 7-day schedule."
             )
             return False
+
+        # Check number of events per day.
         for day in profile_data:
             if len(profile_data[day]) != 6:
                 logging.error(
@@ -369,9 +404,13 @@ def update_heating_schedule() -> None:
     today = datetime.datetime.now()
     current_week_start = today - datetime.timedelta(
         days=today.weekday()
-    )
-    current_week_end = current_week_start + datetime.timedelta(days=6)
-    next_week_start = current_week_end + datetime.timedelta(days=1)
+    )  # Start of current week (Monday)
+    current_week_end = current_week_start + datetime.timedelta(
+        days=6
+    )  # End of current week (Sunday)
+    next_week_start = current_week_end + datetime.timedelta(
+        days=1
+    )  # Start of next week (Monday)
     next_week_end = next_week_start + datetime.timedelta(days=6)
 
     data = get_bookings_and_locations()
@@ -387,6 +426,7 @@ def update_heating_schedule() -> None:
             logging.info("No locations to process.")
             return
 
+        # Separate bookings for current and next week
         current_week_bookings = [
             b
             for b in bookings
@@ -402,40 +442,53 @@ def update_heating_schedule() -> None:
             <= next_week_end
         ]
 
-        neohub_names = set()
+        neohub_names = set()  # set to hold unique neohub names
+        # Process current week bookings
         for booking in current_week_bookings:
             location_name = booking["location"]
             neohub_name = config["locations"][location_name]["neohub"]
-            neohub_names.add(neohub_name)
-            if not check_neohub_compatibility(neohub_name):  # Changed: No await
+            neohub_names.add(neohub_name)  # add neohub name
+
+            # Check compatibility before proceeding
+            if not asyncio.run(check_neohub_compatibility(neohub_name)):
                 logging.error(
                     f"Neohub {neohub_name} is not compatible with the required schedule format.  Please adjust its settings."
                 )
-                continue
-            external_temperature = get_external_temperature()  # Changed: No await
+                continue  # Skip this Neohub and booking
+
+            external_temperature = asyncio.run(get_external_temperature())
             schedule_data = calculate_schedule(booking, config, external_temperature)
             if schedule_data:
-                apply_schedule_to_heating(  # Changed: No await
-                    neohub_name, "Current Week", schedule_data
+                asyncio.run(
+                    apply_schedule_to_heating(
+                        neohub_name, "Current Week", schedule_data
+                    )
                 )
+
+        # Process next week bookings
         for booking in next_week_bookings:
             location_name = booking["location"]
             neohub_name = config["locations"][location_name]["neohub"]
             neohub_names.add(neohub_name)
-            if not check_neohub_compatibility(neohub_name): # Changed: No await
+
+            # Check compatibility before proceeding.  This check is now redundant, but kept for consistency.
+            if not asyncio.run(check_neohub_compatibility(neohub_name)):
                 logging.error(
                     f"Neohub {neohub_name} is not compatible with the required schedule format.  Please adjust its settings."
                 )
-                continue
-            external_temperature = get_external_temperature()  # Changed: No await
+                continue  # Skip this Neohub and booking
+
+            external_temperature = asyncio.run(get_external_temperature())
             schedule_data = calculate_schedule(booking, config, external_temperature)
             if schedule_data:
-                apply_schedule_to_heating(  # Changed: No await
-                    neohub_name, "Next Week", schedule_data
+                asyncio.run(
+                    apply_schedule_to_heating(neohub_name, "Next Week", schedule_data)
                 )
+
+        # After processing all bookings, set "Current Week" as active.
         for neohub_name in neohub_names:
-            command = {"RUN_PROFILE": "Current Week"}
-            response = send_command(neohub_name, command)  # Changed: No await
+            command = {"RUN_PROFILE": "Current Week"}  # Set "Current Week" as active
+            response = asyncio.run(send_command(neohub_name, command))
             if response:
                 logging.info(
                     f"Successfully set profile 'Current Week' as active on Neohub {neohub_name}."
@@ -451,10 +504,11 @@ def update_heating_schedule() -> None:
 
 
 
-def main() -> None:  # Changed: Removed async
+async def main() -> None:
     """Main application function."""
     logging.basicConfig(level=logging.INFO)
 
+    # Parse command-line arguments
     parser = argparse.ArgumentParser(
         description="Run the ChurchSuite Heatmiser Integration App"
     )
@@ -465,22 +519,27 @@ def main() -> None:  # Changed: Removed async
     )
     args = parser.parse_args()
     config_file = args.config
+
+    # Load configuration
     global config
     config = load_config(config_file)
     if config is None:
         logging.error("Failed to load configuration. Exiting.")
         return
 
+    # Connect to all Neohubs on startup
     for neohub_name, neohub_config in config["neohubs"].items():
-        if not connect_to_neohub(neohub_name, neohub_config):  # Changed: No await
+        if not await connect_to_neohub(neohub_name, neohub_config):
             logging.error(f"Failed to connect to Neohub: {neohub_name}. Exiting.")
             exit()
-    for neohub_name in config["neohubs"]:
-        zones = get_zones(neohub_name)  # Changed: No await
-        if zones:
-            logging.info(f"Zones on {neohub_name}: {zones}");
 
-    scheduler = BackgroundScheduler()
+    # Get zones from all connected Neohubs
+    for neohub_name in config["neohubs"]:
+        zones = await get_zones(neohub_name)
+        if zones:
+            logging.info(f"Zones on {neohub_name}: {zones}")
+
+    scheduler = apscheduler.schedulers.background.BackgroundScheduler()
     scheduler.add_job(update_heating_schedule, "interval", minutes=60)
     scheduler.start()
 
@@ -491,9 +550,9 @@ def main() -> None:  # Changed: Removed async
         logging.info("Shutting down scheduler...")
         scheduler.shutdown()
         logging.info("Closing Neohub connections...")
-        close_connections()  # Changed: No await
+        await close_connections()
         logging.info("Exiting...")
 
 
 if __name__ == "__main__":
-    main()  # Changed: No asyncio.run()
+    asyncio.run(main())
