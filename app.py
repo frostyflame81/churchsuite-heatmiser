@@ -478,7 +478,7 @@ def main() -> None:  # Changed: Removed async
     for neohub_name in config["neohubs"]:
         zones = get_zones(neohub_name)  # Changed: No await
         if zones:
-            logging.info(f"Zones on {neohub_name}: {zones}")
+            logging.info(f"Zones on {neohub_name}: {zones}");
 
     scheduler = BackgroundScheduler()
     scheduler.add_job(update_heating_schedule, "interval", minutes=60)
