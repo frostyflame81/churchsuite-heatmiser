@@ -95,13 +95,13 @@ def connect_to_neohub(neohub_name: str, neohub_config: Dict[str, Any]) -> bool:
 
 
 def send_command(
-    neohub_name: str, command: Dict[str, Any], command_id: int = 1
+    neohub_name: str, command: Dict[str, Any], command_id: int = 1, retries: int = 3
 ) -> Optional[Dict[str, Any]]:
-    """Sends a command to the specified Neohub."""
+    """Sends a command to the specified Neohub with retry logic."""
     global neohub_connections, config
     if LOGGING_LEVEL == "DEBUG":
         logging.debug(
-            f"send_command: neohub_name = {neohub_name}, command = {command}, command_id = {command_id}"
+            f"send_command: neohub_name = {neohub_name}, command = {command}, command_id = {command_id}, retries = {retries}"
         )
     ws = neohub_connections.get(neohub_name)
     if ws is None or not ws.connected:  # Changed: Check for connection with websocket-client
@@ -126,21 +126,32 @@ def send_command(
         "message": json.dumps(
             {
                 "token": config["neohubs"][neohub_name]["token"],
-                "COMMANDS": [{"COMMAND": command, "COMMANDID": command_id}],  #  Corrected formatting.  The command should already be a dict.
+                "COMMANDS": [{"COMMAND": command, "COMMANDID": command_id}],  # Corrected formatting.  The command should already be a dict.
             }
         ),
     }
-    try:
-        if LOGGING_LEVEL == "DEBUG":
-            logging.debug(f"Sending to Neohub {neohub_name}: {json.dumps(command_payload)}")
-        ws.send(json.dumps(command_payload))  # Changed: use send method of websocket-client
-        response = ws.recv()  # Changed: use recv method of websocket-client
-        if LOGGING_LEVEL == "DEBUG":
-            logging.debug(f"Received from Neohub {neohub_name}: {response}")
-        return json.loads(response)
-    except Exception as e:
-        logging.error(f"Error sending command to Neohub {neohub_name}: {e}")
-        return None
+    for attempt in range(retries):
+        try:
+            if LOGGING_LEVEL == "DEBUG":
+                logging.debug(f"Sending to Neohub {neohub_name} (attempt {attempt + 1}): {json.dumps(command_payload)}")
+            ws.send(json.dumps(command_payload))  # Changed: use send method of websocket-client
+            response = ws.recv()  # Changed: use recv method of websocket-client
+            if LOGGING_LEVEL == "DEBUG":
+                logging.debug(f"Received from Neohub {neohub_name}: {response}")
+            return json.loads(response)
+        except Exception as e:
+            logging.error(
+                f"Error sending command to Neohub {neohub_name} (attempt {attempt + 1}): {e}"
+            )
+            if attempt < retries - 1:
+                logging.info(
+                    f"Retrying command to Neohub {neohub_name} in 5 seconds..."
+                )
+                time.sleep(5)
+            else:
+                logging.error(f"Failed to send command to Neohub {neohub_name} after {retries} attempts.")
+                return None
+    return None
 
 
 
@@ -527,7 +538,7 @@ def update_heating_schedule() -> None:
 
 
 
-def main() -> None:  # Changed: Removed async
+def main()-> None:  # Changed: Removed async
     """Main application function."""
     # Use the LOGGING_LEVEL environment variable
     logging_level = getattr(logging, LOGGING_LEVEL.upper(), logging.INFO)
