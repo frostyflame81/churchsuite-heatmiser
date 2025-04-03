@@ -96,7 +96,7 @@ The following environment variables need to be set. The easiest way to do this i
 
 ### 4. `docker-compose.yml`
 
-Use the included `docker-compose.yml` file or generate your own based on the example below:
+Use the included `docker-compose.sample` file and rename to `docker-compose.yml` or generate your own based on the example below:
 
 ```yaml
 version: '3.8'
@@ -104,18 +104,26 @@ services:
   web:
     build: .
     ports:
-      - "5000:5000"
+      - "4243:4243"
     volumes:
       - .:/app
-      - ./config:/config
+      - ./config:/config  # Mount the config directory
     environment:
       - OPENWEATHERMAP_API_KEY=${OPENWEATHERMAP_API_KEY}
       - OPENWEATHERMAP_CITY=${OPENWEATHERMAP_CITY}
-      - CHURCHSUITE_URL=${CHURCHSUITE_URL}
-      - NEOHUB_ADDRESS_MAIN=${NEOHUB_ADDRESS_MAIN}
-      - NEOHUB_API_KEY_MAIN=${NEOHUB_API_KEY_MAIN}
-      - NEOHUB_ADDRESS_CHURCH_HALL=${NEOHUB_ADDRESS_CHURCH_HALL}
-      - NEOHUB_API_KEY_CHURCH_HALL=${NEOHUB_API_KEY_CHURCH_HALL}
+      - CHURCHSUITE_URL=${CHURCHSUITE_URL}  # Add the ChurchSuite URL here
+      - PREHEAT_TIME_MINUTES=${PREHEAT_TIME_MINUTES}
+      - DEFAULT_TEMPERATURE=${DEFAULT_TEMPERATURE}
+      - ECO_TEMPERATURE=${ECO_TEMPERATURE}
+      - TEMPERATURE_SENSITIVITY=${TEMPERATURE_SENSITIVITY}
+      - PREHEAT_ADJUSTMENT_MINUTES_PER_DEGREE=${PREHEAT_ADJUSTMENT_MINUTES_PER_DEGREE}
+      - CONFIG_FILE=${CONFIG_FILE}
+      - LOGGING_LEVEL=${LOGGING_LEVEL} #Optional, default is INFO
+      # Neohub Configuration (Example - can be overridden by individual NEOHUB_* variables)
+      - NEOHUB_1_NAME=Neohub1
+      - NEOHUB_1_ADDRESS=192.168.1.100  # Replace with actual address, can also be hostname
+      - NEOHUB_1_PORT=4243
+      - NEOHUB_1_TOKEN=your_neohub_api_key  # Replace with your API key
     restart: unless-stopped
 ```
 
