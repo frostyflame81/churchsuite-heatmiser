@@ -1,20 +1,46 @@
 {
     "locations": {
-        "Main Church - Small Room": {
+        "Main Church - Raphael Room": {
             "neohub": "main_church",
-            "zones": ["Small Room corridor and toilets"]
+            "zones": ["Raphael Room corridor and toilets"],
+            "heat_loss_factor": 1.0,
+            "min_external_temp": 5
         },
         "Main Church - Chancel": {
             "neohub": "main_church",
-            "zones": ["Main Church", "Small Room corridor and toilets"]
+            "zones": ["Main Church", "Raphael Room corridor and toilets"],
+            "heat_loss_factor": 3.0,
+            "min_external_temp": 8
         },
-        "Church Hall": {
-            "neohub": "church_hall",
-            "zones": ["Main Hall", "Meeting Room 1", "Kitchen"]
+        "Main Church - Nave worship area": {
+            "neohub": "main_church",
+            "zones": ["Main Church", "Raphael Room corridor and toilets"],
+            "heat_loss_factor": 3.0,
+            "min_external_temp": 8
         },
-        "Meeting Room 2": {
+        "Church Hall - Reception Office": {
             "neohub": "church_hall",
-            "zones": ["Room 1"]
+            "zones": ["Main Hall"],
+            "heat_loss_factor": 1.5,
+            "min_external_temp": 7
+        },
+        "Church Hall - Rear Office": {
+            "neohub": "church_hall",
+            "zones": ["Main Hall"],
+            "heat_loss_factor": 1.5,
+            "min_external_temp": 7
+        },
+        "Church Hall - Main Hall": {
+            "neohub": "church_hall",
+            "zones": ["Main Hall"],
+            "heat_loss_factor": 1.5,
+            "min_external_temp": 7
+        },
+        "Church Hall - Small Hall": {
+            "neohub": "church_hall",
+            "zones": ["Main Hall"],
+            "heat_loss_factor": 1.5,
+            "min_external_temp": 7
         }
     },
     "preheat_time_minutes": 30,
