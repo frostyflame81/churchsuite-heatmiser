@@ -8,7 +8,7 @@ import argparse
 import os
 import ssl
 from typing import Dict, Any, List, Optional
-import websocket-client  # Import the websocket-client library
+import websocket  # Import the websocket-client library
 
 
 # Configuration
