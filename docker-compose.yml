@@ -2,25 +2,30 @@ version: '3.8'
 services:
   web:
     build: .
-    ports:
-      - "4243:4243"
+    #ports:
+    #  - "5000:5000"
     volumes:
       - .:/app
       - ./config:/config  # Mount the config directory
     environment:
-      - OPENWEATHERMAP_API_KEY=${OPENWEATHERMAP_API_KEY}
-      - OPENWEATHERMAP_CITY=${OPENWEATHERMAP_CITY}
-      - CHURCHSUITE_URL=${CHURCHSUITE_URL}  # Add the ChurchSuite URL here
-      - PREHEAT_TIME_MINUTES=${PREHEAT_TIME_MINUTES}
-      - DEFAULT_TEMPERATURE=${DEFAULT_TEMPERATURE}
-      - ECO_TEMPERATURE=${ECO_TEMPERATURE}
-      - TEMPERATURE_SENSITIVITY=${TEMPERATURE_SENSITIVITY}
-      - PREHEAT_ADJUSTMENT_MINUTES_PER_DEGREE=${PREHEAT_ADJUSTMENT_MINUTES_PER_DEGREE}
-      - CONFIG_FILE=${CONFIG_FILE}
-      - LOGGING_LEVEL=${LOGGING_LEVEL}
+      - OPENWEATHERMAP_API_KEY=your_api_key_here
+      - OPENWEATHERMAP_CITY=London
+      - CHURCHSUITE_URL=your_CS_JSON_here
+      - PREHEAT_TIME_MINUTES=30
+      - DEFAULT_TEMPERATURE=19
+      - ECO_TEMPERATURE=12
+      - TEMPERATURE_SENSITIVITY=10
+      - PREHEAT_ADJUSTMENT_MINUTES_PER_DEGREE=5
+      - CONFIG_FILE=/config/config.json
+      - LOGGING_LEVEL=DEBUG
       # Neohub Configuration (Example - can be overridden by individual NEOHUB_* variables)
-      - NEOHUB_1_NAME=Neohub1
-      - NEOHUB_1_ADDRESS=192.168.1.100  # Replace with actual address, can also be hostname
+      - NEOHUB_1_NAME="main_church"
+      - NEOHUB_1_ADDRESS=your_IP_here
       - NEOHUB_1_PORT=4243
-      - NEOHUB_1_TOKEN=your_neohub_api_key  # Replace with your API key
+      - NEOHUB_1_TOKEN=your_api_key_here
+      # Neohub 2
+      - NEOHUB_2_NAME="church_hall"
+      - NEOHUB_2_ADDRESS=your_hostname_here
+      - NEOHUB_2_PORT=4243
+      - NEOHUB_2_TOKEN=your_api_key_here
     restart: unless-stopped
