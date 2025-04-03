@@ -1,3 +1,4 @@
 requests
 apscheduler
+websockets
 websocket-client
