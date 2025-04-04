@@ -103,34 +103,39 @@ def send_command(
         logging.debug(
             f"send_command: neohub_name = {neohub_name}, command = {command}, command_id = {command_id}, retries = {retries}"
         )
-    ws = neohub_connections.get(neohub_name)
-    if ws is None or not ws.connected:  # Changed: Check for connection with websocket-client
-        logging.error(
-            f"Not connected to Neohub: {neohub_name}.  Attempting to reconnect..."
-        )
-        if config and neohub_name in config["neohubs"]:
-            if not connect_to_neohub(
-                neohub_name, config["neohubs"][neohub_name]
-            ):  # Changed
-                logging.error(f"Failed to reconnect to Neohub {neohub_name}.")
-                return None
-        else:
-            logging.error(f"Neohub {neohub_name} not found in config, or config error.")
-            return None
-        ws = neohub_connections.get(neohub_name)
-        if ws is None:
-            return None
 
-    command_payload = {
-        "message_type": "hm_get_command_queue",
-        "message": json.dumps(
-            {
-                "token": config["neohubs"][neohub_name]["token"],
-                "COMMANDS": [{"COMMAND": command, "COMMANDID": command_id}],  # Corrected formatting.  The command should already be a dict.
-            }
-        ),
-    }
     for attempt in range(retries):
+        ws = neohub_connections.get(neohub_name)
+        if ws is None or not ws.connected:  # Changed: Check for connection with websocket-client
+            logging.error(
+                f"Not connected to Neohub: {neohub_name}.  Attempting to reconnect (attempt {attempt + 1})..."
+            )
+            if config and neohub_name in config["neohubs"]:
+                if not connect_to_neohub(
+                    neohub_name, config["neohubs"][neohub_name]
+                ):  # Changed
+                    logging.error(f"Failed to reconnect to Neohub {neohub_name}.")
+                    if attempt == retries - 1:
+                         return None
+                    else:
+                         time.sleep(5)
+                         continue
+                else:
+                    ws = neohub_connections.get(neohub_name) #update ws
+            else:
+                logging.error(f"Neohub {neohub_name} not found in config, or config error.")
+                return None
+
+
+        command_payload = {
+            "message_type": "hm_get_command_queue",
+            "message": json.dumps(
+                {
+                    "token": config["neohubs"][neohub_name]["token"],
+                    "COMMANDS": [{"COMMAND": command, "COMMANDID": command_id}],  # Corrected formatting.  The command should already be a dict.
+                }
+            ),
+        }
         try:
             if LOGGING_LEVEL == "DEBUG":
                 logging.debug(f"Sending to Neohub {neohub_name} (attempt {attempt + 1}): {json.dumps(command_payload)}")
@@ -148,6 +153,9 @@ def send_command(
                     f"Retrying command to Neohub {neohub_name} in 5 seconds..."
                 )
                 time.sleep(5)
+                # Attempt to reconnect before retrying the command
+                if config and neohub_name in config["neohubs"]:
+                    connect_to_neohub(neohub_name, config["neohubs"][neohub_name])
             else:
                 logging.error(f"Failed to send command to Neohub {neohub_name} after {retries} attempts.")
                 return None
@@ -525,7 +533,7 @@ def update_heating_schedule() -> None:
                 )
                 if LOGGING_LEVEL == "DEBUG":
                     logging.debug(
-                        f"update_heating_schedule:  Sent RUN_PROFILE for Current Week to {neohub_name}"
+                        f"update_heating_schedule:  Sent RUN_PROFILE forCurrent Week to {neohub_name}"
                     )
             else:
                 logging.error(
@@ -538,7 +546,7 @@ def update_heating_schedule() -> None:
 
 
 
-def main()-> None:  # Changed: Removed async
+def main() -> None:  # Changed: Removed async
     """Main application function."""
     # Use the LOGGING_LEVEL environment variable
     logging_level = getattr(logging, LOGGING_LEVEL.upper(), logging.INFO)
