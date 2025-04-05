@@ -79,9 +79,9 @@ def connect_to_neohub(neohub_name: str, neohub_config: Dict[str, Any]) -> bool:
     global neohub_connections
     uri = f"wss://{neohub_config['address']}:{neohub_config['port']}"
     try:
-        ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        ssl_context.check_hostname = False
-        ssl_context.verify_mode = ssl.CERT_NONE
+        #ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        #ssl_context.check_hostname = False
+        #ssl_context.verify_mode = ssl.CERT_NONE
         ws = websocket.create_connection(uri, sslopt={"cert_reqs": ssl.CERT_NONE})  # Changed
         logging.info(f"Connected to Neohub: {neohub_name}")
         neohub_connections[neohub_name] = ws  # Store the connection object itself
