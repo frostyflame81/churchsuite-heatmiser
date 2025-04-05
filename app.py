@@ -7,9 +7,9 @@ import requests
 from apscheduler.schedulers.background import BackgroundScheduler
 import argparse
 import os
-import ssl
+import pytz
+import dateutil.parser
 from typing import Dict, Any, List, Optional
-import websocket
 from neohubapi.neohub import NeoHub, NeoHubUsageError, NeoHubConnectionError
 
 # Configuration
