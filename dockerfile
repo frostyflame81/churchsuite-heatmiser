@@ -1,5 +1,5 @@
 # Use an official Python runtime as a parent image.  We'll use slim-buster to keep it small.
-FROM python:3.9-slim-buster
+FROM python:3.10-slim-buster
 
 # Set the working directory in the container to /app.  This is where your code will live.
 WORKDIR /app
