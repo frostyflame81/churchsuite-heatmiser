@@ -352,10 +352,20 @@ async def update_heating_schedule() -> None:
         logging.error("Configuration not loaded.  Exiting.")
         return
 
-    today = datetime.datetime.now()
-    current_week_start = today - datetime.timedelta(
-        days=today.weekday()
-    )
+    # Use an environment variable specifically for the timezone.
+    #  Example: "Europe/London" or "America/New_York"
+    location_timezone_name = os.environ.get("CHURCHSUITE_TIMEZONE", "Europe/London")
+    try:
+        location_timezone = pytz.timezone(location_timezone_name)
+    except pytz.exceptions.UnknownTimeZoneError:
+        logging.error(
+            f"Timezone '{location_timezone_name}' is invalid.  Defaulting to Europe/London.  "
+            "Please set the CHURCHSUITE_TIMEZONE environment variable with a valid timezone name (e.g., 'Europe/London')."
+        )
+        location_timezone = pytz.timezone("Europe/London")
+
+    today = datetime.datetime.now(location_timezone)
+    current_week_start = today - datetime.timedelta(days=today.weekday())
     current_week_end = current_week_start + datetime.timedelta(days=6)
     next_week_start = current_week_end + datetime.timedelta(days=1)
     next_week_end = next_week_start + datetime.timedelta(days=6)
@@ -377,27 +387,39 @@ async def update_heating_schedule() -> None:
             logging.info("No locations to process.")
             return
 
-        current_week_bookings = [
-            b
-            for b in booked_resources
-            if current_week_start
-            <= datetime.datetime.fromisoformat(b["starts_at"].replace('Z', '+00:00')) # Corrected line
-            <= current_week_end
-        ]
-        next_week_bookings = [
-            b
-            for b in booked_resources
-            if next_week_start
-            <= datetime.datetime.fromisoformat(b["starts_at"].replace('Z', '+00:00')) # Corrected line
-            <= next_week_end
-        ]
+        current_week_bookings = []
+        next_week_bookings = []
+
+        for booking in booked_resources:
+            start_time_str = booking.get("starts_at")
+            if start_time_str:
+                # Parse the start time, using dateutil.parser which handles more formats
+                parsed_dt = dateutil.parser.parse(start_time_str)
+
+                # If the parsed datetime is naive (no timezone info), assume UTC
+                if parsed_dt.tzinfo is None or parsed_dt.utcoffset() is None:
+                    utc_dt = parsed_dt.replace(tzinfo=pytz.utc)
+                    logging.warning(f"Booking time for {booking} was naive, assuming UTC")
+                else:
+                    utc_dt = parsed_dt.astimezone(pytz.utc)
+
+                # Convert the booking time to the location timezone.
+                local_start_dt = utc_dt.astimezone(location_timezone).replace(tzinfo=None)
+
+                if current_week_start <= local_start_dt <= current_week_end:
+                    current_week_bookings.append(booking)
+                elif next_week_start <= local_start_dt <= next_week_end:
+                    next_week_bookings.append(booking)
+            else:
+                logging.warning(f"Booking with id {booking.get('id', 'unknown')} has no 'starts_at' time.")
+
         if LOGGING_LEVEL == "DEBUG":
             logging.debug(
                 f"update_heating_schedule: current_week_bookings={current_week_bookings}, next_week_bookings={next_week_bookings}"
             )
 
         neohub_names = set()
-        for booked_resource in current_week_bookings: # Changed loop variable name
+        for booked_resource in current_week_bookings:
             location_name = booked_resource["location"]
             neohub_name = config["locations"][location_name]["neohub"]
             neohub_names.add(neohub_name)
@@ -407,12 +429,12 @@ async def update_heating_schedule() -> None:
                 )
                 continue
             external_temperature = get_external_temperature()
-            schedule_data = calculate_schedule(booked_resource, config, external_temperature) # Changed parameter name
+            schedule_data = calculate_schedule(booked_resource, config, external_temperature)
             if schedule_data:
                 await apply_schedule_to_heating(
                     neohub_name, "Current Week", schedule_data
                 )
-        for booked_resource in next_week_bookings: # Changed loop variable name
+        for booked_resource in next_week_bookings:
             location_name = booked_resource["location"]
             neohub_name = config["locations"][location_name]["neohub"]
             neohub_names.add(neohub_name)
@@ -422,7 +444,7 @@ async def update_heating_schedule() -> None:
                 )
                 continue
             external_temperature = get_external_temperature()
-            schedule_data = calculate_schedule(booked_resource, config, external_temperature) # Changed parameter name
+            schedule_data = calculate_schedule(booked_resource, config, external_temperature)
             if schedule_data:
                 await apply_schedule_to_heating(
                     neohub_name, "Next Week", schedule_data
