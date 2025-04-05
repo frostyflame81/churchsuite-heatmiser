@@ -364,7 +364,7 @@ async def update_heating_schedule() -> None:
         )
         location_timezone = pytz.timezone("Europe/London")
 
-    today = datetime.datetime.now(location_timezone)
+    today = datetime.datetime.now(location_timezone).replace(tzinfo=None) #changed
     current_week_start = today - datetime.timedelta(days=today.weekday())
     current_week_end = current_week_start + datetime.timedelta(days=6)
     next_week_start = current_week_end + datetime.timedelta(days=1)
