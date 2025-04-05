@@ -1,3 +1,4 @@
+import asyncio
 import datetime
 import json
 import logging
@@ -8,8 +9,8 @@ import argparse
 import os
 import ssl
 from typing import Dict, Any, List, Optional
-import websocket  # Import the websocket-client library
-
+import websocket
+from neohubapi.neohub import NeoHub, NeoHubUsageError, NeoHubConnectionError
 
 # Configuration
 OPENWEATHERMAP_API_KEY = os.environ.get("OPENWEATHERMAP_API_KEY")
@@ -50,6 +51,7 @@ if not NEOHUBS:
     # Global variables
 neohub_connections = {}
 config = None
+hubs = {}  # Dictionary to store NeoHub instances
 
 
 def load_config(config_file: str) -> Optional[Dict[str, Any]]:
@@ -75,199 +77,100 @@ def load_config(config_file: str) -> Optional[Dict[str, Any]]:
 
 
 def connect_to_neohub(neohub_name: str, neohub_config: Dict[str, Any]) -> bool:
-    """Connects to a Neohub via websocket and authenticates."""
-    global neohub_connections
-    uri = f"wss://{neohub_config['address']}:{neohub_config['port']}"
+    """Connects to a Neohub using neohubapi."""
+    global hubs
     try:
-        #ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        #ssl_context.check_hostname = False
-        #ssl_context.verify_mode = ssl.CERT_NONE
-        ws = websocket.create_connection(uri, sslopt={"cert_reqs": ssl.CERT_NONE})  # Changed
-        logging.info(f"Connected to Neohub: {neohub_name}")
-        neohub_connections[neohub_name] = ws  # Store the connection object itself
-        if LOGGING_LEVEL == "DEBUG":
-            logging.debug(f"connect_to_neohub: Connected to {neohub_name} at {uri}")
+        # Use the port from the environment variable, defaulting to 4243
+        port = neohub_config['port']
+        token = neohub_config.get('token')  # Token is optional
+        hub = NeoHub(host=neohub_config['address'], port=port, token=token)
+        hubs[neohub_name] = hub  # Store
+        logging.info(f"Connected to Neohub: {neohub_name} at {neohub_config['address']}:{port}")
         return True
-    except Exception as e:
+    except (NeoHubConnectionError, NeoHubUsageError) as e:
         logging.error(f"Error connecting to Neohub {neohub_name}: {e}")
+        return False
+    except Exception as e:
+        logging.error(f"An unexpected error occurred: {e}")
         return False
 
 
 
-def send_command(
-    neohub_name: str, command: Dict[str, Any], command_id: int = 1, retries: int = 3
-) -> Optional[Dict[str, Any]]:
-    """Sends a command to the specified Neohub with retry logic."""
-    global neohub_connections, config
-    if LOGGING_LEVEL == "DEBUG":
-        logging.debug(
-            f"send_command: neohub_name = {neohub_name}, command = {command}, command_id = {command_id}, retries = {retries}"
-        )
-
-    for attempt in range(retries):
-        ws = neohub_connections.get(neohub_name)
-        if ws is None or not ws.connected:  # Changed: Check for connection with websocket-client
-            logging.error(
-                f"Not connected to Neohub: {neohub_name}.  Attempting to reconnect (attempt {attempt + 1})..."
-            )
-            if config and neohub_name in config["neohubs"]:
-                if not connect_to_neohub(
-                    neohub_name, config["neohubs"][neohub_name]
-                ):  # Changed
-                    logging.error(f"Failed to reconnect to Neohub {neohub_name}.")
-                    if attempt == retries - 1:
-                         return None
-                    else:
-                         time.sleep(5)
-                         continue
-                else:
-                    ws = neohub_connections.get(neohub_name) #update ws
-            else:
-                logging.error(f"Neohub {neohub_name} not found in config, or config error.")
-                return None
-
-
-        command_payload = {
-            "message_type": "hm_get_command_queue",
-            "message": json.dumps(
-                {
-                    "token": config["neohubs"][neohub_name]["token"],
-                    "COMMANDS": [{"COMMAND": command, "COMMANDID": command_id}],  # Corrected formatting.  The command should already be a dict.
-                }
-            ),
-        }
-        try:
-            if LOGGING_LEVEL == "DEBUG":
-                logging.debug(f"Sending to Neohub {neohub_name} (attempt {attempt + 1}): {json.dumps(command_payload)}")
-            ws.send(json.dumps(command_payload))  # Changed: use send method of websocket-client
-            response = ws.recv()  # Changed: use recv method of websocket-client
-            if LOGGING_LEVEL == "DEBUG":
-                logging.debug(f"Received from Neohub {neohub_name}: {response}")
-            return json.loads(response)
-        except Exception as e:
-            logging.error(
-                f"Error sending command to Neohub {neohub_name} (attempt {attempt + 1}): {e}"
-            )
-            if attempt < retries - 1:
-                logging.info(
-                    f"Retrying command to Neohub {neohub_name} in 5 seconds..."
-                )
-                time.sleep(5)
-                # Attempt to reconnect before retrying the command
-                if config and neohub_name in config["neohubs"]:
-                    connect_to_neohub(neohub_name, config["neohubs"][neohub_name])
-            else:
-                logging.error(f"Failed to send command to Neohub {neohub_name} after {retries} attempts.")
-                return None
-    return None
+async def send_command(neohub_name: str, command: Dict[str, Any]) -> Optional[Any]:
+    """Sends a command to the Neohub using neohubapi."""
+    global hubs
+    hub = hubs.get(neohub_name)
+    if hub is None:
+        logging.error(f"Not connected to Neohub: {neohub_name}")
+        return None
+    try:
+        response = await hub._send(command)
+        return response
+    except (NeoHubUsageError, NeoHubConnectionError) as e:
+        logging.error(f"Error sending command to Neohub {neohub_name}: {e}")
+        return None
+    except Exception as e:
+        logging.error(f"An unexpected error occurred: {e}")
+        return None
 
 
 
-def get_zones(neohub_name: str) -> Optional[List[str]]:
-    """Retrieves zone names from the Neohub."""
-    if LOGGING_LEVEL == "DEBUG":
-        logging.debug(f"get_zones: neohub_name = {neohub_name}")
+async def get_zones(neohub_name: str) -> Optional[List[str]]:
+    """Retrieves zone names from the Neohub using neohubapi."""
+    logging.info(f"Getting zones from Neohub: {neohub_name}")
     command = {"GET_ZONES": 0}
-    response = send_command(neohub_name, command)  # Changed: No await
+    response = await send_command(neohub_name, command)
     if response:
-        try:
-            zones = response["response"]
-            if LOGGING_LEVEL == "DEBUG":
-                logging.debug(f"get_zones: Zones from {neohub_name}: {zones}")
-            return zones
-        except KeyError:
-            logging.error(
-                f"Unexpected response format for GET_ZONES from {neohub_name}"
-            )
-            return None
+        zones = []
+        for attr_name, attr_value in vars(response).items():
+            zones.append(attr_name)
+        return zones
     return None
 
 
 
-def set_temperature(
-    neohub_name: str, zone_name: str, temperature: float
-) -> Optional[Dict[str, Any]]:
-    """Sets the temperature for a specified zone."""
-    if LOGGING_LEVEL == "DEBUG":
-        logging.debug(
-            f"set_temperature: neohub_name={neohub_name}, zone_name={zone_name}, temperature={temperature}"
-        )
+async def set_temperature(neohub_name: str, zone_name: str, temperature: float) -> Optional[Dict[str, Any]]:
+    """Sets the temperature for a specified zone using neohubapi."""
+    logging.info(f"Setting temperature for zone {zone_name} on Neohub {neohub_name} to {temperature}")
     command = {"SET_TEMP": [temperature, zone_name]}
-    response = send_command(neohub_name, command)  # Changed: No await
-    if response:
-        if LOGGING_LEVEL == "DEBUG":
-            logging.debug(
-                f"set_temperature:  Response from {neohub_name} for setting temp on {zone_name}: {response}"
-            )
-        return response
-    return None
+    response = await send_command(neohub_name, command)
+    return response #modified
 
 
-def get_live_data(neohub_name: str) -> Optional[Dict[str, Any]]:
-    """Gets the live data."""
-    if LOGGING_LEVEL == "DEBUG":
-        logging.debug(f"get_live_data: neohub_name={neohub_name}")
+async def get_live_data(neohub_name: str) -> Optional[Dict[str, Any]]:
+    """Gets the live data using neohubapi."""
+    logging.info(f"Getting live data from Neohub: {neohub_name}")
     command = {"GET_LIVE_DATA": 0}
-    response = send_command(neohub_name, command)  # Changed: No await
-    if response:
-        if LOGGING_LEVEL == "DEBUG":
-            logging.debug(f"get_live_data: Live data from {neohub_name}: {response}")
-        return response
-    return None
+    response = await send_command(neohub_name, command)
+    return response
 
 
-def store_profile(
-    neohub_name: str, profile_name: str, profile_data: Dict[str, Any]
-) -> Optional[Dict[str, Any]]:
-    """Stores a heating profile on the Neohub."""
-    if LOGGING_LEVEL == "DEBUG":
-        logging.debug(
-            f"store_profile: neohub_name={neohub_name}, profile_name={profile_name}, profile_data={profile_data}"
-        )
+
+async def store_profile(neohub_name: str, profile_name: str, profile_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Stores a heating profile on the Neohub using neohubapi."""
+    logging.info(f"Storing profile {profile_name} on Neohub {neohub_name}")
     command = {"STORE_PROFILE": {"name": profile_name, "info": profile_data}}
-    response = send_command(neohub_name, command)  # Changed: No await
-    if response:
-        if LOGGING_LEVEL == "DEBUG":
-            logging.debug(
-                f"store_profile: Response from {neohub_name} for storing profile {profile_name}: {response}"
-            )
-        return response
-    return None
+    response = await send_command(neohub_name, command)
+    return response
 
 
-def get_profile(neohub_name: str, profile_name: str) -> Optional[Dict[str, Any]]:
-    """Retrieves a heating profile from the Neohub."""
-    if LOGGING_LEVEL == "DEBUG":
-        logging.debug(f"get_profile: neohub_name={neohub_name}, profile_name={profile_name}")
+async def get_profile(neohub_name: str, profile_name: str) -> Optional[Dict[str, Any]]:
+    """Retrieves a heating profile from the Neohub using neohubapi."""
+    logging.info(f"Getting profile {profile_name} from Neohub {neohub_name}")
     command = {"GET_PROFILE": profile_name}
-    response = send_command(neohub_name, command)  # Changed: No await
-    if response:
-        try:
-            profile_data = response["response"]
-            if LOGGING_LEVEL == "DEBUG":
-                logging.debug(
-                    f"get_profile: Profile data for {profile_name} from {neohub_name}: {profile_data}"
-                )
-            return response["response"]
-        except KeyError:
-            logging.error(
-                f"Unexpected response format for GET_PROFILE from {neohub_name}"
-            )
-            return None
-    return None
+    response = await send_command(neohub_name, command)
+    return response
 
 
 
 def close_connections() -> None:
-    """Closes all websocket connections."""
-    global neohub_connections
-    for neohub_name, ws in neohub_connections.items():
-        if ws:
-            ws.close()  # Changed:  Use close() of websocket-client
+    """Closes all Neohub connections."""
+    global hubs
+    for neohub_name, hub in hubs.items():
+        if hub:
+            asyncio.run(hub._client.disconnect()) #changed
             logging.info(f"Disconnected from Neohub: {neohub_name}")
-            if LOGGING_LEVEL == "DEBUG":
-                logging.debug(f"close_connections: Closed connection to {neohub_name}")
-    neohub_connections = {}
+    hubs = {}
 
 
 
@@ -392,7 +295,7 @@ def calculate_schedule(
 
 
 
-def apply_schedule_to_heating(
+async def apply_schedule_to_heating(
     neohub_name: str, profile_name: str, schedule_data: Dict[str, Any]
 ) -> None:
     """Applies the heating schedule to the Heatmiser system by storing the profile."""
@@ -401,7 +304,7 @@ def apply_schedule_to_heating(
         logging.debug(
             f"apply_schedule_to_heating: neohub_name={neohub_name}, profile_name={profile_name}, schedule_data={schedule_data}"
         )
-    response = store_profile(neohub_name, profile_name, schedule_data)  # Changed: No await
+    response = await store_profile(neohub_name, profile_name, schedule_data)
     if response:
         logging.info(
             f"Successfully stored profile {profile_name} on Neohub {neohub_name}"
@@ -411,14 +314,14 @@ def apply_schedule_to_heating(
 
 
 
-def check_neohub_compatibility(neohub_name: str) -> bool:
+async def check_neohub_compatibility(neohub_name: str) -> bool:
     """
     Checks if the Neohub is compatible with the required schedule format (7-day, 6 events).
     Returns True if compatible, False otherwise.
     """
     if LOGGING_LEVEL == "DEBUG":
         logging.debug(f"check_neohub_compatibility: Checking compatibility for {neohub_name}")
-    profile_data = get_profile(neohub_name, "0")  # Changed: No await
+    profile_data = await get_profile(neohub_name, "0")
     if profile_data:
         if len(profile_data.keys()) != 7:
             logging.error(
@@ -442,7 +345,7 @@ def check_neohub_compatibility(neohub_name: str) -> bool:
 
 
 
-def update_heating_schedule() -> None:
+async def update_heating_schedule() -> None:
     """Updates the heating schedule based on upcoming bookings."""
     global config
     if config is None:
@@ -498,35 +401,35 @@ def update_heating_schedule() -> None:
             location_name = booking["location"]
             neohub_name = config["locations"][location_name]["neohub"]
             neohub_names.add(neohub_name)
-            if not check_neohub_compatibility(neohub_name):  # Changed: No await
+            if not await check_neohub_compatibility(neohub_name):
                 logging.error(
                     f"Neohub {neohub_name} is not compatible with the required schedule format.  Please adjust its settings."
                 )
                 continue
-            external_temperature = get_external_temperature()  # Changed: No await
+            external_temperature = get_external_temperature()
             schedule_data = calculate_schedule(booking, config, external_temperature)
             if schedule_data:
-                apply_schedule_to_heating(  # Changed: No await
+                await apply_schedule_to_heating(
                     neohub_name, "Current Week", schedule_data
                 )
         for booking in next_week_bookings:
             location_name = booking["location"]
             neohub_name = config["locations"][location_name]["neohub"]
             neohub_names.add(neohub_name)
-            if not check_neohub_compatibility(neohub_name):  # Changed: No await
+            if not await check_neohub_compatibility(neohub_name):
                 logging.error(
                     f"Neohub {neohub_name} is not compatible with the required schedule format.  Please adjust its settings."
                 )
                 continue
-            external_temperature = get_external_temperature()  # Changed: No await
+            external_temperature = get_external_temperature()
             schedule_data = calculate_schedule(booking, config, external_temperature)
             if schedule_data:
-                apply_schedule_to_heating(  # Changed: No await
+                await apply_schedule_to_heating(
                     neohub_name, "Next Week", schedule_data
                 )
         for neohub_name in neohub_names:
             command = {"RUN_PROFILE": "Current Week"}
-            response = send_command(neohub_name, command)  # Changed: No await
+            response = await send_command(neohub_name, command)
             if response:
                 logging.info(
                     f"Successfully set profile 'Current Week' as active on Neohub {neohub_name}."
@@ -569,18 +472,18 @@ def main() -> None:  # Changed: Removed async
         return
 
     for neohub_name, neohub_config in config["neohubs"].items():
-        if not connect_to_neohub(neohub_name, neohub_config):  # Changed: No await
+        if not connect_to_neohub(neohub_name, neohub_config):
             logging.error(f"Failed to connect to Neohub: {neohub_name}. Exiting.")
             exit()
     for neohub_name in config["neohubs"]:
-        zones = get_zones(neohub_name)  # Changed: No await
+        zones = asyncio.run(get_zones(neohub_name))
         if zones:
             logging.info(f"Zones on {neohub_name}: {zones}")
             if LOGGING_LEVEL == "DEBUG":
                 logging.debug(f"main: Zones on {neohub_name}: {zones}")
 
     scheduler = BackgroundScheduler()
-    scheduler.add_job(update_heating_schedule, "interval", minutes=60)
+    scheduler.add_job(lambda: asyncio.run(update_heating_schedule()), "interval", minutes=60)
     scheduler.start()
 
     try:
@@ -590,9 +493,9 @@ def main() -> None:  # Changed: Removed async
         logging.info("Shutting down scheduler...")
         scheduler.shutdown()
         logging.info("Closing Neohub connections...")
-        close_connections()  # Changed: No await
+        close_connections()
         logging.info("Exiting...")
 
 
 if __name__ == "__main__":
-    main()  # Changed: No asyncio.run()
+    main()
