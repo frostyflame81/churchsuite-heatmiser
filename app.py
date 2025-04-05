@@ -381,14 +381,14 @@ async def update_heating_schedule() -> None:
             b
             for b in booked_resources
             if current_week_start
-            <= datetime.datetime.fromisoformat(b["starts_at"])
+            <= datetime.datetime.fromisoformat(b["starts_at"].replace('Z', '+00:00')) # Corrected line
             <= current_week_end
         ]
         next_week_bookings = [
             b
             for b in booked_resources
             if next_week_start
-            <= datetime.datetime.fromisoformat(b["starts_at"])
+            <= datetime.datetime.fromisoformat(b["starts_at"].replace('Z', '+00:00')) # Corrected line
             <= next_week_end
         ]
         if LOGGING_LEVEL == "DEBUG":
@@ -397,8 +397,8 @@ async def update_heating_schedule() -> None:
             )
 
         neohub_names = set()
-        for booked_resources in current_week_bookings:
-            location_name = booked_resources["location"]
+        for booked_resource in current_week_bookings: # Changed loop variable name
+            location_name = booked_resource["location"]
             neohub_name = config["locations"][location_name]["neohub"]
             neohub_names.add(neohub_name)
             if not await check_neohub_compatibility(neohub_name):
@@ -407,13 +407,13 @@ async def update_heating_schedule() -> None:
                 )
                 continue
             external_temperature = get_external_temperature()
-            schedule_data = calculate_schedule(booking, config, external_temperature)
+            schedule_data = calculate_schedule(booked_resource, config, external_temperature) # Changed parameter name
             if schedule_data:
                 await apply_schedule_to_heating(
                     neohub_name, "Current Week", schedule_data
                 )
-        for booked_resources in next_week_bookings:
-            location_name = booked_resources["location"]
+        for booked_resource in next_week_bookings: # Changed loop variable name
+            location_name = booked_resource["location"]
             neohub_name = config["locations"][location_name]["neohub"]
             neohub_names.add(neohub_name)
             if not await check_neohub_compatibility(neohub_name):
@@ -422,7 +422,7 @@ async def update_heating_schedule() -> None:
                 )
                 continue
             external_temperature = get_external_temperature()
-            schedule_data = calculate_schedule(booked_resources, config, external_temperature)
+            schedule_data = calculate_schedule(booked_resource, config, external_temperature) # Changed parameter name
             if schedule_data:
                 await apply_schedule_to_heating(
                     neohub_name, "Next Week", schedule_data
@@ -436,7 +436,7 @@ async def update_heating_schedule() -> None:
                 )
                 if LOGGING_LEVEL == "DEBUG":
                     logging.debug(
-                        f"update_heating_schedule:  Sent RUN_PROFILE forCurrent Week to {neohub_name}"
+                        f"update_heating_schedule:  Sent RUN_PROFILE for Current Week to {neohub_name}"
                     )
             else:
                 logging.error(
@@ -444,6 +444,7 @@ async def update_heating_schedule() -> None:
                 )
     else:
         logging.info("No data received from ChurchSuite.")
+
 
 
 
