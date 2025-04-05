@@ -366,10 +366,10 @@ async def update_heating_schedule() -> None:
 
     data = get_bookings_and_locations()
     if data:
-        bookings = data.get("bookings", [])
-        locations = data.get("locations", [])
+        booked_resources = data.get("booked_resources", [])
+        locations = data.get("resources", [])
 
-        if not bookings:
+        if not booked_resources:
             logging.info("No bookings to process.")
             return
 
@@ -379,16 +379,16 @@ async def update_heating_schedule() -> None:
 
         current_week_bookings = [
             b
-            for b in bookings
+            for b in booked_resources
             if current_week_start
-            <= datetime.datetime.fromisoformat(b["start_time"])
+            <= datetime.datetime.fromisoformat(b["starts_at"])
             <= current_week_end
         ]
         next_week_bookings = [
             b
-            for b in bookings
+            for b in booked_resources
             if next_week_start
-            <= datetime.datetime.fromisoformat(b["start_time"])
+            <= datetime.datetime.fromisoformat(b["starts_at"])
             <= next_week_end
         ]
         if LOGGING_LEVEL == "DEBUG":
@@ -397,8 +397,8 @@ async def update_heating_schedule() -> None:
             )
 
         neohub_names = set()
-        for booking in current_week_bookings:
-            location_name = booking["location"]
+        for booked_resources in current_week_bookings:
+            location_name = booked_resources["location"]
             neohub_name = config["locations"][location_name]["neohub"]
             neohub_names.add(neohub_name)
             if not await check_neohub_compatibility(neohub_name):
@@ -412,8 +412,8 @@ async def update_heating_schedule() -> None:
                 await apply_schedule_to_heating(
                     neohub_name, "Current Week", schedule_data
                 )
-        for booking in next_week_bookings:
-            location_name = booking["location"]
+        for booked_resources in next_week_bookings:
+            location_name = booked_resources["location"]
             neohub_name = config["locations"][location_name]["neohub"]
             neohub_names.add(neohub_name)
             if not await check_neohub_compatibility(neohub_name):
@@ -422,7 +422,7 @@ async def update_heating_schedule() -> None:
                 )
                 continue
             external_temperature = get_external_temperature()
-            schedule_data = calculate_schedule(booking, config, external_temperature)
+            schedule_data = calculate_schedule(booked_resources, config, external_temperature)
             if schedule_data:
                 await apply_schedule_to_heating(
                     neohub_name, "Next Week", schedule_data
@@ -449,7 +449,7 @@ async def update_heating_schedule() -> None:
 
 
 
-def main() -> None:  # Changed: Removed async
+def main():
     """Main application function."""
     # Use the LOGGING_LEVEL environment variable
     logging_level = getattr(logging, LOGGING_LEVEL.upper(), logging.INFO)
@@ -482,7 +482,11 @@ def main() -> None:  # Changed: Removed async
             if LOGGING_LEVEL == "DEBUG":
                 logging.debug(f"main: Zones on {neohub_name}: {zones}")
 
+    # Create a scheduler.
     scheduler = BackgroundScheduler()
+
+    # Run update_heating_schedule() immediately, and then schedule it to run every 60 minutes.
+    asyncio.run(update_heating_schedule())  # Run immediately
     scheduler.add_job(lambda: asyncio.run(update_heating_schedule()), "interval", minutes=60)
     scheduler.start()
 
@@ -495,6 +499,7 @@ def main() -> None:  # Changed: Removed async
         logging.info("Closing Neohub connections...")
         close_connections()
         logging.info("Exiting...")
+
 
 
 if __name__ == "__main__":
