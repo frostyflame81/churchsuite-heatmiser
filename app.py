@@ -3,14 +3,14 @@ import datetime
 import json
 import logging
 import time
-import requests
-from apscheduler.schedulers.background import BackgroundScheduler
+import requests # type: ignore
+from apscheduler.schedulers.background import BackgroundScheduler # type: ignore
 import argparse
 import os
-import pytz
-import dateutil.parser
+import pytz # type: ignore
+import dateutil.parser # type: ignore
 from typing import Dict, Any, List, Optional
-from neohubapi.neohub import NeoHub, NeoHubUsageError, NeoHubConnectionError
+from neohubapi.neohub import NeoHub, NeoHubUsageError, NeoHubConnectionError # type: ignore
 
 # Configuration
 OPENWEATHERMAP_API_KEY = os.environ.get("OPENWEATHERMAP_API_KEY")
@@ -420,7 +420,13 @@ async def update_heating_schedule() -> None:
 
         neohub_names = set()
         for booked_resource in current_week_bookings:
-            location_name = booked_resource["location"]
+            # Check if 'location' key exists before accessing it.
+            if "location" in booked_resource:
+                location_name = booked_resource["location"]
+            else:
+                logging.warning(f"Booking {booked_resource} is missing the 'location' key. Skipping.")
+                continue
+
             neohub_name = config["locations"][location_name]["neohub"]
             neohub_names.add(neohub_name)
             if not await check_neohub_compatibility(neohub_name):
@@ -435,7 +441,12 @@ async def update_heating_schedule() -> None:
                     neohub_name, "Current Week", schedule_data
                 )
         for booked_resource in next_week_bookings:
-            location_name = booked_resource["location"]
+            # Check if 'location' key exists before accessing it.
+            if "location" in booked_resource:
+                location_name = booked_resource["location"]
+            else:
+                logging.warning(f"Booking {booked_resource} is missing the 'location' key. Skipping.")
+                continue
             neohub_name = config["locations"][location_name]["neohub"]
             neohub_names.add(neohub_name)
             if not await check_neohub_compatibility(neohub_name):
@@ -527,3 +538,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
