@@ -344,10 +344,23 @@ async def check_neohub_compatibility(config: Dict[str, Any], neohub_name: str) -
         if not connect_to_neohub(neohub_name, neohub_config):
             logging.error(f"Failed to connect to Neohub {neohub_name}.")
             return False
-
-    # Proceed with compatibility check
+    # Get a valid device name from the Neohub
     try:
-        command = {"GET_PROFILE_0": neohub_name}  # Create the command
+        live_data = await get_live_data(neohub_name)
+        if live_data and hasattr(live_data, 'devices') and len(live_data.devices) > 0:
+            device = live_data.devices[0]  # Get the first device
+            device_name = device.device  # Get the device name
+        else:
+            logging.error(f"No devices found on Neohub {neohub_name}.")
+            return False
+    except Exception as e:
+        logging.error(f"Error getting live data from Neohub {neohub_name}: {e}")
+        return False
+    # Proceed with compatibility check
+    if LOGGING_LEVEL == "DEBUG":
+        logging.debug(f"check_neohub_compatibility: device_name = {device_name}")
+    try:
+        command = {"GET_PROFILE_0": device_name}  # Create the command
         profile_data = await send_command(neohub_name, command)  # Use send_command
     except Exception as e:
         logging.error(f"Error retrieving profile data from Neohub {neohub_name}: {e}")
