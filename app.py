@@ -332,6 +332,8 @@ async def check_neohub_compatibility(config: Dict[str, Any], neohub_name: str) -
         )
 
     # Ensure the Neohub is connected
+    if LOGGING_LEVEL == "DEBUG":
+        logging.debug(f"check_neohub_compatibility: config['neohubs'] = {config['neohubs']}")
     neohub_config = config["neohubs"].get(neohub_name)
     if not neohub_config:
         logging.error(f"Configuration for Neohub {neohub_name} not found.")
@@ -344,9 +346,12 @@ async def check_neohub_compatibility(config: Dict[str, Any], neohub_name: str) -
             return False
 
     # Proceed with compatibility check
-    command = {"GET_PROFILE_0": neohub_name}  # Create the command
-    profile_data = await send_command(neohub_name, command)  # Use send_command
-
+    try:
+        command = {"GET_PROFILE_0": neohub_name}  # Create the command
+        profile_data = await send_command(neohub_name, command)  # Use send_command
+    except Exception as e:
+        logging.error(f"Error retrieving profile data from Neohub {neohub_name}: {e}")
+        return False
     if profile_data is None:
         logging.error(
             f"Failed to retrieve profile data from Neohub {neohub_name} to check compatibility."
@@ -481,6 +486,9 @@ async def update_heating_schedule() -> None:
                     if LOGGING_LEVEL == "DEBUG":
                         logging.debug(f"update_heating_schedule: neohub_name = {neohub_name}")
                     neohub_names.add(neohub_name)
+                    # Checking if the hubs dictionary is populated
+                    if LOGGING_LEVEL == "DEBUG":
+                        logging.debug(f"update_heating_schedule: hubs = {hubs}")
                     if not await check_neohub_compatibility(config, neohub_name):
                         logging.error(
                             f"Neohub {neohub_name} is not compatible with the required schedule format.  Please adjust its settings."
