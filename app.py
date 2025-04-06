@@ -317,31 +317,37 @@ async def apply_schedule_to_heating(
 async def check_neohub_compatibility(neohub_name: str) -> bool:
     """
     Checks if the Neohub is compatible with the required schedule format (7-day, 6 events).
-    Returns True if compatible, False otherwise.
+    Returns True if compatible, False otherwise.  Uses neohubapi and send_command for logging
     """
     if LOGGING_LEVEL == "DEBUG":
-        logging.debug(f"check_neohub_compatibility: Checking compatibility for {neohub_name}")
-    profile_data = await get_profile(neohub_name, "0")
-    if profile_data:
-        if len(profile_data.keys()) != 7:
-            logging.error(
-                f"Neohub{neohub_name} is not configured for a 7-day schedule."
-            )
-            return False
-        for day in profile_data:
-            if len(profile_data[day]) != 6:
-                logging.error(
-                    f"Neohub {neohub_name} does not have 6 events per day. Found {len(profile_data[day])} for {day}."
-                )
-                return False
-        if LOGGING_LEVEL == "DEBUG":
-            logging.debug(f"check_neohub_compatibility: {neohub_name} is compatible")
-        return True
-    else:
+        logging.debug(
+            f"check_neohub_compatibility: Checking compatibility for {neohub_name}"
+        )
+
+    command = {"GET_PROFILE_0": neohub_name} # Create the command
+
+    profile_data = await send_command(neohub_name, command) # Use send_command
+
+    if profile_data is None:
         logging.error(
             f"Failed to retrieve profile data from Neohub {neohub_name} to check compatibility."
         )
         return False
+
+    if len(profile_data) != 7:
+        logging.error(
+            f"Neohub {neohub_name} is not configured for a 7-day schedule. Found {len(profile_data)} days."
+        )
+        return False
+    for day, events in profile_data.items():  # Iterate through the days and events.
+        if len(events) != 6:
+            logging.error(
+                f"Neohub {neohub_name} does not have 6 events per day. Found {len(events)} for {day}."
+            )
+            return False
+    if LOGGING_LEVEL == "DEBUG":
+        logging.debug(f"check_neohub_compatibility: {neohub_name} is compatible")
+    return True
 
 
 
