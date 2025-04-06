@@ -426,19 +426,22 @@ async def update_heating_schedule() -> None:
             resource_id = booked_resource["resource_id"]
             resource_name = resource_map.get(resource_id)  # Get name from the map
             if resource_name:
-                neohub_name = config["locations"][resource_name]["neohub"]
-                neohub_names.add(neohub_name)
-                if not await check_neohub_compatibility(neohub_name):
-                    logging.error(
-                        f"Neohub {neohub_name} is not compatible with the required schedule format.  Please adjust its settings."
-                    )
-                    continue
-                external_temperature = get_external_temperature()
-                schedule_data = calculate_schedule(booked_resource, config, external_temperature, resource_name)
-                if schedule_data:
-                    await apply_schedule_to_heating(
-                        neohub_name, "Current Week", schedule_data
-                    )
+                if resource_name in config["locations"]:
+                    neohub_name = config["locations"][resource_name]["neohub"]
+                    neohub_names.add(neohub_name)
+                    if not await check_neohub_compatibility(neohub_name):
+                        logging.error(
+                            f"Neohub {neohub_name} is not compatible with the required schedule format.  Please adjust its settings."
+                        )
+                        continue
+                    external_temperature = get_external_temperature()
+                    schedule_data = calculate_schedule(booked_resource, config, external_temperature, resource_name)
+                    if schedule_data:
+                        await apply_schedule_to_heating(
+                            neohub_name, "Current Week", schedule_data
+                        )
+                else:
+                    logging.error(f"Location '{resource_name}' not found in config['locations']. Skipping.")
             else:
                 logging.warning(
                     f"Resource ID {resource_id} not found in resources for booking {booked_resource.get('id', 'unknown')}. Skipping."
@@ -449,19 +452,22 @@ async def update_heating_schedule() -> None:
             resource_id = booked_resource["resource_id"]
             resource_name = resource_map.get(resource_id)  # Get name from the map
             if resource_name:
-                neohub_name = config["locations"][resource_name]["neohub"]
-                neohub_names.add(neohub_name)
-                if not await check_neohub_compatibility(neohub_name):
-                    logging.error(
-                        f"Neohub {neohub_name} is not compatible with the required schedule format.  Please adjust its settings."
-                    )
-                    continue
-                external_temperature = get_external_temperature()
-                schedule_data = calculate_schedule(booked_resource, config, external_temperature, resource_name)
-                if schedule_data:
-                    await apply_schedule_to_heating(
-                        neohub_name, "Next Week", schedule_data
-                    )
+                if resource_name in config["locations"]:
+                    neohub_name = config["locations"][resource_name]["neohub"]
+                    neohub_names.add(neohub_name)
+                    if not await check_neohub_compatibility(neohub_name):
+                        logging.error(
+                            f"Neohub {neohub_name} is not compatible with the required schedule format.  Please adjust its settings."
+                        )
+                        continue
+                    external_temperature = get_external_temperature()
+                    schedule_data = calculate_schedule(booked_resource, config, external_temperature, resource_name)
+                    if schedule_data:
+                        await apply_schedule_to_heating(
+                            neohub_name, "Next Week", schedule_data
+                        )
+                else:
+                     logging.error(f"Location '{resource_name}' not found in config['locations']. Skipping.")
             else:
                  logging.warning(
                     f"Resource ID {resource_id} not found in resources for booking {booked_resource.get('id', 'unknown')}. Skipping."
@@ -483,6 +489,7 @@ async def update_heating_schedule() -> None:
                 )
     else:
         logging.info("No data received from ChurchSuite.")
+
 
 
 
