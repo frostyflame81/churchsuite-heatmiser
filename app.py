@@ -317,16 +317,29 @@ async def apply_schedule_to_heating(
 async def check_neohub_compatibility(neohub_name: str) -> bool:
     """
     Checks if the Neohub is compatible with the required schedule format (7-day, 6 events).
-    Returns True if compatible, False otherwise.  Uses neohubapi and send_command for logging
+    Returns True if compatible, False otherwise. Uses neohubapi and send_command for logging.
     """
+    global config
     if LOGGING_LEVEL == "DEBUG":
         logging.debug(
             f"check_neohub_compatibility: Checking compatibility for {neohub_name}"
         )
 
-    command = {"GET_PROFILE_0": neohub_name} # Create the command
+    # Ensure the Neohub is connected
+    neohub_config = config["neohubs"].get(neohub_name)
+    if not neohub_config:
+        logging.error(f"Configuration for Neohub {neohub_name} not found.")
+        return False
 
-    profile_data = await send_command(neohub_name, command) # Use send_command
+    if neohub_name not in hubs:
+        logging.info(f"Connecting to Neohub {neohub_name}...")
+        if not connect_to_neohub(neohub_name, neohub_config):
+            logging.error(f"Failed to connect to Neohub {neohub_name}.")
+            return False
+
+    # Proceed with compatibility check
+    command = {"GET_PROFILE_0": neohub_name}  # Create the command
+    profile_data = await send_command(neohub_name, command)  # Use send_command
 
     if profile_data is None:
         logging.error(
@@ -339,12 +352,14 @@ async def check_neohub_compatibility(neohub_name: str) -> bool:
             f"Neohub {neohub_name} is not configured for a 7-day schedule. Found {len(profile_data)} days."
         )
         return False
+
     for day, events in profile_data.items():  # Iterate through the days and events.
         if len(events) != 6:
             logging.error(
                 f"Neohub {neohub_name} does not have 6 events per day. Found {len(events)} for {day}."
             )
             return False
+
     if LOGGING_LEVEL == "DEBUG":
         logging.debug(f"check_neohub_compatibility: {neohub_name} is compatible")
     return True
