@@ -509,7 +509,7 @@ async def update_heating_schedule() -> None:
                 if resource_name in config["locations"]:
                     neohub_name = config["locations"][resource_name]["neohub"]
                     neohub_names.add(neohub_name)
-                    if not await check_neohub_compatibility(neohub_name):
+                    if not await check_neohub_compatibility(config, neohub_name):
                         logging.error(
                             f"Neohub {neohub_name} is not compatible with the required schedule format.  Please adjust its settings."
                         )
