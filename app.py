@@ -94,7 +94,14 @@ def connect_to_neohub(neohub_name: str, neohub_config: Dict[str, Any]) -> bool:
         logging.error(f"An unexpected error occurred: {e}")
         return False
 
-
+def validate_config(config: Dict[str, Any]) -> bool:
+    if "neohubs" not in config or not config["neohubs"]:
+        logging.error("No Neohubs found in configuration.")
+        return False
+    if "locations" not in config or not config["locations"]:
+        logging.error("No locations found in configuration.")
+        return False
+    return True
 
 async def send_command(neohub_name: str, command: Dict[str, Any]) -> Optional[Any]:
     """Sends a command to the Neohub using neohubapi."""
@@ -314,12 +321,11 @@ async def apply_schedule_to_heating(
 
 
 
-async def check_neohub_compatibility(neohub_name: str) -> bool:
+async def check_neohub_compatibility(config: Dict[str, Any], neohub_name: str) -> bool:
     """
     Checks if the Neohub is compatible with the required schedule format (7-day, 6 events).
     Returns True if compatible, False otherwise. Uses neohubapi and send_command for logging.
     """
-    global config
     if LOGGING_LEVEL == "DEBUG":
         logging.debug(
             f"check_neohub_compatibility: Checking compatibility for {neohub_name}"
@@ -372,7 +378,14 @@ async def update_heating_schedule() -> None:
     if config is None:
         logging.error("Configuration not loaded.  Exiting.")
         return
-
+    # Validate the configuration
+    if not validate_config(config):
+        logging.error("Invalid configuration. Exiting.")
+        return
+    # Debug log to confirm config structure
+    if LOGGING_LEVEL == "DEBUG":
+        logging.debug(f"update_heating_schedule: config['locations'] = {config.get('locations')}")
+        logging.debug(f"update_heating_schedule: config['neohubs'] = {config.get('neohubs')}")
     # Use an environment variable specifically for the timezone.
     #  Example: "Europe/London" or "America/New_York"
     location_timezone_name = os.environ.get("CHURCHSUITE_TIMEZONE", "Europe/London")
@@ -399,6 +412,11 @@ async def update_heating_schedule() -> None:
     if data:
         booked_resources = data.get("booked_resources", [])
         resources = data.get("resources", [])  # Get the resources list
+
+        # Debug log to confirm fetched data
+        if LOGGING_LEVEL == "DEBUG":
+            logging.debug(f"update_heating_schedule: booked_resources = {booked_resources}")
+            logging.debug(f"update_heating_schedule: resources = {resources}")
         if not booked_resources:
             logging.info("No bookings to process.")
             return
@@ -409,10 +427,19 @@ async def update_heating_schedule() -> None:
 
         # Create a mapping of resource_id to resource name.
         resource_map = {r["id"]: r["name"] for r in resources}
+        if LOGGING_LEVEL == "DEBUG":
+            logging.debug(f"update_heating_schedule: resource_map = {resource_map}")
 
         current_week_bookings = []
         next_week_bookings = []
-
+        # After categorizing bookings
+        if LOGGING_LEVEL == "DEBUG":
+            logging.debug(
+                f"update_heating_schedule: current_week_bookings = {current_week_bookings}"
+            )
+            logging.debug(
+                f"update_heating_schedule: next_week_bookings = {next_week_bookings}"
+            )
         for booking in booked_resources:
             start_time_str = booking.get("starts_at")
             if start_time_str:
@@ -447,16 +474,22 @@ async def update_heating_schedule() -> None:
             resource_id = booked_resource["resource_id"]
             resource_name = resource_map.get(resource_id)  # Get name from the map
             if resource_name:
+                if LOGGING_LEVEL == "DEBUG":
+                    logging.debug(f"update_heating_schedule: Processing booking for resource_name = {resource_name}")
                 if resource_name in config["locations"]:
                     neohub_name = config["locations"][resource_name]["neohub"]
+                    if LOGGING_LEVEL == "DEBUG":
+                        logging.debug(f"update_heating_schedule: neohub_name = {neohub_name}")
                     neohub_names.add(neohub_name)
-                    if not await check_neohub_compatibility(neohub_name):
+                    if not await check_neohub_compatibility(config, neohub_name):
                         logging.error(
                             f"Neohub {neohub_name} is not compatible with the required schedule format.  Please adjust its settings."
                         )
                         continue
                     external_temperature = get_external_temperature()
                     schedule_data = calculate_schedule(booked_resource, config, external_temperature, resource_name)
+                    if LOGGING_LEVEL == "DEBUG":
+                        logging.debug(f"update_heating_schedule: schedule_data = {schedule_data}")
                     if schedule_data:
                         await apply_schedule_to_heating(
                             neohub_name, "Current Week", schedule_data
@@ -536,6 +569,9 @@ def main():
     if config is None:
         logging.error("Failed to load configuration. Exiting.")
         return
+    # Debug log to confirm config structure
+    if LOGGING_LEVEL == "DEBUG":
+        logging.debug(f"Loaded config: {json.dumps(config, indent=2)}")
 
     for neohub_name, neohub_config in config["neohubs"].items():
         if not connect_to_neohub(neohub_name, neohub_config):
@@ -547,7 +583,9 @@ def main():
             logging.info(f"Zones on {neohub_name}: {zones}")
             if LOGGING_LEVEL == "DEBUG":
                 logging.debug(f"main: Zones on {neohub_name}: {zones}")
-
+    if not validate_config(config):
+        logging.error("Invalid configuration. Exiting.")
+        exit()
     # Create a scheduler.
     scheduler = BackgroundScheduler()
 
