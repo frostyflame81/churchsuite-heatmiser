@@ -492,7 +492,7 @@ async def update_heating_schedule() -> None:
                         )
                         continue
                     external_temperature = get_external_temperature()
-                    schedule_data = calculate_schedule(booked_resource, config, external_temperature)
+                    schedule_data = calculate_schedule(booked_resource, config, external_temperature, resource_map)
                     if LOGGING_LEVEL == "DEBUG":
                         logging.debug(f"update_heating_schedule: schedule_data = {schedule_data}")
                     if schedule_data:
@@ -511,7 +511,7 @@ async def update_heating_schedule() -> None:
                         )
                         continue
                     external_temperature = get_external_temperature()
-                    schedule_data = calculate_schedule(booked_resource, config, external_temperature)
+                    schedule_data = calculate_schedule(booked_resource, config, external_temperature, resource_map)
                     if schedule_data:
                         await apply_schedule_to_heating(
                             neohub_name, "Next Week", schedule_data
