@@ -245,8 +245,15 @@ def calculate_schedule(
     heat_loss_factor = location_config["heat_loss_factor"]
     min_external_temp = location_config["min_external_temp"]
 
-    start_time = datetime.datetime.fromisoformat(booking["start_time"])
-    end_time = datetime.datetime.fromisoformat(booking["end_time"])
+    start_time_str = booking.get("starts_at")
+    end_time_str = booking.get("ends_at")
+
+    if not start_time_str or not end_time_str:
+        logging.error(f"Booking is missing start or end time: {booking}")
+        return None
+
+    start_time = datetime.datetime.fromisoformat(start_time_str)
+    end_time = datetime.datetime.fromisoformat(end_time_str)
     preheat_time = datetime.timedelta(minutes=PREHEAT_TIME_MINUTES)
     if (
         external_temperature is not None
