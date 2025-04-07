@@ -399,8 +399,8 @@ async def test_store_static_profile(neohub_name: str) -> None:
 
     # Call the store_profile function with the static data
     command = {"STORE_PROFILE": {"name": "Static Profile", "info": static_profile_data["info"]}}
-    # command_json = json.dumps(command)  # Convert the command to a JSON string
-    response = await send_command(neohub_name, command)  # Pass the JSON string to send_command
+    command_json = json.dumps(command).replace("'", "\\'")  # Convert the command to a JSON string
+    response = await send_command(neohub_name, command_json)  # Pass the JSON string to send_command
 
     if response:
         logging.info(f"Successfully stored static profile on Neohub {neohub_name}")
