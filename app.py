@@ -471,68 +471,48 @@ async def update_heating_schedule() -> None:
                 f"update_heating_schedule: current_week_bookings={current_week_bookings}, next_week_bookings={next_week_bookings}"
             )
 
-        neohub_names = set()
-        for booked_resource in current_week_bookings:
-            # Use resource_id to get the location name.
-            resource_id = booked_resource["resource_id"]
-            resource_name = resource_map.get(resource_id)  # Get name from the map
-            if resource_name:
-                if LOGGING_LEVEL == "DEBUG":
-                    logging.debug(f"update_heating_schedule: Processing booking for resource_name = {resource_name}")
-                if resource_name in config["locations"]:
-                    neohub_name = config["locations"][resource_name]["neohub"]
+        # Iterate through locations defined in config.json
+        for location_name, location_config in config["locations"].items():
+            neohub_name = location_config["neohub"]
+            resource_ids = [resource_id for resource_id, name in resource_map.items() if name == location_name]
+
+            # Process current week bookings
+            for booked_resource in current_week_bookings:
+                if booked_resource["resource_id"] in resource_ids:
                     if LOGGING_LEVEL == "DEBUG":
-                        logging.debug(f"update_heating_schedule: neohub_name = {neohub_name}")
-                    neohub_names.add(neohub_name)
-                    # Checking if the hubs dictionary is populated
-                    if LOGGING_LEVEL == "DEBUG":
-                        logging.debug(f"update_heating_schedule: hubs = {hubs}")
+                        logging.debug(f"update_heating_schedule: Processing current week booking for location_name = {location_name}")
                     if not await check_neohub_compatibility(config, neohub_name):
                         logging.error(
-                            f"Neohub {neohub_name} is not compatible with the required schedule format.  Please adjust its settings."
+                            f"Neohub {neohub_name} is not compatible with the required schedule format.  Skipping."
                         )
                         continue
                     external_temperature = get_external_temperature()
-                    schedule_data = calculate_schedule(booked_resource, config, external_temperature, resource_name)
+                    schedule_data = calculate_schedule(booked_resource, config, external_temperature)
                     if LOGGING_LEVEL == "DEBUG":
                         logging.debug(f"update_heating_schedule: schedule_data = {schedule_data}")
                     if schedule_data:
                         await apply_schedule_to_heating(
                             neohub_name, "Current Week", schedule_data
                         )
-                else:
-                    logging.error(f"Location '{resource_name}' not found in config['locations']. Skipping.")
-            else:
-                logging.warning(
-                    f"Resource ID {resource_id} not found in resources for booking {booked_resource.get('id', 'unknown')}. Skipping."
-                )
 
-        for booked_resource in next_week_bookings:
-            # Use resource_id to get the location name.
-            resource_id = booked_resource["resource_id"]
-            resource_name = resource_map.get(resource_id)  # Get name from the map
-            if resource_name:
-                if resource_name in config["locations"]:
-                    neohub_name = config["locations"][resource_name]["neohub"]
-                    neohub_names.add(neohub_name)
+            # Process next week bookings
+            for booked_resource in next_week_bookings:
+                if booked_resource["resource_id"] in resource_ids:
+                    if LOGGING_LEVEL == "DEBUG":
+                        logging.debug(f"update_heating_schedule: Processing next week booking for location_name = {location_name}")
                     if not await check_neohub_compatibility(config, neohub_name):
                         logging.error(
-                            f"Neohub {neohub_name} is not compatible with the required schedule format.  Please adjust its settings."
+                            f"Neohub {neohub_name} is not compatible with the required schedule format.  Skipping."
                         )
                         continue
                     external_temperature = get_external_temperature()
-                    schedule_data = calculate_schedule(booked_resource, config, external_temperature, resource_name)
+                    schedule_data = calculate_schedule(booked_resource, config, external_temperature)
                     if schedule_data:
                         await apply_schedule_to_heating(
                             neohub_name, "Next Week", schedule_data
                         )
-                else:
-                     logging.error(f"Location '{resource_name}' not found in config['locations']. Skipping.")
-            else:
-                 logging.warning(
-                    f"Resource ID {resource_id} not found in resources for booking {booked_resource.get('id', 'unknown')}. Skipping."
-                )
-        for neohub_name in neohub_names:
+
+        for neohub_name in set(config["neohubs"].keys()):
             command = {"RUN_PROFILE": "Current Week"}
             response = await send_command(neohub_name, command)
             if response:
