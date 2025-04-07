@@ -324,6 +324,88 @@ async def log_existing_profile(neohub_name: str, profile_name: str) -> None:
             f"Error retrieving existing profile '{profile_name}' from Neohub {neohub_name}: {e}"
         )
 
+# for testing a static profile        
+async def test_store_static_profile(neohub_name: str) -> None:
+    """Tests storing a static profile with a hardcoded data structure."""
+    logging.info(f"Testing storing static profile on Neohub {neohub_name}")
+
+    # Static profile data in the format of the existing profile
+    static_profile_data = {
+        "PROFILE_ID": 9,
+        "P_TYPE": 0,
+        "info": {
+            "friday": {
+                "level1": ["09:30", 18, 5, True],
+                "level2": ["12:30", 20, 5, True],
+                "level3": ["14:00", 18, 5, True],
+                "level4": ["17:30", 21, 5, True],
+                "sleep": ["22:00", 18, 5, True],
+                "wake": ["07:30", 21, 5, True],
+            },
+            "monday": {
+                "level1": ["09:30", 18, 5, True],
+                "level2": ["12:30", 20, 5, True],
+                "level3": ["14:00", 18, 5, True],
+                "level4": ["17:30", 21, 5, True],
+                "sleep": ["22:00", 18, 5, True],
+                "wake": ["07:30", 21, 5, True],
+            },
+            "saturday": {
+                "level1": ["09:30", 18, 5, True],
+                "level2": ["12:30", 20, 5, True],
+                "level3": ["14:00", 18, 5, True],
+                "level4": ["17:30", 21, 5, True],
+                "sleep": ["22:00", 18, 5, True],
+                "wake": ["07:30", 21, 5, True],
+            },
+            "sunday": {
+                "level1": ["09:30", 18, 5, True],
+                "level2": ["12:30", 20, 5, True],
+                "level3": ["14:00", 18, 5, True],
+                "level4": ["17:30", 21, 5, True],
+                "sleep": ["22:00", 18, 5, True],
+                "wake": ["07:30", 21, 5, True],
+            },
+            "thursday": {
+                "level1": ["09:30", 18, 5, True],
+                "level2": ["12:30", 20, 5, True],
+                "level3": ["14:00", 18, 5, True],
+                "level4": ["17:30", 21, 5, True],
+                "sleep": ["22:00", 18, 5, True],
+                "wake": ["07:30", 21, 5, True],
+            },
+            "tuesday": {
+                "level1": ["09:30", 18, 5, True],
+                "level2": ["12:30", 20, 5, True],
+                "level3": ["14:00", 18, 5, True],
+                "level4": ["17:30", 21, 5, True],
+                "sleep": ["22:00", 18, 5, True],
+                "wake": ["07:30", 21, 5, True],
+            },
+            "wednesday": {
+                "level1": ["09:30", 18, 5, True],
+                "level2": ["12:30", 20, 5, True],
+                "level3": ["14:00", 18, 5, True],
+                "level4": ["17:30", 21, 5, True],
+                "sleep": ["22:00", 18, 5, True],
+                "wake": ["07:30", 21, 5, True],
+            },
+        },
+        "name": "Static Profile",
+    }
+
+    # Log the static profile data for debugging
+    logging.debug(f"Static profile data: {static_profile_data}")
+
+    # Call the store_profile function with the static data
+    command = {"STORE_PROFILE": {"name": "Static Profile", "info": static_profile_data["info"]}}
+    command_json = json.dumps(command)  # Convert the command to a JSON string
+    response = await send_command(neohub_name, command_json)  # Pass the JSON string to send_command
+
+    if response:
+        logging.info(f"Successfully stored static profile on Neohub {neohub_name}")
+    else:
+        logging.error(f"Failed to store static profile on Neohub {neohub_name}")
 
 async def apply_schedule_to_heating(
     neohub_name: str, profile_name: str, schedule_data: Dict[str, Any]
@@ -337,14 +419,18 @@ async def apply_schedule_to_heating(
     # Log the existing profile for comparison
     await log_existing_profile(neohub_name, profile_name)
 
-    response = await store_profile(neohub_name, profile_name, schedule_data)
-    if response:
-        logging.info(
-            f"Successfully stored profile {profile_name} on Neohub {neohub_name}"
-        )
-    else:
-        logging.error(f"Failed to store profile {profile_name} on Neohub {neohub_name}")
+    # Comment out the original store_profile call
+    # response = await store_profile(neohub_name, profile_name, schedule_data)
 
+    # Call the test function instead
+    await test_store_static_profile(neohub_name)
+
+    # if response:
+    #     logging.info(
+    #         f"Successfully stored profile {profile_name} on Neohub {neohub_name}"
+    #     )
+    # else:
+    #     logging.error(f"Failed to store profile {profile_name} on Neohub {neohub_name}")
 
 
 async def check_neohub_compatibility(config: Dict[str, Any], neohub_name: str) -> bool:
