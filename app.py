@@ -251,9 +251,9 @@ def calculate_schedule(
     if not start_time_str or not end_time_str:
         logging.error(f"Booking is missing start or end time: {booking}")
         return None
-
-    start_time = datetime.datetime.fromisoformat(start_time_str)
-    end_time = datetime.datetime.fromisoformat(end_time_str)
+    # Use dateutil.parser.parse to handle the timestamp format
+    start_time = dateutil.parser.parse(start_time_str).replace(tzinfo=None)
+    end_time = dateutil.parser.parse(end_time_str).replace(tzinfo=None)
     preheat_time = datetime.timedelta(minutes=PREHEAT_TIME_MINUTES)
     if (
         external_temperature is not None
