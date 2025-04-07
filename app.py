@@ -332,46 +332,51 @@ async def send_profile_command(
 ) -> Optional[Any]:
     """Sends a profile command to the Neohub using websockets directly."""
     logger = logging.getLogger("neohub")
+    websocket = None  # Initialize websocket outside the try block
     try:
         uri = f"wss://{host}:{port}"
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
         context.check_hostname = False
         context.verify_mode = ssl.CERT_NONE
 
-        async with websockets.connect(uri, ssl=context) as websocket:
-            logger.debug("WebSocket connected successfully")
+        websocket = await websockets.connect(uri, ssl=context)
+        logger.debug("WebSocket connected successfully")
 
-            # Construct the message without double JSON encoding
-            message = {
-                "message_type": "hm_get_command_queue",
-                "message": json.dumps(
-                    {
-                        "token": token,
-                        "COMMANDS": [{"COMMAND": command, "COMMANDID": 1}],
-                    }
-                ),
-            }
-            encoded_message = json.dumps(message)
+        # Construct the message without double JSON encoding
+        message = {
+            "message_type": "hm_get_command_queue",
+            "message": json.dumps(
+                {
+                    "token": token,
+                    "COMMANDS": [{"COMMAND": command, "COMMANDID": 1}],
+                }
+            ),
+        }
+        encoded_message = json.dumps(message)
 
-            logger.debug("Sending: %s", encoded_message)
-            await websocket.send(encoded_message)
+        logger.debug("Sending: %s", encoded_message)
+        await websocket.send(encoded_message)
 
-            logger.debug("Sending: %s", encoded_message)
-            await websocket.send(encoded_message)
+        response = await websocket.recv()
+        logger.debug("Received: %s", response)
 
-            response = await websocket.recv()
-            logger.debug("Received: %s", response)
-
-            result = json.loads(response)
-            if result.get("message_type") == "hm_set_command_response":
-                return result["response"]
-            else:
-                logger.error(f"Unexpected message type: {result.get('message_type')}")
-                return None
+        result = json.loads(response)
+        if result.get("message_type") == "hm_set_command_response":
+            return result["response"]
+        else:
+            logger.error(f"Unexpected message type: {result.get('message_type')}")
+            return None
 
     except Exception as e:
         logger.error(f"Error sending command to Neohub {neohub_name}: {e}")
         return None
+    finally:
+        if websocket:
+            try:
+                await websocket.close()
+                logger.info("WebSocket disconnected")
+            except Exception as e:
+                logger.error(f"Error during disconnect: {e}")
     
 # for testing a static profile        
 async def test_store_static_profile(neohub_name: str) -> None:
@@ -397,7 +402,7 @@ async def test_store_static_profile(neohub_name: str) -> None:
                 "level3": ["14:00", 18, 5, True],
                 "level4": ["17:30", 21, 5, True],
                 "sleep": ["22:00", 18, 5, True],
-                "wake": ["07:30", 21, 5, True],
+                "wake": ["06:30", 21, 5, True],
             },
             "saturday": {
                 "level1": ["09:30", 18, 5, True],
