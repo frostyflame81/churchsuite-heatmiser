@@ -357,14 +357,21 @@ async def send_profile_command(
         logger.debug("Sending: %s", encoded_message)
         await websocket.send(encoded_message)
 
-        response = await websocket.recv()
-        logger.debug("Received: %s", response)
+        try:
+            response = await asyncio.wait_for(websocket.recv(), timeout=10)
+            logger.debug("Received: %s", response)
 
-        result = json.loads(response)
-        if result.get("message_type") == "hm_set_command_response":
-            return result["response"]
-        else:
-            logger.error(f"Unexpected message type: {result.get('message_type')}")
+            result = json.loads(response)
+            if result.get("message_type") == "hm_set_command_response":
+                return result["response"]
+            else:
+                logger.error(f"Unexpected message type: {result.get('message_type')}")
+                return None
+        except asyncio.TimeoutError:
+            logger.error("Timeout waiting for response from Neohub")
+            return None
+        except websockets.exceptions.ConnectionClosedError as e:
+            logger.error(f"Websocket closed by other end: {e}")
             return None
 
     except Exception as e:
