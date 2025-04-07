@@ -160,7 +160,8 @@ async def store_profile(neohub_name: str, profile_name: str, profile_data: Dict[
     """Stores a heating profile on the Neohub using neohubapi."""
     logging.info(f"Storing profile {profile_name} on Neohub {neohub_name}")
     command = {"STORE_PROFILE": {"name": profile_name, "info": profile_data}}
-    response = await send_command(neohub_name, command)
+    command_json = json.dumps(command)  # Convert the command to a JSON string
+    response = await send_command(neohub_name, command_json)  # Pass the JSON string to send_command
     return response
 
 
