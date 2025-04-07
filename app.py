@@ -116,6 +116,9 @@ async def send_command(neohub_name: str, command: Dict[str, Any]) -> Optional[An
     except (NeoHubUsageError, NeoHubConnectionError) as e:
         logging.error(f"Error sending command to Neohub {neohub_name}: {e}")
         return None
+    except json.decoder.JSONDecodeError as e:
+        logging.error(f"Error decoding JSON response from Neohub {neohub_name}: {e}")
+        return None
     except Exception as e:
         logging.error(f"An unexpected error occurred: {e}")
         return None
