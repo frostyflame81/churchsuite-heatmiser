@@ -291,7 +291,7 @@ def calculate_schedule(
         if len(day_data) < 6:
             day_data[event_name] = [
                 event_time.strftime("%H:%M"),
-                temperature,
+                int(temperature),  # Ensure temperature is an integer
                 0,
                 False,
             ]
