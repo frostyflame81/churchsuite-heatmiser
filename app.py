@@ -344,49 +344,49 @@ async def check_neohub_compatibility(config: Dict[str, Any], neohub_name: str) -
         if not connect_to_neohub(neohub_name, neohub_config):
             logging.error(f"Failed to connect to Neohub {neohub_name}.")
             return False
-    # Get a valid device name from the Neohub
+
+    # Get live data from the Neohub
     try:
         live_data = await get_live_data(neohub_name)
-        if live_data and hasattr(live_data, 'devices') and len(live_data.devices) > 0:
-            device = live_data.devices[0]  # Get the first device
-            device_name = device.device  # Get the device name
-        else:
-            logging.error(f"No devices found on Neohub {neohub_name}.")
+        if live_data is None:
+            logging.error(f"Failed to retrieve live data from Neohub {neohub_name}.")
             return False
     except Exception as e:
         logging.error(f"Error getting live data from Neohub {neohub_name}: {e}")
         return False
-    # Proceed with compatibility check
-    if LOGGING_LEVEL == "DEBUG":
-        logging.debug(f"check_neohub_compatibility: device_name = {device_name}")
+
+    # Check for the required schedule format (7-day, 6 events)
+    if not hasattr(live_data, 'devices') or not isinstance(live_data.devices, list):
+        logging.error(f"Live data from Neohub {neohub_name} does not contain a valid 'devices' list.")
+        return False
+
+    # Get system data to check ALT_TIMER_FORMAT
     try:
-        command = {"GET_PROFILE_0": device_name}  # Create the command
-        profile_data = await send_command(neohub_name, command)  # Use send_command
-    except Exception as e:
-        logging.error(f"Error retrieving profile data from Neohub {neohub_name}: {e}")
-        return False
-    if profile_data is None:
-        logging.error(
-            f"Failed to retrieve profile data from Neohub {neohub_name} to check compatibility."
-        )
-        return False
-
-    if len(profile_data) != 7:
-        logging.error(
-            f"Neohub {neohub_name} is not configured for a 7-day schedule. Found {len(profile_data)} days."
-        )
-        return False
-
-    for day, events in profile_data.items():  # Iterate through the days and events.
-        if len(events) != 6:
-            logging.error(
-                f"Neohub {neohub_name} does not have 6 events per day. Found {len(events)} for {day}."
-            )
+        system_data = await send_command(neohub_name, {"GET_SYSTEM": 0})
+        if system_data is None:
+            logging.error(f"Failed to retrieve system data from Neohub {neohub_name}.")
             return False
+    except Exception as e:
+        logging.error(f"Error getting system data from Neohub {neohub_name}: {e}")
+        return False
 
-    if LOGGING_LEVEL == "DEBUG":
-        logging.debug(f"check_neohub_compatibility: {neohub_name} is compatible")
-    return True
+    # Check if ALT_TIMER_FORMAT is 4 (7-day mode)
+    if not hasattr(system_data, 'ALT_TIMER_FORMAT') or system_data.ALT_TIMER_FORMAT != 4:
+        logging.error(f"Neohub {neohub_name} is not configured for a 7-day schedule.")
+        return False
+
+    for device in live_data.devices:
+        if hasattr(device, 'THERMOSTAT') and device.THERMOSTAT:
+            # Check if the device supports 6 comfort levels
+            if hasattr(device, 'AVAILABLE_MODES') and len(device.AVAILABLE_MODES) >= 6:
+                logging.info(f"Neohub {neohub_name} is compatible")
+                return True
+            else:
+                logging.error(f"Neohub {neohub_name} does not support 6 comfort levels.")
+                return False
+
+    logging.error(f"No compatible thermostat devices found on Neohub {neohub_name}.")
+    return False
 
 
 
