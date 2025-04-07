@@ -10,6 +10,8 @@ import os
 import pytz # type: ignore
 import dateutil.parser # type: ignore
 from typing import Dict, Any, List, Optional
+import websockets # type: ignore
+import ssl
 from neohubapi.neohub import NeoHub, NeoHubUsageError, NeoHubConnectionError # type: ignore
 
 # Configuration
@@ -324,6 +326,53 @@ async def log_existing_profile(neohub_name: str, profile_name: str) -> None:
             f"Error retrieving existing profile '{profile_name}' from Neohub {neohub_name}: {e}"
         )
 
+# Custom command to send a profile command using websockets directly
+async def send_profile_command(
+    neohub_name: str, command: Dict[str, Any], token: str, host: str, port: int
+) -> Optional[Any]:
+    """Sends a profile command to the Neohub using websockets directly."""
+    logger = logging.getLogger("neohub")
+    try:
+        uri = f"wss://{host}:{port}"
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+
+        async with websockets.connect(uri, ssl=context) as websocket:
+            logger.debug("WebSocket connected successfully")
+
+            # Construct the message without double JSON encoding
+            message = {
+                "message_type": "hm_get_command_queue",
+                "message": json.dumps(
+                    {
+                        "token": token,
+                        "COMMANDS": [{"COMMAND": command, "COMMANDID": 1}],
+                    }
+                ),
+            }
+            encoded_message = json.dumps(message)
+
+            logger.debug("Sending: %s", encoded_message)
+            await websocket.send(encoded_message)
+
+            logger.debug("Sending: %s", encoded_message)
+            await websocket.send(encoded_message)
+
+            response = await websocket.recv()
+            logger.debug("Received: %s", response)
+
+            result = json.loads(response)
+            if result.get("message_type") == "hm_set_command_response":
+                return result["response"]
+            else:
+                logger.error(f"Unexpected message type: {result.get('message_type')}")
+                return None
+
+    except Exception as e:
+        logger.error(f"Error sending command to Neohub {neohub_name}: {e}")
+        return None
+    
 # for testing a static profile        
 async def test_store_static_profile(neohub_name: str) -> None:
     """Tests storing a static profile with a hardcoded data structure."""
@@ -404,25 +453,48 @@ async def test_store_static_profile(neohub_name: str) -> None:
     
     # Altervative method without using send_command
     # Get the Neohub instance
-    global hubs
-    hub = hubs.get(neohub_name)
-    if hub is None:
-        logging.error(f"Not connected to Neohub: {neohub_name}")
+    # global hubs
+    # hub = hubs.get(neohub_name)
+    # if hub is None:
+    #     logging.error(f"Not connected to Neohub: {neohub_name}")
+    #     return
+
+    # try:
+    #    # Use the neohubapi library's store_profile function directly
+    #    response = await hub.store_profile(
+    #        profile_name="Static Profile", profile_data=static_profile_data
+    #    )
+    #    if response:
+    #        logging.info(f"Successfully stored static profile on Neohub {neohub_name}")
+    #    else:
+    #        logging.error(f"Failed to store static profile on Neohub {neohub_name}")
+    #
+    # except Exception as e:
+    #    logging.error(f"An unexpected error occurred: {e}")
+    #    return
+        # Construct the STORE_PROFILE command
+    command = {"STORE_PROFILE": {"name": "Static Profile", "info": static_profile_data["info"]}}
+
+    # Get Neohub configuration
+    neohub_config = config["neohubs"].get(neohub_name)
+    if not neohub_config:
+        logging.error(f"Neohub configuration not found for {neohub_name}")
         return
 
-    try:
-        # Use the neohubapi library's store_profile function directly
-        response = await hub.store_profile(
-            profile_name="Static Profile", profile_data=static_profile_data
-        )
-        if response:
-            logging.info(f"Successfully stored static profile on Neohub {neohub_name}")
-        else:
-            logging.error(f"Failed to store static profile on Neohub {neohub_name}")
+    # Send the command using the custom function
+    response = await send_profile_command(
+        neohub_name,
+        command,
+        neohub_config["token"],
+        neohub_config["address"],
+        neohub_config["port"],
+    )
 
-    except Exception as e:
-        logging.error(f"An unexpected error occurred: {e}")
-        return
+    if response:
+        logging.info(f"Successfully stored static profile on Neohub {neohub_name}")
+    else:
+        logging.error(f"Failed to store static profile on Neohub {neohub_name}")
+
 
 async def apply_schedule_to_heating(
     neohub_name: str, profile_name: str, schedule_data: Dict[str, Any]
