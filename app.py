@@ -281,37 +281,28 @@ def calculate_schedule(
     for day in days:
         profile_data[day] = {}
 
-    def add_event(
+    def add_level(
         day_data: Dict[str, Any],
-        event_name: str,
+        level_name: str,
         event_time: datetime.datetime,
         temperature: float,
     ):
-        """Adds an event to the day's schedule, handling the 6-event limit."""
-        if len(day_data) < 6:
-            day_data[event_name] = [
-                event_time.strftime("%H:%M"),
-                int(temperature),  # Ensure temperature is an integer
-                0,
-                False,
-            ]
-            if LOGGING_LEVEL == "DEBUG":
-                logging.debug(
-                    f"calculate_schedule.add_event: Added event {event_name} at {event_time.strftime('%H:%M')} with temp {temperature}"
-                )
-            return True
-        return False
+        """Adds a level to the day's schedule."""
+        day_data[level_name] = [
+            event_time.strftime("%H:%M"),
+            int(temperature),  # Ensure temperature is an integer
+            5,  # Set to 5
+            True,  # Set to True
+        ]
 
     for day in days:
         day_schedule = profile_data[day]
-        add_event(day_schedule, "wake", start_time - preheat_time, DEFAULT_TEMPERATURE)
-        add_event(day_schedule, "end", end_time, ECO_TEMPERATURE)
-        if len(day_schedule) < 6:
-            last_event_time = end_time
-            last_event_temp = ECO_TEMPERATURE
-            for i in range(len(day_schedule), 6):
-                fill_event_name = f"fill_{i}"
-                add_event(day_schedule, fill_event_name, last_event_time, last_event_temp)
+        add_level(day_schedule, "wake", start_time - preheat_time, DEFAULT_TEMPERATURE)
+        add_level(day_schedule, "level2", start_time - preheat_time, DEFAULT_TEMPERATURE)
+        add_level(day_schedule, "level3", end_time, ECO_TEMPERATURE)
+        add_level(day_schedule, "level4", end_time, ECO_TEMPERATURE)
+        add_level(day_schedule, "sleep", end_time, ECO_TEMPERATURE)
+        add_level(day_schedule, "level1", end_time, ECO_TEMPERATURE)
     if LOGGING_LEVEL == "DEBUG":
         logging.debug(f"calculate_schedule: Calculated schedule: {profile_data}")
     return profile_data
@@ -345,7 +336,7 @@ async def apply_schedule_to_heating(
         )
     # Log the existing profile for comparison
     await log_existing_profile(neohub_name, profile_name)
-    
+
     response = await store_profile(neohub_name, profile_name, schedule_data)
     if response:
         logging.info(
