@@ -323,7 +323,9 @@ async def apply_schedule_to_heating(
         logging.debug(
             f"apply_schedule_to_heating: neohub_name={neohub_name}, profile_name={profile_name}, schedule_data={schedule_data}"
         )
-    response = await store_profile(neohub_name, profile_name, schedule_data)
+    # Convert schedule_data to a JSON string
+    schedule_data_json = json.dumps(schedule_data)
+    response = await store_profile(neohub_name, profile_name, schedule_data_json)
     if response:
         logging.info(
             f"Successfully stored profile {profile_name} on Neohub {neohub_name}"
