@@ -316,6 +316,22 @@ def calculate_schedule(
         logging.debug(f"calculate_schedule: Calculated schedule: {profile_data}")
     return profile_data
 
+async def log_existing_profile(neohub_name: str, profile_name: str) -> None:
+    """Retrieves and logs an existing profile from the Neohub for debugging."""
+    try:
+        existing_profile = await get_profile(neohub_name, profile_name)
+        if existing_profile:
+            logging.info(
+                f"Existing profile '{profile_name}' on Neohub {neohub_name}: {existing_profile}"
+            )
+        else:
+            logging.warning(
+                f"Could not retrieve existing profile '{profile_name}' from Neohub {neohub_name}."
+            )
+    except Exception as e:
+        logging.error(
+            f"Error retrieving existing profile '{profile_name}' from Neohub {neohub_name}: {e}"
+        )
 
 
 async def apply_schedule_to_heating(
@@ -327,6 +343,9 @@ async def apply_schedule_to_heating(
         logging.debug(
             f"apply_schedule_to_heating: neohub_name={neohub_name}, profile_name={profile_name}, schedule_data={schedule_data}"
         )
+    # Log the existing profile for comparison
+    await log_existing_profile(neohub_name, profile_name)
+    
     response = await store_profile(neohub_name, profile_name, schedule_data)
     if response:
         logging.info(
