@@ -156,7 +156,7 @@ async def get_live_data(neohub_name: str) -> Optional[Dict[str, Any]]:
 
 
 
-async def store_profile(neohub_name: str, profile_name: str, profile_data: str) -> Optional[Dict[str, Any]]:
+async def store_profile(neohub_name: str, profile_name: str, profile_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Stores a heating profile on the Neohub using neohubapi."""
     logging.info(f"Storing profile {profile_name} on Neohub {neohub_name}")
     command = {"STORE_PROFILE": {"name": profile_name, "info": profile_data}}
@@ -326,9 +326,7 @@ async def apply_schedule_to_heating(
         logging.debug(
             f"apply_schedule_to_heating: neohub_name={neohub_name}, profile_name={profile_name}, schedule_data={schedule_data}"
         )
-    # Convert schedule_data to a JSON string
-    schedule_data_json = json.dumps(schedule_data)
-    response = await store_profile(neohub_name, profile_name, schedule_data_json)
+    response = await store_profile(neohub_name, profile_name, schedule_data)
     if response:
         logging.info(
             f"Successfully stored profile {profile_name} on Neohub {neohub_name}"
