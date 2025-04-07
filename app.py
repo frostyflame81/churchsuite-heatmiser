@@ -345,22 +345,7 @@ async def check_neohub_compatibility(config: Dict[str, Any], neohub_name: str) -
             logging.error(f"Failed to connect to Neohub {neohub_name}.")
             return False
 
-    # Get live data from the Neohub
-    try:
-        live_data = await get_live_data(neohub_name)
-        if live_data is None:
-            logging.error(f"Failed to retrieve live data from Neohub {neohub_name}.")
-            return False
-    except Exception as e:
-        logging.error(f"Error getting live data from Neohub {neohub_name}: {e}")
-        return False
-
-    # Check for the required schedule format (7-day, 6 events)
-    if not hasattr(live_data, 'devices') or not isinstance(live_data.devices, list):
-        logging.error(f"Live data from Neohub {neohub_name} does not contain a valid 'devices' list.")
-        return False
-
-    # Get system data to check ALT_TIMER_FORMAT
+    # Get system data to check ALT_TIMER_FORMAT and HEATING_LEVELS
     try:
         system_data = await send_command(neohub_name, {"GET_SYSTEM": 0})
         if system_data is None:
@@ -374,19 +359,19 @@ async def check_neohub_compatibility(config: Dict[str, Any], neohub_name: str) -
     if not hasattr(system_data, 'ALT_TIMER_FORMAT') or system_data.ALT_TIMER_FORMAT != 4:
         logging.error(f"Neohub {neohub_name} is not configured for a 7-day schedule.")
         return False
+    if LOGGING_LEVEL == "DEBUG":
+        logging.debug(f"check_neohub_compatibility: Neohub {neohub_name} ALT_TIMER_FORMAT is configured for 7-day schedule.")
 
-    for device in live_data.devices:
-        if hasattr(device, 'THERMOSTAT') and device.THERMOSTAT:
-            # Check if the device supports 6 comfort levels
-            if hasattr(device, 'AVAILABLE_MODES') and len(device.AVAILABLE_MODES) >= 6:
-                logging.info(f"Neohub {neohub_name} is compatible")
-                return True
-            else:
-                logging.error(f"Neohub {neohub_name} does not support 6 comfort levels.")
-                return False
+    # Check if HEATING_LEVELS is 6 (6 comfort levels)
+    if not hasattr(system_data, 'HEATING_LEVELS') or system_data.HEATING_LEVELS != 6:
+        logging.error(f"Neohub {neohub_name} does not support 6 comfort levels.")
+        return False
 
-    logging.error(f"No compatible thermostat devices found on Neohub {neohub_name}.")
-    return False
+    if LOGGING_LEVEL == "DEBUG":
+        logging.debug(f"check_neohub_compatibility: Neohub {neohub_name} supports 6 comfort levels.")
+
+    logging.info(f"Neohub {neohub_name} is compatible")
+    return True
 
 
 
