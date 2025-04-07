@@ -398,7 +398,7 @@ async def test_store_static_profile(neohub_name: str) -> None:
     logging.debug(f"Static profile data: {static_profile_data}")
 
     # Call the store_profile function with the static data
-    command = {"STORE_PROFILE": {"name": "Static Profile", "info": static_profile_data["info"]}}
+    command = {"STORE_PROFILE": {"name": "Next Week", "info": static_profile_data["info"]}}
     command_json = json.dumps(command).replace("'", "\\'")  # Convert the command to a JSON string
     response = await send_command(neohub_name, command_json)  # Pass the JSON string to send_command
 
