@@ -398,14 +398,31 @@ async def test_store_static_profile(neohub_name: str) -> None:
     logging.debug(f"Static profile data: {static_profile_data}")
 
     # Call the store_profile function with the static data
-    command = {"STORE_PROFILE": {"name": "Next Week", "info": static_profile_data["info"]}}
-    command_json = json.dumps(command).replace("'", "\'")  # Convert the command to a JSON string
-    response = await send_command(neohub_name, command_json)  # Pass the JSON string to send_command
+    # command = {"STORE_PROFILE": {"name": "Next Week", "info": static_profile_data["info"]}}
+    # command_json = json.dumps(command).replace("'", "\\'")  # Convert the command to a JSON string
+    # response = await send_command(neohub_name, command)  # Pass the JSON string to send_command
+    
+    # Altervative method without using send_command
+    # Get the Neohub instance
+    global hubs
+    hub = hubs.get(neohub_name)
+    if hub is None:
+        logging.error(f"Not connected to Neohub: {neohub_name}")
+        return
 
-    if response:
-        logging.info(f"Successfully stored static profile on Neohub {neohub_name}")
-    else:
-        logging.error(f"Failed to store static profile on Neohub {neohub_name}")
+    try:
+        # Use the neohubapi library's store_profile function directly
+        response = await hub.store_profile(
+            profile_name="Static Profile", profile_data=static_profile_data
+        )
+        if response:
+            logging.info(f"Successfully stored static profile on Neohub {neohub_name}")
+        else:
+            logging.error(f"Failed to store static profile on Neohub {neohub_name}")
+
+    except Exception as e:
+        logging.error(f"An unexpected error occurred: {e}")
+        return
 
 async def apply_schedule_to_heating(
     neohub_name: str, profile_name: str, schedule_data: Dict[str, Any]
