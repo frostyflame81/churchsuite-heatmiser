@@ -391,7 +391,7 @@ async def test_store_static_profile(neohub_name: str) -> None:
                 "wake": ["07:30", 21, 5, True],
             },
         },
-        "name": "Static Profile",
+        "name": "Next Week",
     }
 
     # Log the static profile data for debugging
