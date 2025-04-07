@@ -226,10 +226,15 @@ def get_bookings_and_locations() -> Optional[Dict[str, Any]]:
 
 
 def calculate_schedule(
-    booking: Dict[str, Any], config: Dict[str, Any], external_temperature: Optional[float]
+    booking: Dict[str, Any], config: Dict[str, Any], external_temperature: Optional[float], resource_map: Dict[int, str]
 ) -> Optional[Dict[str, Any]]:
     """Calculates the heating schedule for a single booking."""
-    location_name = booking["location"]
+    resource_id = booking["resource_id"]
+    location_name = resource_map.get(resource_id)
+    if not location_name:
+        logging.error(f"Resource ID '{resource_id}' not found in resource map.")
+        return None
+
     if location_name not in config["locations"]:
         logging.error(f"Location '{location_name}' not found in configuration.")
         return None
