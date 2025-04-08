@@ -586,13 +586,16 @@ async def test_store_basic_profile(neohub_name: str) -> None:
     # Construct the STORE_PROFILE2 command
     command = {"STORE_PROFILE2": static_profile_data}
 
+    # Convert the command to a JSON string
+    command_str = json.dumps(command)
+    
     # Construct the outer message as a string, with escaped quotes
     outer_message = {
         "message_type": "hm_get_command_queue",
         "message": json.dumps(
             {
                 "token": token,
-                "COMMANDS": [{"COMMAND": command, "COMMANDID": 1}],
+                "COMMANDS": [{"COMMAND": command_str, "COMMANDID": 1}],
             }
         ),
     }
