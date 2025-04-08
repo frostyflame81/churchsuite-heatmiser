@@ -583,7 +583,7 @@ async def test_store_basic_profile(neohub_name: str) -> None:
                 "wake": ["07:30", 21, 5, True]
             }
         },
-        "name": "Next Week",
+        "name": "Next Week"
     }
 
     # Construct the STORE_PROFILE command
@@ -595,7 +595,7 @@ async def test_store_basic_profile(neohub_name: str) -> None:
         "message": json.dumps(
             {
                 "token": token,
-                "COMMANDS": [{"COMMAND": str(command), "COMMANDID": 1}],
+                "COMMANDS": [{"COMMAND": json.dumps(command), "COMMANDID": 1}],
             }
         ),
     }
