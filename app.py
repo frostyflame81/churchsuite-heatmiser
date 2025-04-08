@@ -506,6 +506,7 @@ async def test_store_static_profile(neohub_name: str) -> None:
         logging.info(f"Successfully stored static profile on Neohub {neohub_name}")
     else:
         logging.error(f"Failed to store static profile on Neohub {neohub_name}")
+
 # More basic profile test function
 async def test_store_basic_profile(neohub_name: str) -> None:
     """Tests sending a basic command to the Neohub."""
@@ -531,7 +532,7 @@ async def test_store_basic_profile(neohub_name: str) -> None:
         "message": json.dumps(
             {
                 "token": token,
-                "COMMANDS": [{"COMMAND": command, "COMMANDID": 1}],
+                "COMMANDS": [{"COMMAND": str(command), "COMMANDID": 1}],
             }
         ),
     }
