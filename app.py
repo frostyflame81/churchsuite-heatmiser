@@ -599,7 +599,7 @@ async def test_store_basic_profile(neohub_name: str) -> None:
             }
         ),
     }
-    encoded_message = json.dumps(outer_message)
+    encoded_message = json.loads(json.dumps(outer_message))
 
     try:
         uri = f"wss://{host}:{port}"
