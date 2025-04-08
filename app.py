@@ -595,7 +595,7 @@ async def test_store_basic_profile(neohub_name: str) -> None:
         "message": json.dumps(
             {
                 "token": token,
-                "COMMANDS": [{"COMMAND": json.dumps(command), "COMMANDID": 1}],
+                "COMMANDS": [{"COMMAND": (command), "COMMANDID": 1}],
             }
         ),
     }
