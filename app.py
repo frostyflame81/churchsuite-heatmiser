@@ -592,7 +592,7 @@ async def test_store_basic_profile(neohub_name: str) -> None:
     # Construct the outer message as a string, with escaped quotes
     outer_message = {
         "message_type": "hm_get_command_queue",
-        "message": (
+        "message": json.dumps(
             {
                 "token": token,
                 "COMMANDS": [{"COMMAND": command, "COMMANDID": 1}],
