@@ -583,8 +583,8 @@ async def test_store_basic_profile(neohub_name: str) -> None:
         "name": "Next Week",
     }
 
-    # Construct the basic GET_SYSTEM command
-    command = {"STORE_PROFILE2": {static_profile_data}}
+    # Construct the STORE_PROFILE2 command
+    command = {"STORE_PROFILE2": static_profile_data}
 
     # Construct the outer message as a string, with escaped quotes
     outer_message = {
