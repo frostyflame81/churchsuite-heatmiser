@@ -506,7 +506,107 @@ async def test_store_static_profile(neohub_name: str) -> None:
         logging.info(f"Successfully stored static profile on Neohub {neohub_name}")
     else:
         logging.error(f"Failed to store static profile on Neohub {neohub_name}")
+# More basic profile test function
+async def test_store_basic_profile(neohub_name: str) -> None:
+    """Tests storing a basic profile with a hardcoded data structure."""
+    logger = logging.getLogger("neohub")
+    logging.info(f"Testing storing basic profile on Neohub {neohub_name}")
 
+    # Get Neohub configuration from environment variables
+    neohub_config = config["neohubs"].get(neohub_name)
+    if not neohub_config:
+        logging.error(f"Neohub configuration not found for {neohub_name}")
+        return
+
+    token = neohub_config["token"]
+    host = neohub_config["address"]
+    port = neohub_config["port"]
+
+    # Construct the basic STORE_PROFILE command manually
+    command = {
+        "STORE_PROFILE": {
+            "name": "Basic Profile",
+            "info": {
+                "monday": {
+                    "level1": ["08:00", 20, 5, True],
+                    "level2": ["12:00", 22, 5, True],
+                    "level3": ["17:00", 20, 5, True],
+                    "sleep": ["22:00", 18, 5, True],
+                },
+                "tuesday": {
+                    "level1": ["08:00", 20, 5, True],
+                    "level2": ["12:00", 22, 5, True],
+                    "level3": ["17:00", 20, 5, True],
+                    "sleep": ["22:00", 18, 5, True],
+                },
+                "wednesday": {
+                    "level1": ["08:00", 20, 5, True],
+                    "level2": ["12:00", 22, 5, True],
+                    "level3": ["17:00", 20, 5, True],
+                    "sleep": ["22:00", 18, 5, True],
+                },
+                "thursday": {
+                    "level1": ["08:00", 20, 5, True],
+                    "level2": ["12:00", 22, 5, True],
+                    "level3": ["17:00", 20, 5, True],
+                    "sleep": ["22:00", 18, 5, True],
+                },
+                "friday": {
+                    "level1": ["08:00", 20, 5, True],
+                    "level2": ["12:00", 22, 5, True],
+                    "level3": ["17:00", 20, 5, True],
+                    "sleep": ["22:00", 18, 5, True],
+                },
+                "saturday": {
+                    "level1": ["08:00", 20, 5, True],
+                    "level2": ["12:00", 22, 5, True],
+                    "level3": ["17:00", 20, 5, True],
+                    "sleep": ["22:00", 18, 5, True],
+                },
+                "sunday": {
+                    "level1": ["08:00", 20, 5, True],
+                    "level2": ["12:00", 22, 5, True],
+                    "level3": ["17:00", 20, 5, True],
+                    "sleep": ["22:00", 18, 5, True],
+                },
+            },
+        }
+    }
+
+    # Construct the outer message as a string, with escaped quotes
+    outer_message = {
+        "message_type": "hm_get_command_queue",
+        "message": json.dumps(
+            {
+                "token": token,
+                "COMMANDS": [{"COMMAND": command, "COMMANDID": 1}],
+            }
+        ),
+    }
+    encoded_message = json.dumps(outer_message)
+
+    try:
+        uri = f"wss://{host}:{port}"
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+
+        async with websockets.connect(uri, ssl=context) as websocket:
+            logger.debug("WebSocket connected successfully")
+            logger.debug("Sending: %s", encoded_message)
+            await websocket.send(encoded_message)
+
+            response = await websocket.recv()
+            logger.debug("Received: %s", response)
+
+            result = json.loads(response)
+            if result.get("message_type") == "hm_set_command_response":
+                logging.info(f"Successfully stored basic profile on Neohub {neohub_name}")
+            else:
+                logger.error(f"Unexpected message type: {result.get('message_type')}")
+
+    except Exception as e:
+        logger.error(f"Error sending command to Neohub {neohub_name}: {e}")
 
 async def apply_schedule_to_heating(
     neohub_name: str, profile_name: str, schedule_data: Dict[str, Any]
@@ -524,7 +624,7 @@ async def apply_schedule_to_heating(
     # response = await store_profile(neohub_name, profile_name, schedule_data)
 
     # Call the test function instead
-    await test_store_static_profile(neohub_name)
+    await test_store_basic_profile(neohub_name)
 
     # if response:
     #     logging.info(
