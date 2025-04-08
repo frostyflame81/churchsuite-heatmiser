@@ -508,9 +508,9 @@ async def test_store_static_profile(neohub_name: str) -> None:
         logging.error(f"Failed to store static profile on Neohub {neohub_name}")
 # More basic profile test function
 async def test_store_basic_profile(neohub_name: str) -> None:
-    """Tests storing a basic profile with a hardcoded data structure."""
+    """Tests sending a basic command to the Neohub."""
     logger = logging.getLogger("neohub")
-    logging.info(f"Testing storing basic profile on Neohub {neohub_name}")
+    logging.info(f"Testing sending basic command on Neohub {neohub_name}")
 
     # Get Neohub configuration from environment variables
     neohub_config = config["neohubs"].get(neohub_name)
@@ -522,56 +522,8 @@ async def test_store_basic_profile(neohub_name: str) -> None:
     host = neohub_config["address"]
     port = neohub_config["port"]
 
-    # Construct the basic STORE_PROFILE command manually
-    command = {
-        "STORE_PROFILE": {
-            "name": "Basic Profile",
-            "info": {
-                "monday": {
-                    "level1": ["08:00", 20, 5, True],
-                    "level2": ["12:00", 22, 5, True],
-                    "level3": ["17:00", 20, 5, True],
-                    "sleep": ["22:00", 18, 5, True],
-                },
-                "tuesday": {
-                    "level1": ["08:00", 20, 5, True],
-                    "level2": ["12:00", 22, 5, True],
-                    "level3": ["17:00", 20, 5, True],
-                    "sleep": ["22:00", 18, 5, True],
-                },
-                "wednesday": {
-                    "level1": ["08:00", 20, 5, True],
-                    "level2": ["12:00", 22, 5, True],
-                    "level3": ["17:00", 20, 5, True],
-                    "sleep": ["22:00", 18, 5, True],
-                },
-                "thursday": {
-                    "level1": ["08:00", 20, 5, True],
-                    "level2": ["12:00", 22, 5, True],
-                    "level3": ["17:00", 20, 5, True],
-                    "sleep": ["22:00", 18, 5, True],
-                },
-                "friday": {
-                    "level1": ["08:00", 20, 5, True],
-                    "level2": ["12:00", 22, 5, True],
-                    "level3": ["17:00", 20, 5, True],
-                    "sleep": ["22:00", 18, 5, True],
-                },
-                "saturday": {
-                    "level1": ["08:00", 20, 5, True],
-                    "level2": ["12:00", 22, 5, True],
-                    "level3": ["17:00", 20, 5, True],
-                    "sleep": ["22:00", 18, 5, True],
-                },
-                "sunday": {
-                    "level1": ["08:00", 20, 5, True],
-                    "level2": ["12:00", 22, 5, True],
-                    "level3": ["17:00", 20, 5, True],
-                    "sleep": ["22:00", 18, 5, True],
-                },
-            },
-        }
-    }
+    # Construct the basic GET_SYSTEM command
+    command = {"GET_SYSTEM": 0}
 
     # Construct the outer message as a string, with escaped quotes
     outer_message = {
@@ -601,7 +553,7 @@ async def test_store_basic_profile(neohub_name: str) -> None:
 
             result = json.loads(response)
             if result.get("message_type") == "hm_set_command_response":
-                logging.info(f"Successfully stored basic profile on Neohub {neohub_name}")
+                logging.info(f"Successfully sent basic command on Neohub {neohub_name}")
             else:
                 logger.error(f"Unexpected message type: {result.get('message_type')}")
 
