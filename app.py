@@ -584,22 +584,19 @@ async def test_store_basic_profile(neohub_name: str) -> None:
     }
 
     # Construct the STORE_PROFILE2 command
-    command = {"STORE_PROFILE2": static_profile_data}
-
-    # Convert the command to a JSON string
-    command_str = json.dumps(command)
+    command = f"{{'STORE_PROFILE2': ['{static_profile_data}']}}"
     
     # Construct the outer message as a string, with escaped quotes
-    outer_message = {
+    command_payload = {
         "message_type": "hm_get_command_queue",
         "message": json.dumps(
             {
                 "token": token,
-                "COMMANDS": [{"COMMAND": command_str, "COMMANDID": 1}],
+                "COMMANDS": [{"COMMAND": command, "COMMANDID": 1}]
             }
         ),
     }
-    encoded_message = json.dumps(outer_message)
+    encoded_message = json.dumps(command_payload)
 
     try:
         uri = f"wss://{host}:{port}"
