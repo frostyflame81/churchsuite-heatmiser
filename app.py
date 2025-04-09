@@ -607,16 +607,64 @@ async def test_store_basic_profile(neohub_name: str) -> None:
                 "COMMANDS": [
                     {
                         "COMMAND": {
-                            "STORE_PROFILE": {
+                            "STORE_PROFILE2": {
                                 "name": "Next Week",
                                 "info": {
+                                    "friday": {
+                                        "level1": ["09:30", 18, 5, True],
+                                        "level2": ["12:30", 20, 5, True],
+                                        "level3": ["14:00", 18, 5, True],
+                                        "level4": ["17:30", 21, 5, True],
+                                        "sleep": ["22:00", 18, 5, True],
+                                        "wake": ["07:30", 21, 5, True]
+                                    },
                                     "monday": {
-                                        "level1": ["09:30", 18.0, 5.0, True],
-                                        "level2": ["12:30", 20.0, 5.0, True],
-                                        "level3": ["14:00", 18.0, 5.0, True],
-                                        "level4": ["17:30", 21.0, 5.0, True],
-                                        "sleep": ["22:00", 18.0, 5.0, True],
-                                        "wake": ["06:30", 21.0, 5.0, True]
+                                        "level1": ["09:30", 18, 5, True],
+                                        "level2": ["12:30", 20, 5, True],
+                                        "level3": ["14:00", 18, 5, True],
+                                        "level4": ["17:30", 21, 5, True],
+                                        "sleep": ["22:00", 18, 5, True],
+                                        "wake": ["06:30", 21, 5, True]
+                                    },
+                                    "saturday": {
+                                        "level1": ["09:30", 18, 5, True],
+                                        "level2": ["12:30", 20, 5, True],
+                                        "level3": ["14:00", 18, 5, True],
+                                        "level4": ["17:30", 21, 5, True],
+                                        "sleep": ["22:00", 18, 5, True],
+                                        "wake": ["07:30", 21, 5, True]
+                                    },
+                                    "sunday": {
+                                        "level1": ["09:30", 18, 5, True],
+                                        "level2": ["12:30", 20, 5, True],
+                                        "level3": ["14:00", 18, 5, True],
+                                        "level4": ["17:30", 21, 5, True],
+                                        "sleep": ["22:00", 18, 5, True],
+                                        "wake": ["07:30", 21, 5, True]
+                                    },
+                                    "thursday": {
+                                        "level1": ["09:30", 18, 5, True],
+                                        "level2": ["12:30", 20, 5, True],
+                                        "level3": ["14:00", 18, 5, True],
+                                        "level4": ["17:30", 21, 5, True],
+                                        "sleep": ["22:00", 18, 5, True],
+                                        "wake": ["07:30", 21, 5, True]
+                                    },
+                                    "tuesday": {
+                                        "level1": ["09:30", 18, 5, True],
+                                        "level2": ["12:30", 20, 5, True],
+                                        "level3": ["14:00", 18, 5, True],
+                                        "level4": ["17:30", 21, 5, True],
+                                        "sleep": ["22:00", 18, 5, True],
+                                        "wake": ["07:30", 21, 5, True]
+                                    },
+                                    "wednesday": {
+                                        "level1": ["09:30", 18, 5, True],
+                                        "level2": ["12:30", 20, 5, True],
+                                        "level3": ["14:00", 18, 5, True],
+                                        "level4": ["17:30", 21, 5, True],
+                                        "sleep": ["22:00", 18, 5, True],
+                                        "wake": ["07:30", 21, 5, True]
                                     }
                                 }
                             }
