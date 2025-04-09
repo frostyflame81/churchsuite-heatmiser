@@ -613,37 +613,37 @@ async def test_store_basic_profile(neohub_name: str) -> None:
                       "09:30",
                       18,
                       5,
-                      true
+                      True
                     ],
                     "level2": [
                       "12:30",
                       20,
                       5,
-                      true
+                      True
                     ],
                     "level3": [
                       "14:00",
                       18,
                       5,
-                      true
+                      True
                     ],
                     "level4": [
                       "17:30",
                       21,
                       5,
-                      true
+                      True
                     ],
                     "sleep": [
                       "22:00",
                       18,
                       5,
-                      true
+                      True
                     ],
                     "wake": [
                       "07:30",
                       21,
                       5,
-                      true
+                      True
                     ]
                   },
                   "monday": {
@@ -651,37 +651,37 @@ async def test_store_basic_profile(neohub_name: str) -> None:
                       "09:30",
                       18,
                       5,
-                      true
+                      True
                     ],
                     "level2": [
                       "12:30",
                       20,
                       5,
-                      true
+                      True
                     ],
                     "level3": [
                       "14:00",
                       18,
                       5,
-                      true
+                      True
                     ],
                     "level4": [
                       "17:30",
                       21,
                       5,
-                      true
+                      True
                     ],
                     "sleep": [
                       "22:00",
                       18,
                       5,
-                      true
+                      True
                     ],
                     "wake": [
                       "06:30",
                       21,
                       5,
-                      true
+                      True
                     ]
                   },
                   "saturday": {
@@ -689,37 +689,37 @@ async def test_store_basic_profile(neohub_name: str) -> None:
                       "09:30",
                       18,
                       5,
-                      true
+                      True
                     ],
                     "level2": [
                       "12:30",
                       20,
                       5,
-                      true
+                      True
                     ],
                     "level3": [
                       "14:00",
                       18,
                       5,
-                      true
+                      True
                     ],
                     "level4": [
                       "17:30",
                       21,
                       5,
-                      true
+                      True
                     ],
                     "sleep": [
                       "22:00",
                       18,
                       5,
-                      true
+                      True
                     ],
                     "wake": [
                       "07:30",
                       21,
                       5,
-                      true
+                      True
                     ]
                   },
                   "sunday": {
@@ -727,37 +727,37 @@ async def test_store_basic_profile(neohub_name: str) -> None:
                       "09:30",
                       18,
                       5,
-                      true
+                      True
                     ],
                     "level2": [
                       "12:30",
                       20,
                       5,
-                      true
+                      True
                     ],
                     "level3": [
                       "14:00",
                       18,
                       5,
-                      true
+                      True
                     ],
                     "level4": [
                       "17:30",
                       21,
                       5,
-                      true
+                      True
                     ],
                     "sleep": [
                       "22:00",
                       18,
                       5,
-                      true
+                      True
                     ],
                     "wake": [
                       "07:30",
                       21,
                       5,
-                      true
+                      True
                     ]
                   },
                   "thursday": {
@@ -765,37 +765,37 @@ async def test_store_basic_profile(neohub_name: str) -> None:
                       "09:30",
                       18,
                       5,
-                      true
+                      True
                     ],
                     "level2": [
                       "12:30",
                       20,
                       5,
-                      true
+                      True
                     ],
                     "level3": [
                       "14:00",
                       18,
                       5,
-                      true
+                      True
                     ],
                     "level4": [
                       "17:30",
                       21,
                       5,
-                      true
+                      True
                     ],
                     "sleep": [
                       "22:00",
                       18,
                       5,
-                      true
+                      True
                     ],
                     "wake": [
                       "07:30",
                       21,
                       5,
-                      true
+                      True
                     ]
                   },
                   "tuesday": {
@@ -803,37 +803,37 @@ async def test_store_basic_profile(neohub_name: str) -> None:
                       "09:30",
                       18,
                       5,
-                      true
+                      True
                     ],
                     "level2": [
                       "12:30",
                       20,
                       5,
-                      true
+                      True
                     ],
                     "level3": [
                       "14:00",
                       18,
                       5,
-                      true
+                      True
                     ],
                     "level4": [
                       "17:30",
                       21,
                       5,
-                      true
+                      True
                     ],
                     "sleep": [
                       "22:00",
                       18,
                       5,
-                      true
+                      True
                     ],
                     "wake": [
                       "07:30",
                       21,
                       5,
-                      true
+                      True
                     ]
                   },
                   "wednesday": {
@@ -841,37 +841,37 @@ async def test_store_basic_profile(neohub_name: str) -> None:
                       "09:30",
                       18,
                       5,
-                      true
+                      True
                     ],
                     "level2": [
                       "12:30",
                       20,
                       5,
-                      true
+                      True
                     ],
                     "level3": [
                       "14:00",
                       18,
                       5,
-                      true
+                      True
                     ],
                     "level4": [
                       "17:30",
                       21,
                       5,
-                      true
+                      True
                     ],
                     "sleep": [
                       "22:00",
                       18,
                       5,
-                      true
+                      True
                     ],
                     "wake": [
                       "07:30",
                       21,
                       5,
-                      true
+                      True
                     ]
                   }
                 }
