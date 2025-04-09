@@ -610,14 +610,6 @@ async def test_store_basic_profile(neohub_name: str) -> None:
                             "STORE_PROFILE": {
                                 "name": "Next Week",
                                 "info": {
-                                    "friday": {
-                                        "level1": ["09:30", 18.0, 5.0, True],
-                                        "level2": ["12:30", 20.0, 5.0, True],
-                                        "level3": ["14:00", 18.0, 5.0, True],
-                                        "level4": ["17:30", 21.0, 5.0, True],
-                                        "sleep": ["22:00", 18.0, 5.0, True],
-                                        "wake": ["07:30", 21.0, 5.0, True]
-                                    },
                                     "monday": {
                                         "level1": ["09:30", 18.0, 5.0, True],
                                         "level2": ["12:30", 20.0, 5.0, True],
@@ -625,46 +617,6 @@ async def test_store_basic_profile(neohub_name: str) -> None:
                                         "level4": ["17:30", 21.0, 5.0, True],
                                         "sleep": ["22:00", 18.0, 5.0, True],
                                         "wake": ["06:30", 21.0, 5.0, True]
-                                    },
-                                    "saturday": {
-                                        "level1": ["09:30", 18.0, 5.0, True],
-                                        "level2": ["12:30", 20.0, 5.0, True],
-                                        "level3": ["14:00", 18.0, 5.0, True],
-                                        "level4": ["17:30", 21.0, 5.0, True],
-                                        "sleep": ["22:00", 18.0, 5.0, True],
-                                        "wake": ["07:30", 21.0, 5.0, True]
-                                    },
-                                    "sunday": {
-                                        "level1": ["09:30", 18.0, 5.0, True],
-                                        "level2": ["12:30", 20.0, 5.0, True],
-                                        "level3": ["14:00", 18.0, 5.0, True],
-                                        "level4": ["17:30", 21.0, 5.0, True],
-                                        "sleep": ["22:00", 18.0, 5.0, True],
-                                        "wake": ["07:30", 21.0, 5.0, True]
-                                    },
-                                    "thursday": {
-                                        "level1": ["09:30", 18.0, 5.0, True],
-                                        "level2": ["12:30", 20.0, 5.0, True],
-                                        "level3": ["14:00", 18.0, 5.0, True],
-                                        "level4": ["17:30", 21.0, 5.0, True],
-                                        "sleep": ["22:00", 18.0, 5.0, True],
-                                        "wake": ["07:30", 21.0, 5.0, True]
-                                    },
-                                    "tuesday": {
-                                        "level1": ["09:30", 18.0, 5.0, True],
-                                        "level2": ["12:30", 20.0, 5.0, True],
-                                        "level3": ["14:00", 18.0, 5.0, True],
-                                        "level4": ["17:30", 21.0, 5.0, True],
-                                        "sleep": ["22:00", 18.0, 5.0, True],
-                                        "wake": ["07:30", 21.0, 5.0, True]
-                                    },
-                                    "wednesday": {
-                                        "level1": ["09:30", 18.0, 5.0, True],
-                                        "level2": ["12:30", 20.0, 5.0, True],
-                                        "level3": ["14:00", 18.0, 5.0, True],
-                                        "level4": ["17:30", 21.0, 5.0, True],
-                                        "sleep": ["22:00", 18.0, 5.0, True],
-                                        "wake": ["07:30", 21.0, 5.0, True]
                                     }
                                 }
                             }
