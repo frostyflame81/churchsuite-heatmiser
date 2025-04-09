@@ -584,7 +584,7 @@ async def test_store_basic_profile(neohub_name: str) -> None:
     }
 
     # Construct the STORE_PROFILE2 command as a dictionary
-    command = {"STORE_PROFILE2": {"name": "Next Week", "info": static_profile_data["info"]}}
+    command = {'STORE_PROFILE2': {"name": "Next Week", "info": static_profile_data["info"]}}
 
     # Construct the full command
     full_command = {
@@ -625,7 +625,7 @@ async def test_store_basic_profile(neohub_name: str) -> None:
 
     except Exception as e:
         logger.error(f"Error sending command to Neohub {neohub_name}: {e}")
-                       
+
 async def apply_schedule_to_heating(
     neohub_name: str, profile_name: str, schedule_data: Dict[str, Any]
 ) -> None:
