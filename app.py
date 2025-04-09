@@ -583,21 +583,9 @@ async def test_store_basic_profile(neohub_name: str) -> None:
         "name": "Next Week",
     }
 
-    # Construct the STORE_PROFILE2 command
-    command = {'STORE_PROFILE2': static_profile_data}
-    
-    # Construct the outer message as a string, with escaped quotes
-    command_payload = {
-        "message_type": "hm_get_command_queue",
-        "message": json.dumps(
-            {
-                "token": token,
-                "COMMANDS": [{"COMMAND": command, "COMMANDID": 1}]
-            }
-        ),
-    }
+    # Construct the STORE_PROFILE2 command as a string
+    command = f"{{'STORE_PROFILE2': {{'name': 'Next Week', 'info': {json.dumps(static_profile_data['info'])}}}}}".replace("'", "\\'")
 
-    # test constucted message using full json
     # Construct the full command
     full_command = {
         "message_type": "hm_get_command_queue",
@@ -606,69 +594,7 @@ async def test_store_basic_profile(neohub_name: str) -> None:
                 "token": token,
                 "COMMANDS": [
                     {
-                        "COMMAND": {
-                            "STORE_PROFILE2": {
-                                "name": "Next Week",
-                                "info": {
-                                    "friday": {
-                                        "level1": ["09:30", 18, 5, True],
-                                        "level2": ["12:30", 20, 5, True],
-                                        "level3": ["14:00", 18, 5, True],
-                                        "level4": ["17:30", 21, 5, True],
-                                        "sleep": ["22:00", 18, 5, True],
-                                        "wake": ["07:30", 21, 5, True]
-                                    },
-                                    "monday": {
-                                        "level1": ["09:30", 18, 5, True],
-                                        "level2": ["12:30", 20, 5, True],
-                                        "level3": ["14:00", 18, 5, True],
-                                        "level4": ["17:30", 21, 5, True],
-                                        "sleep": ["22:00", 18, 5, True],
-                                        "wake": ["06:30", 21, 5, True]
-                                    },
-                                    "saturday": {
-                                        "level1": ["09:30", 18, 5, True],
-                                        "level2": ["12:30", 20, 5, True],
-                                        "level3": ["14:00", 18, 5, True],
-                                        "level4": ["17:30", 21, 5, True],
-                                        "sleep": ["22:00", 18, 5, True],
-                                        "wake": ["07:30", 21, 5, True]
-                                    },
-                                    "sunday": {
-                                        "level1": ["09:30", 18, 5, True],
-                                        "level2": ["12:30", 20, 5, True],
-                                        "level3": ["14:00", 18, 5, True],
-                                        "level4": ["17:30", 21, 5, True],
-                                        "sleep": ["22:00", 18, 5, True],
-                                        "wake": ["07:30", 21, 5, True]
-                                    },
-                                    "thursday": {
-                                        "level1": ["09:30", 18, 5, True],
-                                        "level2": ["12:30", 20, 5, True],
-                                        "level3": ["14:00", 18, 5, True],
-                                        "level4": ["17:30", 21, 5, True],
-                                        "sleep": ["22:00", 18, 5, True],
-                                        "wake": ["07:30", 21, 5, True]
-                                    },
-                                    "tuesday": {
-                                        "level1": ["09:30", 18, 5, True],
-                                        "level2": ["12:30", 20, 5, True],
-                                        "level3": ["14:00", 18, 5, True],
-                                        "level4": ["17:30", 21, 5, True],
-                                        "sleep": ["22:00", 18, 5, True],
-                                        "wake": ["07:30", 21, 5, True]
-                                    },
-                                    "wednesday": {
-                                        "level1": ["09:30", 18, 5, True],
-                                        "level2": ["12:30", 20, 5, True],
-                                        "level3": ["14:00", 18, 5, True],
-                                        "level4": ["17:30", 21, 5, True],
-                                        "sleep": ["22:00", 18, 5, True],
-                                        "wake": ["07:30", 21, 5, True]
-                                    }
-                                }
-                            }
-                        },
+                        "COMMAND": command,
                         "COMMANDID": 1
                     }
                 ]
@@ -699,7 +625,7 @@ async def test_store_basic_profile(neohub_name: str) -> None:
 
     except Exception as e:
         logger.error(f"Error sending command to Neohub {neohub_name}: {e}")
-
+        
 async def apply_schedule_to_heating(
     neohub_name: str, profile_name: str, schedule_data: Dict[str, Any]
 ) -> None:
