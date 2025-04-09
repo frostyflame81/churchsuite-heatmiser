@@ -594,7 +594,7 @@ async def test_store_basic_profile(neohub_name: str) -> None:
                 "token": token,
                 "COMMANDS": [
                     {
-                        "COMMAND": json.dumps(command),
+                        "COMMAND": command,
                         "COMMANDID": 1
                     }
                 ]
@@ -625,7 +625,7 @@ async def test_store_basic_profile(neohub_name: str) -> None:
 
     except Exception as e:
         logger.error(f"Error sending command to Neohub {neohub_name}: {e}")
-               
+                       
 async def apply_schedule_to_heating(
     neohub_name: str, profile_name: str, schedule_data: Dict[str, Any]
 ) -> None:
