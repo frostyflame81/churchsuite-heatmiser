@@ -598,289 +598,82 @@ async def test_store_basic_profile(neohub_name: str) -> None:
     }
 
     # test constucted message using full json
-    full_command ={
-      "message_type": "hm_get_command_queue",
-      "message": {
-        "token": "5aee5c07-86e1-4bf4-a23f-2f7af90ab699",
-        "COMMANDS": [
-          {
-            "COMMAND": {
-              "STORE_PROFILE": {
-                "name": "Next Week",
-                "info": {
-                  "friday": {
-                    "level1": [
-                      "09:30",
-                      18,
-                      5,
-                      True
-                    ],
-                    "level2": [
-                      "12:30",
-                      20,
-                      5,
-                      True
-                    ],
-                    "level3": [
-                      "14:00",
-                      18,
-                      5,
-                      True
-                    ],
-                    "level4": [
-                      "17:30",
-                      21,
-                      5,
-                      True
-                    ],
-                    "sleep": [
-                      "22:00",
-                      18,
-                      5,
-                      True
-                    ],
-                    "wake": [
-                      "07:30",
-                      21,
-                      5,
-                      True
-                    ]
-                  },
-                  "monday": {
-                    "level1": [
-                      "09:30",
-                      18,
-                      5,
-                      True
-                    ],
-                    "level2": [
-                      "12:30",
-                      20,
-                      5,
-                      True
-                    ],
-                    "level3": [
-                      "14:00",
-                      18,
-                      5,
-                      True
-                    ],
-                    "level4": [
-                      "17:30",
-                      21,
-                      5,
-                      True
-                    ],
-                    "sleep": [
-                      "22:00",
-                      18,
-                      5,
-                      True
-                    ],
-                    "wake": [
-                      "06:30",
-                      21,
-                      5,
-                      True
-                    ]
-                  },
-                  "saturday": {
-                    "level1": [
-                      "09:30",
-                      18,
-                      5,
-                      True
-                    ],
-                    "level2": [
-                      "12:30",
-                      20,
-                      5,
-                      True
-                    ],
-                    "level3": [
-                      "14:00",
-                      18,
-                      5,
-                      True
-                    ],
-                    "level4": [
-                      "17:30",
-                      21,
-                      5,
-                      True
-                    ],
-                    "sleep": [
-                      "22:00",
-                      18,
-                      5,
-                      True
-                    ],
-                    "wake": [
-                      "07:30",
-                      21,
-                      5,
-                      True
-                    ]
-                  },
-                  "sunday": {
-                    "level1": [
-                      "09:30",
-                      18,
-                      5,
-                      True
-                    ],
-                    "level2": [
-                      "12:30",
-                      20,
-                      5,
-                      True
-                    ],
-                    "level3": [
-                      "14:00",
-                      18,
-                      5,
-                      True
-                    ],
-                    "level4": [
-                      "17:30",
-                      21,
-                      5,
-                      True
-                    ],
-                    "sleep": [
-                      "22:00",
-                      18,
-                      5,
-                      True
-                    ],
-                    "wake": [
-                      "07:30",
-                      21,
-                      5,
-                      True
-                    ]
-                  },
-                  "thursday": {
-                    "level1": [
-                      "09:30",
-                      18,
-                      5,
-                      True
-                    ],
-                    "level2": [
-                      "12:30",
-                      20,
-                      5,
-                      True
-                    ],
-                    "level3": [
-                      "14:00",
-                      18,
-                      5,
-                      True
-                    ],
-                    "level4": [
-                      "17:30",
-                      21,
-                      5,
-                      True
-                    ],
-                    "sleep": [
-                      "22:00",
-                      18,
-                      5,
-                      True
-                    ],
-                    "wake": [
-                      "07:30",
-                      21,
-                      5,
-                      True
-                    ]
-                  },
-                  "tuesday": {
-                    "level1": [
-                      "09:30",
-                      18,
-                      5,
-                      True
-                    ],
-                    "level2": [
-                      "12:30",
-                      20,
-                      5,
-                      True
-                    ],
-                    "level3": [
-                      "14:00",
-                      18,
-                      5,
-                      True
-                    ],
-                    "level4": [
-                      "17:30",
-                      21,
-                      5,
-                      True
-                    ],
-                    "sleep": [
-                      "22:00",
-                      18,
-                      5,
-                      True
-                    ],
-                    "wake": [
-                      "07:30",
-                      21,
-                      5,
-                      True
-                    ]
-                  },
-                  "wednesday": {
-                    "level1": [
-                      "09:30",
-                      18,
-                      5,
-                      True
-                    ],
-                    "level2": [
-                      "12:30",
-                      20,
-                      5,
-                      True
-                    ],
-                    "level3": [
-                      "14:00",
-                      18,
-                      5,
-                      True
-                    ],
-                    "level4": [
-                      "17:30",
-                      21,
-                      5,
-                      True
-                    ],
-                    "sleep": [
-                      "22:00",
-                      18,
-                      5,
-                      True
-                    ],
-                    "wake": [
-                      "07:30",
-                      21,
-                      5,
-                      True
-                    ]
-                  }
-                }
-              }
-            },
-            "COMMANDID": 1
-          }
-        ]
-      }
+    # Construct the full command
+    full_command = {
+        "message_type": "hm_get_command_queue",
+        "message": json.dumps(
+            {
+                "token": token,
+                "COMMANDS": [
+                    {
+                        "COMMAND": {
+                            "STORE_PROFILE": {
+                                "name": "Next Week",
+                                "info": {
+                                    "friday": {
+                                        "level1": ["09:30", 18.0, 5.0, True],
+                                        "level2": ["12:30", 20.0, 5.0, True],
+                                        "level3": ["14:00", 18.0, 5.0, True],
+                                        "level4": ["17:30", 21.0, 5.0, True],
+                                        "sleep": ["22:00", 18.0, 5.0, True],
+                                        "wake": ["07:30", 21.0, 5.0, True]
+                                    },
+                                    "monday": {
+                                        "level1": ["09:30", 18.0, 5.0, True],
+                                        "level2": ["12:30", 20.0, 5.0, True],
+                                        "level3": ["14:00", 18.0, 5.0, True],
+                                        "level4": ["17:30", 21.0, 5.0, True],
+                                        "sleep": ["22:00", 18.0, 5.0, True],
+                                        "wake": ["06:30", 21.0, 5.0, True]
+                                    },
+                                    "saturday": {
+                                        "level1": ["09:30", 18.0, 5.0, True],
+                                        "level2": ["12:30", 20.0, 5.0, True],
+                                        "level3": ["14:00", 18.0, 5.0, True],
+                                        "level4": ["17:30", 21.0, 5.0, True],
+                                        "sleep": ["22:00", 18.0, 5.0, True],
+                                        "wake": ["07:30", 21.0, 5.0, True]
+                                    },
+                                    "sunday": {
+                                        "level1": ["09:30", 18.0, 5.0, True],
+                                        "level2": ["12:30", 20.0, 5.0, True],
+                                        "level3": ["14:00", 18.0, 5.0, True],
+                                        "level4": ["17:30", 21.0, 5.0, True],
+                                        "sleep": ["22:00", 18.0, 5.0, True],
+                                        "wake": ["07:30", 21.0, 5.0, True]
+                                    },
+                                    "thursday": {
+                                        "level1": ["09:30", 18.0, 5.0, True],
+                                        "level2": ["12:30", 20.0, 5.0, True],
+                                        "level3": ["14:00", 18.0, 5.0, True],
+                                        "level4": ["17:30", 21.0, 5.0, True],
+                                        "sleep": ["22:00", 18.0, 5.0, True],
+                                        "wake": ["07:30", 21.0, 5.0, True]
+                                    },
+                                    "tuesday": {
+                                        "level1": ["09:30", 18.0, 5.0, True],
+                                        "level2": ["12:30", 20.0, 5.0, True],
+                                        "level3": ["14:00", 18.0, 5.0, True],
+                                        "level4": ["17:30", 21.0, 5.0, True],
+                                        "sleep": ["22:00", 18.0, 5.0, True],
+                                        "wake": ["07:30", 21.0, 5.0, True]
+                                    },
+                                    "wednesday": {
+                                        "level1": ["09:30", 18.0, 5.0, True],
+                                        "level2": ["12:30", 20.0, 5.0, True],
+                                        "level3": ["14:00", 18.0, 5.0, True],
+                                        "level4": ["17:30", 21.0, 5.0, True],
+                                        "sleep": ["22:00", 18.0, 5.0, True],
+                                        "wake": ["07:30", 21.0, 5.0, True]
+                                    }
+                                }
+                            }
+                        },
+                        "COMMANDID": 1
+                    }
+                ]
+            }
+        ),
     }
     encoded_message = json.dumps(full_command)
 
