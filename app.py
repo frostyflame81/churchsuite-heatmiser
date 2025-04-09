@@ -884,9 +884,6 @@ async def test_store_basic_profile(neohub_name: str) -> None:
     }
     encoded_message = json.dumps(full_command)
 
-    # Double JSON encode the encoded_message
-    double_encoded_message = json.dumps(encoded_message)
-
     try:
         uri = f"wss://{host}:{port}"
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
@@ -895,8 +892,8 @@ async def test_store_basic_profile(neohub_name: str) -> None:
 
         async with websockets.connect(uri, ssl=context) as websocket:
             logger.debug("WebSocket connected successfully")
-            logger.debug("Sending: %s", double_encoded_message)
-            await websocket.send(double_encoded_message)
+            logger.debug("Sending: %s", encoded_message)
+            await websocket.send(encoded_message)
 
             response = await websocket.recv()
             logger.debug("Received: %s", response)
