@@ -584,7 +584,7 @@ async def test_store_basic_profile(neohub_name: str) -> None:
     }
 
     # Construct the STORE_PROFILE2 command
-    command = f"{{'STORE_PROFILE2': ['{static_profile_data}']}}"
+    command = {'STORE_PROFILE2': static_profile_data}
     
     # Construct the outer message as a string, with escaped quotes
     command_payload = {
