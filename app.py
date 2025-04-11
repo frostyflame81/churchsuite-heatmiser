@@ -189,37 +189,33 @@ async def get_neohub_firmware_version(neohub_name: str) -> Optional[int]:
         logger.error(f"Neohub configuration not found for {neohub_name}")
         return None
 
-    # Send the command using the custom function
-    response = await send_profile_command(
-        neohub_name,
-        command,
-        neohub_config["token"],
-        neohub_config["address"],
-        neohub_config["port"],
-    )
-
-    if response:
-        try:
-            # Extract the firmware version from the response
-            firmware_version = int(response.get("version"))
-            logger.info(f"Firmware version for Neohub {neohub_name}: {firmware_version}")
-            return firmware_version
-        except (ValueError, AttributeError) as e:
-            logger.error(f"Error parsing firmware version from response: {e}")
-            return None
-    else:
-        logger.error(f"Failed to retrieve system data from Neohub {neohub_name}.")
-        return None    
-
-
-def close_connections() -> None:
-    """Closes all Neohub connections."""
+    # Get the Neohub instance
     global hubs
-    for neohub_name, hub in hubs.items():
-        if hub:
-            asyncio.run(hub._client.disconnect()) #changed
-            logging.info(f"Disconnected from Neohub: {neohub_name}")
-    hubs = {}
+    hub = hubs.get(neohub_name)
+    if hub is None:
+        logging.error(f"Not connected to Neohub: {neohub_name}")
+        return None
+
+    try:
+        # Use the neohubapi library's _send function directly
+        response = await hub._send(command)
+
+        if response:
+            try:
+                # Extract the firmware version from the response
+                firmware_version = int(response.get("version"))
+                logger.info(f"Firmware version for Neohub {neohub_name}: {firmware_version}")
+                return firmware_version
+            except (ValueError, AttributeError) as e:
+                logger.error(f"Error parsing firmware version from response: {e}")
+                return None
+        else:
+            logger.error(f"Failed to retrieve system data from Neohub {neohub_name}.")
+            return None
+
+    except Exception as e:
+        logger.error(f"An unexpected error occurred: {e}")
+        return None
 
 
 
@@ -626,7 +622,7 @@ async def test_store_basic_profile(neohub_name: str) -> None:
     else:
         schedule_data = {
             "monday": {
-                "wake": ["07:00", 21],
+                "wake": ["06:30", 21],
                 "level1": ["09:00", 18],
                 "level2": ["12:00", 20],
                 "level3": ["14:00", 18],
@@ -692,7 +688,7 @@ async def test_store_basic_profile(neohub_name: str) -> None:
     }
 
     # Construct the full websocket message
-    websocket_message = {
+    full_command = {
         "message_type": "hm_get_command_queue",
         "message": json.dumps(
             {
@@ -707,33 +703,25 @@ async def test_store_basic_profile(neohub_name: str) -> None:
         ),
     }
 
+    # Get the Neohub instance
+    global hubs
+    hub = hubs.get(neohub_name)
+    if hub is None:
+        logging.error(f"Not connected to Neohub: {neohub_name}")
+        return
+
     try:
-        uri = f"wss://{host}:{port}"
-        context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        context.check_hostname = False
-        context.verify_mode = ssl.CERT_NONE
+        # Use the neohubapi library's _send function directly
+        response = await hub._send(full_command)
 
-        async with websockets.connect(uri, ssl=context) as websocket:
-            logger.debug("WebSocket connected successfully")
-            encoded_message = json.dumps(websocket_message)
-            logger.debug("Sending: %s", encoded_message)
-            await websocket.send(encoded_message)
+        if response:
+            logging.info(f"Successfully stored static profile on Neohub {neohub_name}")
+        else:
+            logging.error(f"Failed to store static profile on Neohub {neohub_name}")
 
-            response = await websocket.recv()
-            logger.debug("Received: %s", response)
-
-            result = json.loads(response)
-            if result.get("message_type") == "hm_set_command_response":
-                logging.info(f"Successfully sent basic command on Neohub {neohub_name}")
-            else:
-                logger.error(f"Unexpected message type: {result.get('message_type')}")
-
-    except websockets.exceptions.ConnectionClosedError as e:
-        logger.error(f"Connection closed unexpectedly: {e}")
-    except ConnectionRefusedError as e:
-        logger.error(f"Connection refused: {e}")
     except Exception as e:
-        logger.error(f"An error occurred: {e}")
+        logging.error(f"An unexpected error occurred: {e}")
+        return
 
 
 async def apply_schedule_to_heating(
