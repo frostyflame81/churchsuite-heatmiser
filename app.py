@@ -679,11 +679,14 @@ async def test_store_basic_profile(neohub_name: str) -> None:
             }
         }
 
+    # JSON encode the schedule data
+    encoded_schedule_data = json.dumps(schedule_data)
+
     # Construct the STORE_PROFILE command
     store_profile_command = {
         "STORE_PROFILE": {
             "name": "My Test Profile",
-            "info": schedule_data,
+            "info": encoded_schedule_data,
         }
     }
 
