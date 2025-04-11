@@ -679,27 +679,16 @@ async def test_store_basic_profile(neohub_name: str) -> None:
             }
         }
 
-    # JSON encode the schedule data
-    encoded_schedule_data = json.dumps(schedule_data)
-
-    # Construct the full websocket message
-    full_command = {
-        "message_type": "hm_get_command_queue",
-        "message": {
-            "token": token,
-            "COMMANDS": [
-                {
-                    "COMMAND": {
-                        "STORE_PROFILE": {
-                            "name": "My Test Profile",
-                            "info": encoded_schedule_data,
-                        }
-                    },
-                    "COMMANDID": 2,  # Example command ID
-                }
-            ]
-        },
+    # Construct the STORE_PROFILE command
+    store_profile_command = {
+        "STORE_PROFILE": {
+            "name": "My Test Profile",
+            "info": schedule_data,
+        }
     }
+
+    # Define the expected reply
+    reply = {"result": "profile stored"}  # Replace with the actual expected reply
 
     # Get the Neohub instance
     global hubs
@@ -710,7 +699,7 @@ async def test_store_basic_profile(neohub_name: str) -> None:
 
     try:
         # Use the neohubapi library's _send function directly
-        response = await hub._send(full_command)
+        response = await hub._send(store_profile_command, reply)
 
         if response:
             logging.info(f"Successfully stored static profile on Neohub {neohub_name}")
