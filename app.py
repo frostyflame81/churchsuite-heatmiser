@@ -584,7 +584,7 @@ async def test_store_basic_profile(neohub_name: str) -> None:
     }
 
     # Construct the STORE_PROFILE2 command as a dictionary
-    command = {'STORE_PROFILE2': {"name": "Next Week", "info": static_profile_data["info"]}}
+    command = {"STORE_PROFILE2": {"name": "Next Week"}}
 
     # Construct the full command
     full_command = {
