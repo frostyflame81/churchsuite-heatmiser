@@ -181,7 +181,7 @@ async def get_neohub_firmware_version(neohub_name: str) -> Optional[int]:
     logger.info(f"Getting firmware version from Neohub: {neohub_name}")
 
     # Construct the GET_SYSTEM command
-    command = {"INFO": 0}
+    command = {"GET_SYSTEM": 0}
 
     # Get Neohub configuration
     neohub_config = config["neohubs"].get(neohub_name)
@@ -690,7 +690,7 @@ async def test_store_basic_profile(neohub_name: str) -> None:
     # Construct the full websocket message
     full_command = {
         "message_type": "hm_get_command_queue",
-        "message": json.dumps(
+        "message": (
             {
                 "token": token,
                 "COMMANDS": [
