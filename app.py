@@ -175,6 +175,42 @@ async def get_profile(neohub_name: str, profile_name: str) -> Optional[Dict[str,
     return response
 
 
+async def get_neohub_firmware_version(neohub_name: str) -> Optional[int]:
+    """Gets the firmware version of the Neohub."""
+    logger = logging.getLogger("neohub")
+    logger.info(f"Getting firmware version from Neohub: {neohub_name}")
+
+    # Construct the GET_SYSTEM command
+    command = {"INFO": 0}
+
+    # Get Neohub configuration
+    neohub_config = config["neohubs"].get(neohub_name)
+    if not neohub_config:
+        logger.error(f"Neohub configuration not found for {neohub_name}")
+        return None
+
+    # Send the command using the custom function
+    response = await send_profile_command(
+        neohub_name,
+        command,
+        neohub_config["token"],
+        neohub_config["address"],
+        neohub_config["port"],
+    )
+
+    if response:
+        try:
+            # Extract the firmware version from the response
+            firmware_version = int(response.get("version"))
+            logger.info(f"Firmware version for Neohub {neohub_name}: {firmware_version}")
+            return firmware_version
+        except (ValueError, AttributeError) as e:
+            logger.error(f"Error parsing firmware version from response: {e}")
+            return None
+    else:
+        logger.error(f"Failed to retrieve system data from Neohub {neohub_name}.")
+        return None    
+
 
 def close_connections() -> None:
     """Closes all Neohub connections."""
@@ -521,87 +557,155 @@ async def test_store_basic_profile(neohub_name: str) -> None:
     host = neohub_config["address"]
     port = neohub_config["port"]
 
-    static_profile_data = {
-        "info": {
-            "friday": {
-                "level1": ["09:30", 18, 5, True],
-                "level2": ["12:30", 20, 5, True],
-                "level3": ["14:00", 18, 5, True],
-                "level4": ["17:30", 21, 5, True],
-                "sleep": ["22:00", 18, 5, True],
-                "wake": ["07:30", 21, 5, True]
-            },
+    # Determine Neohub firmware version (replace with actual method if available)
+    firmware_version = await get_neohub_firmware_version(neohub_name)
+    if firmware_version is None:
+        logging.error(f"Could not determine firmware version for Neohub {neohub_name}.  Assuming latest format.")
+        firmware_version = 2079  # Assume 2079 or later if version cannot be determined
+
+    # Construct the schedule data based on firmware version
+    if firmware_version >= 2079:
+        schedule_data = {
             "monday": {
-                "level1": ["09:30", 18, 5, True],
-                "level2": ["12:30", 20, 5, True],
-                "level3": ["14:00", 18, 5, True],
-                "level4": ["17:30", 21, 5, True],
-                "sleep": ["22:00", 18, 5, True],
-                "wake": ["06:30", 21, 5, True]
-            },
-            "saturday": {
-                "level1": ["09:30", 18, 5, True],
-                "level2": ["12:30", 20, 5, True],
-                "level3": ["14:00", 18, 5, True],
-                "level4": ["17:30", 21, 5, True],
-                "sleep": ["22:00", 18, 5, True],
-                "wake": ["07:30", 21, 5, True]
-            },
-            "sunday": {
-                "level1": ["09:30", 18, 5, True],
-                "level2": ["12:30", 20, 5, True],
-                "level3": ["14:00", 18, 5, True],
-                "level4": ["17:30", 21, 5, True],
-                "sleep": ["22:00", 18, 5, True],
-                "wake": ["07:30", 21, 5, True]
-            },
-            "thursday": {
-                "level1": ["09:30", 18, 5, True],
-                "level2": ["12:30", 20, 5, True],
-                "level3": ["14:00", 18, 5, True],
-                "level4": ["17:30", 21, 5, True],
-                "sleep": ["22:00", 18, 5, True],
-                "wake": ["07:30", 21, 5, True]
+                "wake": ["06:30", 21.0, 5.0, True],
+                "level1": ["09:00", 18.0, 5.0, True],
+                "level2": ["12:00", 20.0, 5.0, True],
+                "level3": ["14:00", 18.0, 5.0, True],
+                "level4": ["17:00", 22.0, 5.0, True],
+                "sleep": ["23:00", 16.0, 5.0, True]
             },
             "tuesday": {
-                "level1": ["09:30", 18, 5, True],
-                "level2": ["12:30", 20, 5, True],
-                "level3": ["14:00", 18, 5, True],
-                "level4": ["17:30", 21, 5, True],
-                "sleep": ["22:00", 18, 5, True],
-                "wake": ["07:30", 21, 5, True]
+                "wake": ["07:00", 21.0, 5.0, True],
+                "level1": ["09:00", 18.0, 5.0, True],
+                "level2": ["12:00", 20.0, 5.0, True],
+                "level3": ["14:00", 18.0, 5.0, True],
+                "level4": ["17:00", 22.0, 5.0, True],
+                "sleep": ["23:00", 16.0, 5.0, True]
+            },
+            "wenesday": {
+                "wake": ["07:00", 21.0, 5.0, True],
+                "level1": ["09:00", 18.0, 5.0, True],
+                "level2": ["12:00", 20.0, 5.0, True],
+                "level3": ["14:00", 18.0, 5.0, True],
+                "level4": ["17:00", 22.0, 5.0, True],
+                "sleep": ["23:00", 16.0, 5.0, True]
+            },
+            "thursday": {
+                "wake": ["07:00", 21.0, 5.0, True],
+                "level1": ["09:00", 18.0, 5.0, True],
+                "level2": ["12:00", 20.0, 5.0, True],
+                "level3": ["14:00", 18.0, 5.0, True],
+                "level4": ["17:00", 22.0, 5.0, True],
+                "sleep": ["23:00", 16.0, 5.0, True]
+            },
+            "friday": {
+                "wake": ["07:00", 21.0, 5.0, True],
+                "level1": ["09:00", 18.0, 5.0, True],
+                "level2": ["12:00", 20.0, 5.0, True],
+                "level3": ["14:00", 18.0, 5.0, True],
+                "level4": ["17:00", 22.0, 5.0, True],
+                "sleep": ["23:00", 16.0, 5.0, True]
+            },
+            "saturday": {
+                "wake": ["07:00", 21.0, 5.0, True],
+                "level1": ["09:00", 18.0, 5.0, True],
+                "level2": ["12:00", 20.0, 5.0, True],
+                "level3": ["14:00", 18.0, 5.0, True],
+                "level4": ["17:00", 22.0, 5.0, True],
+                "sleep": ["23:00", 16.0, 5.0, True]
+            },
+            "sunday": {
+                "wake": ["07:00", 21.0, 5.0, True],
+                "level1": ["09:00", 18.0, 5.0, True],
+                "level2": ["12:00", 20.0, 5.0, True],
+                "level3": ["14:00", 18.0, 5.0, True],
+                "level4": ["17:00", 22.0, 5.0, True],
+                "sleep": ["23:00", 16.0, 5.0, True]
+            }
+        }
+    else:
+        schedule_data = {
+            "monday": {
+                "wake": ["07:00", 21],
+                "level1": ["09:00", 18],
+                "level2": ["12:00", 20],
+                "level3": ["14:00", 18],
+                "level4": ["17:00", 22],
+                "sleep": ["23:00", 16]
+            },
+            "tuesday": {
+                "wake": ["07:00", 21],
+                "level1": ["09:00", 18],
+                "level2": ["12:00", 20],
+                "level3": ["14:00", 18],
+                "level4": ["17:00", 22],
+                "sleep": ["23:00", 16]
             },
             "wednesday": {
-                "level1": ["09:30", 18, 5, True],
-                "level2": ["12:30", 20, 5, True],
-                "level3": ["14:00", 18, 5, True],
-                "level4": ["17:30", 21, 5, True],
-                "sleep": ["22:00", 18, 5, True],
-                "wake": ["07:30", 21, 5, True]
+                "wake": ["07:00", 21],
+                "level1": ["09:00", 18],
+                "level2": ["12:00", 20],
+                "level3": ["14:00", 18],
+                "level4": ["17:00", 22],
+                "sleep": ["23:00", 16]
+            },
+            "thursday": {
+                "wake": ["07:00", 21],
+                "level1": ["09:00", 18],
+                "level2": ["12:00", 20],
+                "level3": ["14:00", 18],
+                "level4": ["17:00", 22],
+                "sleep": ["23:00", 16]
+            },
+            "friday": {
+                "wake": ["07:00", 21],
+                "level1": ["09:00", 18],
+                "level2": ["12:00", 20],
+                "level3": ["14:00", 18],
+                "level4": ["17:00", 22],
+                "sleep": ["23:00", 16]
+            },
+            "saturday": {
+                "wake": ["07:00", 21],
+                "level1": ["09:00", 18],
+                "level2": ["12:00", 20],
+                "level3": ["14:00", 18],
+                "level4": ["17:00", 22],
+                "sleep": ["23:00", 16]
+            },
+            "sunday": {
+                "wake": ["07:00", 21],
+                "level1": ["09:00", 18],
+                "level2": ["12:00", 20],
+                "level3": ["14:00", 18],
+                "level4": ["17:00", 22],
+                "sleep": ["23:00", 16]
             }
-        },
-        "name": "Next Week",
+        }
+
+    # Construct the STORE_PROFILE command
+    store_profile_command = {
+        "STORE_PROFILE": {
+            "info": schedule_data,
+            "name": "My Test Profile",
+        }
     }
 
-    # Construct the STORE_PROFILE2 command as a dictionary
-    command = {"STORE_PROFILE2": {"name": "Next Week"}}
-
-    # Construct the full command
-    full_command = {
+    # Construct the full websocket message
+    websocket_message = {
         "message_type": "hm_get_command_queue",
         "message": json.dumps(
             {
                 "token": token,
                 "COMMANDS": [
                     {
-                        "COMMAND": command,
-                        "COMMANDID": 1
+                        "COMMAND": store_profile_command,
+                        "COMMANDID": 2,  # Example command ID
                     }
                 ]
             }
         ),
     }
-    encoded_message = json.dumps(full_command)
 
     try:
         uri = f"wss://{host}:{port}"
@@ -611,6 +715,7 @@ async def test_store_basic_profile(neohub_name: str) -> None:
 
         async with websockets.connect(uri, ssl=context) as websocket:
             logger.debug("WebSocket connected successfully")
+            encoded_message = json.dumps(websocket_message)
             logger.debug("Sending: %s", encoded_message)
             await websocket.send(encoded_message)
 
@@ -623,8 +728,13 @@ async def test_store_basic_profile(neohub_name: str) -> None:
             else:
                 logger.error(f"Unexpected message type: {result.get('message_type')}")
 
+    except websockets.exceptions.ConnectionClosedError as e:
+        logger.error(f"Connection closed unexpectedly: {e}")
+    except ConnectionRefusedError as e:
+        logger.error(f"Connection refused: {e}")
     except Exception as e:
-        logger.error(f"Error sending command to Neohub {neohub_name}: {e}")
+        logger.error(f"An error occurred: {e}")
+
 
 async def apply_schedule_to_heating(
     neohub_name: str, profile_name: str, schedule_data: Dict[str, Any]
