@@ -203,7 +203,7 @@ async def get_neohub_firmware_version(neohub_name: str) -> Optional[int]:
         if response:
             try:
                 # Extract the firmware version from the response
-                firmware_version = int(response.get("version"))
+                firmware_version = int(response.get("VERSION"))
                 logger.info(f"Firmware version for Neohub {neohub_name}: {firmware_version}")
                 return firmware_version
             except (ValueError, AttributeError) as e:
@@ -679,28 +679,23 @@ async def test_store_basic_profile(neohub_name: str) -> None:
             }
         }
 
-    # Construct the STORE_PROFILE command
-    store_profile_command = {
-        "STORE_PROFILE": {
-            "info": schedule_data,
-            "name": "My Test Profile",
-        }
-    }
-
     # Construct the full websocket message
     full_command = {
         "message_type": "hm_get_command_queue",
-        "message": (
-            {
-                "token": token,
-                "COMMANDS": [
-                    {
-                        "COMMAND": store_profile_command,
-                        "COMMANDID": 2,  # Example command ID
-                    }
-                ]
-            }
-        ),
+        "message": {
+            "token": token,
+            "COMMANDS": [
+                {
+                    "COMMAND": {
+                        "STORE_PROFILE": {
+                            "name": "My Test Profile",
+                            "info": schedule_data,
+                        }
+                    },
+                    "COMMANDID": 2,  # Example command ID
+                }
+            ]
+        },
     }
 
     # Get the Neohub instance
