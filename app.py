@@ -705,8 +705,9 @@ async def test_store_basic_profile(neohub_name: str) -> None:
 
     try:
         # Use the neohubapi library's _send function directly
-        # response = await hub._send(store_profile_command)
-        response = await send_message2(hub._client, store_profile_command)
+        store_profile_command = str(store_profile_command).replace("True", "true")  # Convert the command to a JSON string
+        response = await hub._send(store_profile_command)
+        # response = await send_message2(hub._client, store_profile_command)
 
         if response:
             logging.info(f"Successfully stored static profile on Neohub {neohub_name}")
