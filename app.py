@@ -181,7 +181,7 @@ async def get_neohub_firmware_version(neohub_name: str) -> Optional[int]:
     logger.info(f"Getting firmware version from Neohub: {neohub_name}")
 
     # Construct the GET_SYSTEM command
-    command = {"GET_SYSTEM": 0}
+    command = {"FIRMWARE": 0}
 
     # Get Neohub configuration
     neohub_config = config["neohubs"].get(neohub_name)
@@ -553,8 +553,16 @@ async def test_store_basic_profile(neohub_name: str) -> None:
     host = neohub_config["address"]
     port = neohub_config["port"]
 
+    # Get the Neohub instance
+    global hubs
+    hub = hubs.get(neohub_name)
+    if hub is None:
+        logging.error(f"Not connected to Neohub: {neohub_name}")
+        return
+    
     # Determine Neohub firmware version (replace with actual method if available)
-    firmware_version = await get_neohub_firmware_version(neohub_name)
+    firmware_version = await hub.firmware()
+    logging.debug(f"Firmware version for Neohub {neohub_name}: {firmware_version}")
     if firmware_version is None:
         logging.error(f"Could not determine firmware version for Neohub {neohub_name}.  Assuming latest format.")
         firmware_version = 2079  # Assume 2079 or later if version cannot be determined
@@ -680,29 +688,24 @@ async def test_store_basic_profile(neohub_name: str) -> None:
         }
 
     # JSON encode the schedule data
-    encoded_schedule_data = json.dumps(schedule_data)
+    # encoded_schedule_data = json.dumps(schedule_data)
 
     # Construct the STORE_PROFILE command
     store_profile_command = {
         "STORE_PROFILE": {
-            "name": "My Test Profile",
-            "info": encoded_schedule_data,
+            "name": "Test",
+            "info": schedule_data,
         }
     }
 
     # Define the expected reply
-    reply = {"result": "profile stored"}  # Replace with the actual expected reply
+    # reply = {"result": "profile stored"}  # Replace with the actual expected reply
 
-    # Get the Neohub instance
-    global hubs
-    hub = hubs.get(neohub_name)
-    if hub is None:
-        logging.error(f"Not connected to Neohub: {neohub_name}")
-        return
+
 
     try:
         # Use the neohubapi library's _send function directly
-        response = await hub._send(store_profile_command, reply)
+        response = await hub._send(store_profile_command)
 
         if response:
             logging.info(f"Successfully stored static profile on Neohub {neohub_name}")
@@ -1006,7 +1009,7 @@ def main():
         logging.info("Shutting down scheduler...")
         scheduler.shutdown()
         logging.info("Closing Neohub connections...")
-        close_connections()
+#       close_connections()
         logging.info("Exiting...")
 
 
