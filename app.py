@@ -731,7 +731,7 @@ async def send_message2(hub, message: dict | str) -> dict:
                 {
                     "token": hub._token,
                     "COMMANDS": [
-                        {"COMMAND": str(message), "COMMANDID": command_id}
+                        {"COMMAND": message, "COMMANDID": command_id}
                     ],
                 }
             ),
