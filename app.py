@@ -693,7 +693,7 @@ async def test_store_basic_profile(neohub_name: str) -> None:
     # Construct the STORE_PROFILE command
     store_profile_command = {
         "STORE_PROFILE":{
-            "info": schedule_data,
+            "info": json.loads(schedule_data),
             "name": "Test"
         }
     }
@@ -732,7 +732,7 @@ async def send_message2(hub, message: dict | str) -> dict:
                 {
                     "token": hub._token,
                     "COMMANDS": [
-                        {"COMMAND": json.loads(str(message).replace("'",'"')), "COMMANDID": command_id}
+                        {"COMMAND": str(message).replace("'",'"'), "COMMANDID": command_id}
                     ],
                 }
             ),
