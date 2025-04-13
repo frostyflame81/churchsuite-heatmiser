@@ -689,6 +689,7 @@ async def test_store_basic_profile(neohub_name: str) -> None:
 
     # JSON encode the schedule data
     # encoded_schedule_data = json.dumps(schedule_data)
+    schedule_data = str(schedule_data).replace("True", "true").replace("'",'"')  # Convert the command to a JSON string
 
     # Construct the STORE_PROFILE command
     store_profile_command = {
@@ -705,7 +706,7 @@ async def test_store_basic_profile(neohub_name: str) -> None:
 
     try:
         # Use the neohubapi library's _send function directly
-        store_profile_command = str(store_profile_command).replace("True", "true").replace("'",'"')  # Convert the command to a JSON string
+        #store_profile_command = str(store_profile_command) # Convert the command to a JSON string
         response = await hub._send(store_profile_command)
         #response = await send_message2(hub._client, store_profile_command)
 
