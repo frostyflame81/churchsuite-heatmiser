@@ -629,77 +629,73 @@ async def test_store_basic_profile(neohub_name: str) -> None:
         }
     else:
         schedule_data = {
-        {"info": 
-            {
-                "monday": {
-                    "wake": ["06:30", 21],
-                    "level1": ["09:00", 18],
-                    "level2": ["12:00", 20],
-                    "level3": ["14:00", 18],
-                    "level4": ["17:00", 22],
-                    "sleep": ["23:00", 16]
-                },
-                "tuesday": {
-                    "wake": ["07:00", 21],
-                    "level1": ["09:00", 18],
-                    "level2": ["12:00", 20],
-                    "level3": ["14:00", 18],
-                    "level4": ["17:00", 22],
-                    "sleep": ["23:00", 16]
-                },
-                "wednesday": {
-                    "wake": ["07:00", 21],
-                    "level1": ["09:00", 18],
-                    "level2": ["12:00", 20],
-                    "level3": ["14:00", 18],
-                    "level4": ["17:00", 22],
-                    "sleep": ["23:00", 16]
-                },
-                "thursday": {
-                    "wake": ["07:00", 21],
-                    "level1": ["09:00", 18],
-                    "level2": ["12:00", 20],
-                    "level3": ["14:00", 18],
-                    "level4": ["17:00", 22],
-                    "sleep": ["23:00", 16]
-                },
-                "friday": {
-                    "wake": ["07:00", 21],
-                    "level1": ["09:00", 18],
-                    "level2": ["12:00", 20],
-                    "level3": ["14:00", 18],
-                    "level4": ["17:00", 22],
-                    "sleep": ["23:00", 16]
-                },
-                "saturday": {
-                    "wake": ["07:00", 21],
-                    "level1": ["09:00", 18],
-                    "level2": ["12:00", 20],
-                    "level3": ["14:00", 18],
-                    "level4": ["17:00", 22],
-                    "sleep": ["23:00", 16]
-                },
-                "sunday": {
-                    "wake": ["07:00", 21],
-                    "level1": ["09:00", 18],
-                    "level2": ["12:00", 20],
-                    "level3": ["14:00", 18],
-                    "level4": ["17:00", 22],
-                    "sleep": ["23:00", 16]
-                }
+            "monday": {
+                "wake": ["06:30", 21],
+                "level1": ["09:00", 18],
+                "level2": ["12:00", 20],
+                "level3": ["14:00", 18],
+                "level4": ["17:00", 22],
+                "sleep": ["23:00", 16]
+            },
+            "tuesday": {
+                "wake": ["07:00", 21],
+                "level1": ["09:00", 18],
+                "level2": ["12:00", 20],
+                "level3": ["14:00", 18],
+                "level4": ["17:00", 22],
+                "sleep": ["23:00", 16]
+            },
+            "wednesday": {
+                "wake": ["07:00", 21],
+                "level1": ["09:00", 18],
+                "level2": ["12:00", 20],
+                "level3": ["14:00", 18],
+                "level4": ["17:00", 22],
+                "sleep": ["23:00", 16]
+            },
+            "thursday": {
+                "wake": ["07:00", 21],
+                "level1": ["09:00", 18],
+                "level2": ["12:00", 20],
+                "level3": ["14:00", 18],
+                "level4": ["17:00", 22],
+                "sleep": ["23:00", 16]
+            },
+            "friday": {
+                "wake": ["07:00", 21],
+                "level1": ["09:00", 18],
+                "level2": ["12:00", 20],
+                "level3": ["14:00", 18],
+                "level4": ["17:00", 22],
+                "sleep": ["23:00", 16]
+            },
+            "saturday": {
+                "wake": ["07:00", 21],
+                "level1": ["09:00", 18],
+                "level2": ["12:00", 20],
+                "level3": ["14:00", 18],
+                "level4": ["17:00", 22],
+                "sleep": ["23:00", 16]
+            },
+            "sunday": {
+                "wake": ["07:00", 21],
+                "level1": ["09:00", 18],
+                "level2": ["12:00", 20],
+                "level3": ["14:00", 18],
+                "level4": ["17:00", 22],
+                "sleep": ["23:00", 16]
             }
-        },
-        {"name": "Test"}
         }
 
     # JSON encode the schedule data
     # encoded_schedule_data = json.dumps(schedule_data)
-    schedule_data = str(schedule_data).replace("True", "true").replace("'",'"')  # Convert the command to a JSON string
+    schedule_data = json.dumps(schedule_data).replace("True", "true")#.replace("'",'"')  # Convert the command to a JSON string
 
     # Construct the STORE_PROFILE command
     store_profile_command = {
         "STORE_PROFILE":{
-            schedule_data,
+            "info": schedule_data,
+            "name": "Test"
         }
     }
 
