@@ -728,13 +728,14 @@ async def send_message2(hub, message: dict | str) -> dict:
     encoded_message = json.dumps(
         {
             "message_type": "hm_get_command_queue",
-            "message":
+            "message": json.dumps(
                 {
                     "token": hub._token,
                     "COMMANDS": [
-                        {"COMMAND": str(message).replace("'",'"'), "COMMANDID": command_id}
+                        {"COMMAND": json.loads(str(message).replace("'",'"')), "COMMANDID": command_id}
                     ],
-                },
+                }
+            ),
         }
     )
     hub._logger.debug("Sending: %s", encoded_message)
