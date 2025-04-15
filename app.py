@@ -689,7 +689,7 @@ async def test_store_basic_profile(neohub_name: str) -> None:
 
     # JSON encode the schedule data
     # encoded_schedule_data = json.dumps(schedule_data)
-    schedule_data = str(schedule_data).replace("True", "true")#.replace("'",'"')  # Convert the command to a JSON string
+    # schedule_data = str(schedule_data).replace("True", "true")#.replace("'",'"')  # Convert the command to a JSON string
 
     # Construct the STORE_PROFILE command
     store_profile_command = {
@@ -698,6 +698,8 @@ async def test_store_basic_profile(neohub_name: str) -> None:
             "name": "Test"
         }
     }
+
+    store_profile_command = str(store_profile_command).replace("'", '"').replace("True", "true")  # Convert the command to a JSON string
 
     # Define the expected reply
     # reply = {"result": "profile stored"}  # Replace with the actual expected reply
