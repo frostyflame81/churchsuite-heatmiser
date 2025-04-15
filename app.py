@@ -699,7 +699,7 @@ async def test_store_basic_profile(neohub_name: str) -> None:
         }
     }
 
-    store_profile_command = str(store_profile_command).replace("'", '"').replace("True", "true")  # Convert the command to a JSON string
+    store_profile_command = str(store_profile_command).replace("True", "true")  # Convert the command to a JSON string
 
     # Define the expected reply
     # reply = {"result": "profile stored"}  # Replace with the actual expected reply
