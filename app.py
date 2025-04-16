@@ -849,7 +849,16 @@ async def apply_schedule_to_heating(
     #     )
     # else:
     #     logging.error(f"Failed to store profile {profile_name} on Neohub {neohub_name}")
-
+    
+    # Check if the profile was stored successfully
+    try:
+        stored_profile = await get_profile(neohub_name, "Test")
+        if stored_profile:
+            logging.info(f"Successfully stored profile 'Test' on Neohub {neohub_name}")
+        else:
+            logging.error(f"Failed to store profile 'Test' on Neohub {neohub_name}")
+    except Exception as e:
+        logging.error(f"Error retrieving profile 'Test' from Neohub {neohub_name}: {e}")
 
 async def check_neohub_compatibility(config: Dict[str, Any], neohub_name: str) -> bool:
     """
