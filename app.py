@@ -758,17 +758,23 @@ async def send_message3(hub, message: dict | str) -> dict:
 
     message_with_escaped_keys_and_values = escape_keys(message)
 
-    encoded_message = json.dumps(
-        {
-            "message_type": "hm_get_command_queue",
-            "message": {
-                "token": hub._token,
-                "COMMANDS": [
-                    {"COMMAND": message_with_escaped_keys_and_values, "COMMANDID": command_id}
-                ],
-            },
-        }
+    # Construct the inner message
+    inner_message = {
+        "token": hub._token,
+        "COMMANDS": [
+            {"COMMAND": message_with_escaped_keys_and_values, "COMMANDID": command_id}
+        ],
+    }
+
+    # Manually construct the JSON string
+    encoded_message = (
+        '{"message_type": "hm_get_command_queue", "message": "'
+        + json.dumps(inner_message)
+        .replace('"', '\\"')
+        .replace("'", '"')
+        + '"}'
     )
+
     hub._logger.debug("Sending: %s", encoded_message)
 
     try:
