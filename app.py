@@ -770,7 +770,7 @@ async def send_message3(hub, message: dict | str) -> dict:
     encoded_message = (
         '{"message_type": "hm_get_command_queue", "message": "'
         + json.dumps(inner_message)
-        .replace('"', '\\"')
+        .replace('"', '\\\\"')  # Escape double quotes with double backslashes
         .replace("'", '"')
         + '"}'
     )
