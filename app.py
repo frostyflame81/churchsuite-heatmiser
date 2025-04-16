@@ -729,20 +729,34 @@ async def send_message3(hub, message: dict | str) -> dict:
 
     command_id = next(hub._request_counter)
 
-    # Manually construct the JSON string with escaped keys and unescaped values
+    # Manually construct the JSON string with escaped keys and escaped values
     def escape_keys(data):
         if isinstance(data, dict):
             escaped_data = {}
             for key, value in data.items():
                 escaped_key = json.dumps(key)[1:-1]  # Escape the key
-                escaped_data[escaped_key] = escape_keys(value)  # Recursively process the value
+                escaped_data[escaped_key] = escape_values(value)  # Recursively process the value
             return escaped_data
         elif isinstance(data, list):
             return [escape_keys(item) for item in data]
         else:
             return data
 
-    message_with_escaped_keys = escape_keys(message)
+    def escape_values(data):
+        if isinstance(data, str):
+            return json.dumps(data)[1:-1]  # Escape the value
+        elif isinstance(data, float) or isinstance(data, int):
+            return data
+        elif isinstance(data, bool):
+            return str(data).lower()
+        elif isinstance(data, dict):
+            return {k: escape_values(v) for k, v in data.items()}
+        elif isinstance(data, list):
+            return [escape_values(item) for item in data]
+        else:
+            return data
+
+    message_with_escaped_keys_and_values = escape_keys(message)
 
     encoded_message = json.dumps(
         {
@@ -751,7 +765,7 @@ async def send_message3(hub, message: dict | str) -> dict:
                 {
                     "token": hub._token,
                     "COMMANDS": [
-                        {"COMMAND": message_with_escaped_keys, "COMMANDID": command_id}
+                        {"COMMAND": message_with_escaped_keys_and_values, "COMMANDID": command_id}
                     ],
                 }
             ),
