@@ -709,7 +709,7 @@ async def test_store_basic_profile(neohub_name: str) -> None:
     try:
         # Use the neohubapi library's _send function directly
         #store_profile_command = str(store_profile_command) # Convert the command to a JSON string
-        response = await hub._send(store_profile_command)
+        #response = await hub._send(store_profile_command)
         response = await send_message3(hub._client, store_profile_command)
 
         if response:
@@ -761,14 +761,13 @@ async def send_message3(hub, message: dict | str) -> dict:
     encoded_message = json.dumps(
         {
             "message_type": "hm_get_command_queue",
-            "message": json.dumps(
+            "message":
                 {
                     "token": hub._token,
                     "COMMANDS": [
                         {"COMMAND": message_with_escaped_keys_and_values, "COMMANDID": command_id}
                     ],
                 }
-            ),
         }
     )
     hub._logger.debug("Sending: %s", encoded_message)
