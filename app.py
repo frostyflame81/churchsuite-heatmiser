@@ -687,10 +687,6 @@ async def test_store_basic_profile(neohub_name: str) -> None:
             }
         }
 
-    # JSON encode the schedule data
-    # encoded_schedule_data = json.dumps(schedule_data)
-    # schedule_data = str(schedule_data).replace("True", "true")#.replace("'",'"')  # Convert the command to a JSON string
-
     # Construct the STORE_PROFILE command
     store_profile_command = {
         "STORE_PROFILE":{
@@ -699,24 +695,18 @@ async def test_store_basic_profile(neohub_name: str) -> None:
         }
     }
 
-    # store_profile_command = str(store_profile_command).replace("True", "true")  # Convert the command to a JSON string
-
-    # Define the expected reply
-    # reply = {"result": "profile stored"}  # Replace with the actual expected reply
-
-
-
     try:
         # Use the neohubapi library's _send function directly
-        #store_profile_command = str(store_profile_command) # Convert the command to a JSON string
-        #response = await hub._send(store_profile_command)
-        response = await send_message3(hub._client, store_profile_command)
+        response = await asyncio.wait_for(send_message3(hub._client, store_profile_command), timeout=30)
 
         if response:
             logging.info(f"Successfully stored static profile on Neohub {neohub_name}")
         else:
             logging.error(f"Failed to store static profile on Neohub {neohub_name}")
 
+    except asyncio.TimeoutError:
+        logging.error(f"Timeout occurred while storing static profile on Neohub {neohub_name}")
+        return
     except Exception as e:
         logging.error(f"An unexpected error occurred: {e}")
         return
