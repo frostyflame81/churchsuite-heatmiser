@@ -699,7 +699,7 @@ async def test_store_basic_profile(neohub_name: str) -> None:
         }
     }
 
-    store_profile_command = str(store_profile_command).replace("True", "true")  # Convert the command to a JSON string
+    # store_profile_command = str(store_profile_command).replace("True", "true")  # Convert the command to a JSON string
 
     # Define the expected reply
     # reply = {"result": "profile stored"}  # Replace with the actual expected reply
@@ -710,7 +710,7 @@ async def test_store_basic_profile(neohub_name: str) -> None:
         # Use the neohubapi library's _send function directly
         #store_profile_command = str(store_profile_command) # Convert the command to a JSON string
         response = await hub._send(store_profile_command)
-        #response = await send_message2(hub._client, store_profile_command)
+        response = await send_message3(hub._client, store_profile_command)
 
         if response:
             logging.info(f"Successfully stored static profile on Neohub {neohub_name}")
@@ -720,7 +720,63 @@ async def test_store_basic_profile(neohub_name: str) -> None:
     except Exception as e:
         logging.error(f"An unexpected error occurred: {e}")
         return
-    
+
+async def send_message3(hub, message: dict | str) -> dict:
+    """Send a message to the WebSocket server and return response."""
+    if not hub._websocket or not hub.running:
+        hub._logger.error("WebSocket not connected")
+        raise ConnectionError("WebSocket not connected")
+
+    command_id = next(hub._request_counter)
+
+    # Manually construct the JSON string with escaped keys and unescaped values
+    def escape_keys(data):
+        if isinstance(data, dict):
+            escaped_data = {}
+            for key, value in data.items():
+                escaped_key = json.dumps(key)[1:-1]  # Escape the key
+                escaped_data[escaped_key] = escape_keys(value)  # Recursively process the value
+            return escaped_data
+        elif isinstance(data, list):
+            return [escape_keys(item) for item in data]
+        else:
+            return data
+
+    message_with_escaped_keys = escape_keys(message)
+
+    encoded_message = json.dumps(
+        {
+            "message_type": "hm_get_command_queue",
+            "message": json.dumps(
+                {
+                    "token": hub._token,
+                    "COMMANDS": [
+                        {"COMMAND": message_with_escaped_keys, "COMMANDID": command_id}
+                    ],
+                }
+            ),
+        }
+    )
+    hub._logger.debug("Sending: %s", encoded_message)
+
+    try:
+        future = hub._loop.create_future()
+        hub._pending_requests[command_id] = future
+        await hub._websocket.send(encoded_message)
+        return await asyncio.wait_for(future, timeout=hub._request_timeout)
+    except TimeoutError:
+        hub._logger.error(
+            "Request %s timed out after %ds", command_id, hub._request_timeout
+        )
+        if command_id in hub._pending_requests:
+            del hub._pending_requests[command_id]
+        raise
+    except Exception:
+        hub._logger.exception("Error sending message")
+        if command_id in hub._pending_requests:
+            del hub._pending_requests[command_id]
+        raise
+
 async def send_message2(hub, message: dict | str) -> dict:
     """Send a message to the WebSocket server and return response."""
     if not hub._websocket or not hub.running:
