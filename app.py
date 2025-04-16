@@ -765,7 +765,7 @@ async def send_message3(hub, message: dict | str) -> dict:
                 {
                     "token": hub._token,
                     "COMMANDS": [
-                        {"COMMAND": json.dumps(message_with_escaped_keys_and_values), "COMMANDID": command_id}
+                        {"COMMAND": message_with_escaped_keys_and_values, "COMMANDID": command_id}
                     ],
                 }
             )
