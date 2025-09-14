@@ -689,7 +689,7 @@ async def test_store_basic_profile(neohub_name: str) -> None:
 
     # Construct the STORE_PROFILE command
     store_profile_command = {
-        "STORE_PROFILE":{
+        "STORE_PROFILE2":{
             "info": schedule_data,
             "name": "Test"
         }
