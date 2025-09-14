@@ -12,7 +12,7 @@ import dateutil.parser # type: ignore
 from typing import Dict, Any, List, Optional
 import websockets # type: ignore
 import ssl
-from neohubapi.neohub import NeoHub, NeoHubUsageError, NeoHubConnectionError # type: ignore
+from neohubapi.neohub import NeoHub, NeoHubUsageError, NeoHubConnectionError, WebSocketClient # type: ignore
 
 # Configuration
 OPENWEATHERMAP_API_KEY = os.environ.get("OPENWEATHERMAP_API_KEY")
@@ -696,8 +696,8 @@ async def test_store_basic_profile(neohub_name: str) -> None:
     }
 
     try:
-        # Use the custom send_message3 function with a timeout
-        response = await asyncio.wait_for(send_command(hub._client, store_profile_command), timeout=5)
+        # Use the neohubapi send_message function with a timeout (other custom versions are send_message2 and send_message3)
+        response = await asyncio.wait_for(WebSocketClient.send_message(hub._client, store_profile_command), timeout=5)
 
         if response:
             logging.info(f"Successfully stored static profile on Neohub {neohub_name}")
