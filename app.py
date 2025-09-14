@@ -697,8 +697,8 @@ async def test_store_basic_profile(neohub_name: str) -> None:
 
     try:
         # Use the neohubapi send_message function with a timeout (other custom versions are send_message2 and send_message3)
-        response = await asyncio.wait_for(WebSocketClient.send_message(hub._client, store_profile_command), timeout=5)
-
+        #response = await asyncio.wait_for(WebSocketClient.send_message(hub._client, store_profile_command), timeout=5)
+        response = await asyncio.wait_for(send_message3(hub._client, store_profile_command), timeout=5)
         if response:
             logging.info(f"Successfully stored static profile on Neohub {neohub_name}")
         else:
@@ -755,7 +755,14 @@ async def send_message3(hub, message: dict | str) -> dict:
             {"COMMAND": message_with_escaped_keys_and_values, "COMMANDID": command_id}
         ],
     }
-
+    # Encode inner_message as a JSON string, then encode outer message once.
+    # This ensures booleans and quotes are proper JSON (no Python repr).
+    encoded_message = json.dumps(
+        {
+            "message_type": "hm_get_command_queue",
+            "message": json.dumps(inner_message),
+        }
+    )
     # Manually construct the JSON string
     encoded_message = (
         '{"message_type": "hm_get_command_queue", "message": "'
