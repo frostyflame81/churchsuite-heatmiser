@@ -697,7 +697,7 @@ async def test_store_basic_profile(neohub_name: str) -> None:
 
     try:
         # Use the custom send_message3 function with a timeout
-        response = await asyncio.wait_for(send_message(hub._client, store_profile_command), timeout=5)
+        response = await asyncio.wait_for(send_command(hub._client, store_profile_command), timeout=5)
 
         if response:
             logging.info(f"Successfully stored static profile on Neohub {neohub_name}")
