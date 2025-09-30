@@ -586,7 +586,7 @@ async def test_store_basic_profile(neohub_name: str) -> None:
                 "level4": ["17:00", 22.0, 5.0, True],
                 "sleep": ["23:00", 16.0, 5.0, True]
             },
-            "wenesday": {
+            "wednesday": {
                 "wake": ["07:00", 21.0, 5.0, True],
                 "level1": ["09:00", 18.0, 5.0, True],
                 "level2": ["12:00", 20.0, 5.0, True],
