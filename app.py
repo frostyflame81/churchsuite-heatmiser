@@ -19,8 +19,8 @@ OPENWEATHERMAP_API_KEY = os.environ.get("OPENWEATHERMAP_API_KEY")
 OPENWEATHERMAP_CITY = os.environ.get("OPENWEATHERMAP_CITY")
 CHURCHSUITE_URL = os.environ.get("CHURCHSUITE_URL")
 PREHEAT_TIME_MINUTES = int(os.environ.get("PREHEAT_TIME_MINUTES", 30))
-DEFAULT_TEMPERATURE = int(os.environ.get("DEFAULT_TEMPERATURE", 19))
-ECO_TEMPERATURE = int(os.environ.get("ECO_TEMPERATURE", 12))
+DEFAULT_TEMPERATURE = float(os.environ.get("DEFAULT_TEMPERATURE", 19))
+ECO_TEMPERATURE = float(os.environ.get("ECO_TEMPERATURE", 12))
 TEMPERATURE_SENSITIVITY = int(os.environ.get("TEMPERATURE_SENSITIVITY", 10))
 PREHEAT_ADJUSTMENT_MINUTES_PER_DEGREE = float(
     os.environ.get("PREHEAT_ADJUSTMENT_MINUTES_PER_DEGREE", 5)
@@ -331,7 +331,7 @@ def calculate_schedule(
         """Adds a level to the day's schedule."""
         day_data[level_name] = [
             event_time.strftime("%H:%M"),
-            int(temperature),  # Ensure temperature is an integer
+            float(temperature),  # Ensure temperature is a float
             5,  # Set to 5
             True,  # Set to True
         ]
