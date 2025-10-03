@@ -166,6 +166,13 @@ async def store_profile(neohub_name: str, profile_name: str, profile_data: Dict[
     response = await send_command(neohub_name, command_json)  # Pass the JSON string to send_command
     return response
 
+async def store_profile2(neohub_name: str, profile_name: str, profile_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Stores a heating profile on the Neohub using neohubapi."""
+    logging.info(f"Storing profile {profile_name} on Neohub {neohub_name}")
+    command = {"STORE_PROFILE2": {"name": profile_name, "info": profile_data}}
+#    command_json = json.dumps(command)  # Convert the command to a JSON string (omitted for testing)
+    response = await send_command(neohub_name, command)
+    return response
 
 async def get_profile(neohub_name: str, profile_name: str) -> Optional[Dict[str, Any]]:
     """Retrieves a heating profile from the Neohub using neohubapi."""
@@ -698,7 +705,7 @@ async def test_store_basic_profile(neohub_name: str) -> None:
     try:
         # Use the neohubapi send_message function with a timeout (other custom versions are send_message2 and send_message3)
         #response = await asyncio.wait_for(WebSocketClient.send_message(hub._client, store_profile_command), timeout=5)
-        response = await asyncio.wait_for(send_command(hub._client, store_profile_command), timeout=5)
+        response = await asyncio.wait_for(send_message3(hub._client, store_profile_command), timeout=5)
         if response:
             logging.info(f"Successfully stored static profile on Neohub {neohub_name}")
         else:
@@ -843,29 +850,28 @@ async def apply_schedule_to_heating(
         )
     # Log the existing profile for comparison
     await log_existing_profile(neohub_name, profile_name)
-
-    # Comment out the original store_profile call
-    # response = await store_profile(neohub_name, profile_name, schedule_data)
+    # Store the profile using the neohubapi library's store_profile2 function
+    response = await store_profile2(neohub_name, profile_name, schedule_data)
 
     # Call the test function instead
-    await test_store_basic_profile(neohub_name)
+    # await test_store_basic_profile(neohub_name)
 
-    # if response:
-    #     logging.info(
-    #         f"Successfully stored profile {profile_name} on Neohub {neohub_name}"
-    #     )
-    # else:
-    #     logging.error(f"Failed to store profile {profile_name} on Neohub {neohub_name}")
+    if response:
+         logging.info(
+             f"Successfully stored profile {profile_name} on Neohub {neohub_name}"
+         )
+    else:
+         logging.error(f"Failed to store profile {profile_name} on Neohub {neohub_name}")
     
     # Check if the profile was stored successfully
-    try:
-        stored_profile = await get_profile(neohub_name, "Test")
-        if stored_profile:
-            logging.info(f"Successfully stored profile 'Test' on Neohub {neohub_name}")
-        else:
-            logging.error(f"Failed to store profile 'Test' on Neohub {neohub_name}")
-    except Exception as e:
-        logging.error(f"Error retrieving profile 'Test' from Neohub {neohub_name}: {e}")
+    # try:
+    #    stored_profile = await get_profile(neohub_name, "Test")
+    #    if stored_profile:
+    #        logging.info(f"Successfully stored profile 'Test' on Neohub {neohub_name}")
+    #    else:
+    #        logging.error(f"Failed to store profile 'Test' on Neohub {neohub_name}")
+    # except Exception as e:
+    #    logging.error(f"Error retrieving profile 'Test' from Neohub {neohub_name}: {e}")
 
 async def check_neohub_compatibility(config: Dict[str, Any], neohub_name: str) -> bool:
     """
