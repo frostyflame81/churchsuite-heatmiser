@@ -167,11 +167,34 @@ async def store_profile(neohub_name: str, profile_name: str, profile_data: Dict[
     return response
 
 async def store_profile2(neohub_name: str, profile_name: str, profile_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """Stores a heating profile on the Neohub using neohubapi."""
+    """Stores a heating profile on the Neohub using neohubapi, with forced JSON serialization."""
     logging.info(f"Storing profile {profile_name} on Neohub {neohub_name}")
-    command = {"STORE_PROFILE2": {"name": profile_name, "info": profile_data}}
-#    command_json = json.dumps(command)  # Convert the command to a JSON string (omitted for testing)
-    response = await send_command(neohub_name, command)
+
+    # 1. CREATE THE INNER COMMAND PAYLOAD (clean Python dict with float temps)
+    inner_payload = {
+        "STORE_PROFILE2": {
+            "name": profile_name,
+            "info": profile_data
+        }
+    }
+
+    # 2. SERIALIZE TO A CLEAN JSON STRING
+    # This ensures all quotes are DOUBLE QUOTES (") and all booleans are 'true'.
+    inner_json_string = json.dumps(inner_payload) 
+    
+    # 3. DEBUGGING ECHO: Log the final JSON string we are attempting to send.
+    logging.debug(f"DEBUG: Inner JSON Payload: {inner_json_string}")
+
+    # 4. CONSTRUCT THE FINAL COMMAND DICT FOR send_command
+    # This structure prevents the library from incorrectly adding single quotes (').
+    final_command_for_hub = {
+        "COMMAND": inner_json_string
+    }
+
+    # 5. SEND THE COMMAND
+    # The library will correctly wrap this dictionary and perform the final single escape (\")
+    # on the inner_json_string.
+    response = await send_command(neohub_name, final_command_for_hub)
     return response
 
 async def get_profile(neohub_name: str, profile_name: str) -> Optional[Dict[str, Any]]:
