@@ -42,10 +42,11 @@ def load_config():
             config = json.load(f)
             return config
     except FileNotFoundError:
-        logging.error(f"Config file not found: {CONFIG_FILE}")
+        # Log the specific path being checked
+        logging.error(f"Config file not found: {CONFIG_FILE}. Please create this file.")
         return None
     except json.JSONDecodeError:
-        logging.error(f"Error decoding JSON from config file: {CONFIG_FILE}")
+        logging.error(f"Error decoding JSON from config file: {CONFIG_FILE}. Check for syntax errors.")
         return None
 
 def connect_to_neohub(neohub_name, neohub_config):
