@@ -174,6 +174,7 @@ async def store_profile2(neohub_name: str, profile_name: str, profile_data: Dict
     inner_payload = {
         "STORE_PROFILE2": {
             "name": profile_name,
+            "P_TYPE": 0, # 0 for Heating Profile, required by the API
             "info": profile_data
         }
     }
