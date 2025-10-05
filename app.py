@@ -167,30 +167,26 @@ async def store_profile(neohub_name: str, profile_name: str, profile_data: Dict[
     return response
 
 async def store_profile2(neohub_name: str, profile_name: str, profile_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """Stores a heating profile on the Neohub, ensuring single-escaped JSON string is passed."""
+    """Stores a heating profile on the Neohub, passing a Python dictionary structure directly to avoid double-encoding."""
     logging.info(f"Storing profile {profile_name} on Neohub {neohub_name}")
 
-    # 1. CREATE THE COMMAND PAYLOAD (clean Python dict with float temps)
+    # 1. CREATE THE COMMAND PAYLOAD (clean Python dict with float temps and P_TYPE)
+    # This structure is exactly what the Hub expects under the main COMMAND key.
     inner_payload = {
         "STORE_PROFILE2": {
             "name": profile_name,
-            "P_TYPE": 0, # 0 for Heating Profile, required by the API
+            "P_TYPE": 0, # 0 for Heating Profile
             "info": profile_data
         }
     }
 
-    # 2. SERIALIZE TO A CLEAN JSON STRING
-    # This ensures correct quotes (") and types (true).
-    command_json_string = json.dumps(inner_payload) 
-    
-    # 3. DEBUGGING ECHO
-    logging.debug(f"DEBUG: FINAL JSON Payload String: {command_json_string}")
+    # 2. DEBUGGING ECHO
+    logging.debug(f"DEBUG: FINAL Python Dict Payload: {json.dumps(inner_payload)}")
 
-    # 4. SEND THE COMMAND STRING DIRECTLY
-    # We are bypassing the library's assumption of a Python dictionary and 
-    # feeding it the exact string it needs for the Hub's "COMMAND" value.
-    # The library will wrap this string with the token/COMMANDS/COMMANDID keys.
-    response = await send_command(neohub_name, command_json_string)
+    # 3. SEND THE COMMAND DICT DIRECTLY
+    # The neohubapi library's _send() will now correctly serialize this dictionary 
+    # for the WebSocket transport, avoiding the double-encoding issue.
+    response = await send_command(neohub_name, inner_payload)
     return response
 
 async def get_profile(neohub_name: str, profile_name: str) -> Optional[Dict[str, Any]]:
