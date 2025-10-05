@@ -12,6 +12,7 @@ import dateutil.parser # type ignore
 from typing import Dict, Any, List, Optional
 import websockets # type ignore
 import ssl
+# Updated import for NeoHub to allow custom port argument
 from neohubapi.neohub import NeoHub, NeoHubUsageError, NeoHubConnectionError, WebSocketClient # type ignore
 
 # Configuration
@@ -19,7 +20,7 @@ OPENWEATHERMAP_API_KEY = os.environ.get("OPENWEATHERMAP_API_KEY")
 OPENWEATHERMAP_CITY = os.environ.get("OPENWEATHERMAP_CITY")
 CHURCHSUITE_URL = os.environ.get("CHURCHSUITE_URL")
 PREHEAT_TIME_MINUTES = int(os.environ.get("PREHEAT_TIME_MINUTES", 30))
-# FIX: Ensure temperatures are treated as floats as required by the NeoHub API
+# Ensure temperatures are treated as floats as required by the NeoHub API
 DEFAULT_TEMPERATURE = float(os.environ.get("DEFAULT_TEMPERATURE", 19.0))
 ECO_TEMPERATURE = float(os.environ.get("ECO_TEMPERATURE", 12.0))
 TEMPERATURE_SENSITIVITY = int(os.environ.get("TEMPERATURE_SENSITIVITY", 10))
@@ -32,8 +33,9 @@ LOGGING_LEVEL = os.environ.get("LOGGING_LEVEL", "INFO").upper()
 # Set up logging
 logging.basicConfig(level=LOGGING_LEVEL, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
-# Global dictionary to hold NeoHub connections
+# Global dictionary to hold NeoHub connections and the parsed environment variables
 neohubs: Dict[str, NeoHub] = {}
+NEOHUB_ENV_MAP: Dict[str, Dict[str, str]] = {}
 
 def load_config():
     """Load configuration from a JSON file."""
@@ -42,26 +44,91 @@ def load_config():
             config = json.load(f)
             return config
     except FileNotFoundError:
-        # Log the specific path being checked
         logging.error(f"Config file not found: {CONFIG_FILE}. Please create this file.")
         return None
     except json.JSONDecodeError:
         logging.error(f"Error decoding JSON from config file: {CONFIG_FILE}. Check for syntax errors.")
         return None
 
-def connect_to_neohub(neohub_name, neohub_config):
-    """Initializes and connects to the NeoHub."""
-    host = neohub_config.get("host")
-    token = neohub_config.get("token")
-    if not host or not token:
-        logging.error(f"Missing host or token for Neohub: {neohub_name}")
+def parse_neohub_env_vars():
+    """
+    Scans environment variables for NEOHUB_X_NAME/ADDRESS/PORT/TOKEN pairs 
+    and populates the global NEOHUB_ENV_MAP.
+    """
+    global NEOHUB_ENV_MAP
+    
+    env_map: Dict[str, Dict[str, str]] = {}
+    i = 1
+    while True:
+        name_key = f"NEOHUB_{i}_NAME"
+        host_key = f"NEOHUB_{i}_ADDRESS"
+        port_key = f"NEOHUB_{i}_PORT"
+        token_key = f"NEOHUB_{i}_TOKEN"
+        
+        name = os.environ.get(name_key)
+        host = os.environ.get(host_key)
+        port = os.environ.get(port_key)
+        token = os.environ.get(token_key)
+        
+        if not name:
+            # Stop if NEOHUB_X_NAME is missing. Check for legacy single-hub variables at i=1.
+            if i == 1:
+                host_fallback = os.environ.get("NEOHUB_HOST")
+                token_fallback = os.environ.get("NEOHUB_TOKEN")
+                if host_fallback and token_fallback:
+                    logging.warning("Using deprecated NEOHUB_HOST/TOKEN environment variables for 'default' hub.")
+                    env_map["default"] = {"host": host_fallback, "token": token_fallback}
+                break
+            else:
+                break
+
+        if name and host and token:
+            config_data = {"host": host, "token": token}
+            if port:
+                config_data["port"] = port
+            
+            env_map[name] = config_data
+            logging.debug(f"Found NeoHub config: {name}")
+        elif name:
+            logging.error(f"Incomplete NeoHub config found for {name_key}. Missing ADDRESS or TOKEN.")
+        
+        i += 1
+        
+    NEOHUB_ENV_MAP = env_map
+
+
+def get_neohub_credentials(neohub_id: str) -> Optional[tuple[str, str, Optional[int]]]:
+    """Retrieves NeoHub host, token, and optional port from the pre-parsed environment map."""
+    hub_config = NEOHUB_ENV_MAP.get(neohub_id)
+    if hub_config:
+        port = hub_config.get("port")
+        # Ensure all components are present and correctly typed
+        return hub_config["host"], hub_config["token"], int(port) if port else None
+    
+    logging.error(f"NeoHub credentials not found in environment map for ID: '{neohub_id}'.")
+    return None
+
+def connect_to_neohub(neohub_id: str):
+    """Initializes and connects to the NeoHub using environment variables."""
+    credentials = get_neohub_credentials(neohub_id)
+    if not credentials:
         return False
+        
+    host, token, port = credentials
     
-    # Initialize the NeoHub object
-    neohubs[neohub_name] = NeoHub(host=host, token=token, request_timeout=15, request_attempts=1)
+    # Initialize the NeoHub object using the provided port or the NEW default (4243)
+    # The default port is now 4243
+    default_port = 4243
     
-    # Connection is handled lazily by the send_command wrapper.
-    logging.info(f"NeoHub instance created for {neohub_name} at {host}")
+    neohubs[neohub_id] = NeoHub(
+        host=host, 
+        token=token, 
+        request_timeout=15, 
+        request_attempts=1,
+        port=port if port is not None else default_port 
+    )
+    
+    logging.info(f"NeoHub instance created for {neohub_id} at {host}:{port if port else default_port}")
     return True
 
 async def send_command(neohub_name: str, command: Any) -> Optional[Dict[str, Any]]:
@@ -72,14 +139,13 @@ async def send_command(neohub_name: str, command: Any) -> Optional[Dict[str, Any
         return None
     
     try:
-        # Check if the hub is running, if not, try to start it
         if not hub.running:
             await hub.start()
         
-        # NOTE: The command is expected to be a valid JSON string for STORE_PROFILE2
-        # to bypass the library's incorrect internal dictionary serialization.
         if isinstance(command, dict):
-             logging.warning("send_command received a dict, attempting to pass to library. This may fail for complex commands.")
+             # The send_command function typically expects a raw command string or a dictionary for simple commands.
+             # Since we are using advanced commands like STORE_PROFILE2, it's safer to ensure we handle the string conversion correctly
+             pass
         
         response = await hub.send_command(command)
         return response
@@ -90,8 +156,6 @@ async def send_command(neohub_name: str, command: Any) -> Optional[Dict[str, Any
     except Exception as e:
         logging.error(f"An unexpected error occurred with {neohub_name}: {e}")
     finally:
-        # Optional: Disconnect after command to prevent long-running sockets
-        # await hub.disconnect()
         pass
     return None
 
@@ -142,7 +206,6 @@ async def get_churchsuite_events() -> List[Dict[str, Any]]:
 def get_preheat_minutes(outdoor_temp: Optional[float], target_temp: float, current_indoor_temp: Optional[float]) -> int:
     """Calculate preheat time based on indoor/outdoor temperature difference."""
     
-    # Fallback to a default time if no complex calculation can be done
     if outdoor_temp is None and current_indoor_temp is None:
         logging.info(f"Using default preheat time: {PREHEAT_TIME_MINUTES} minutes.")
         return PREHEAT_TIME_MINUTES
@@ -169,20 +232,20 @@ def get_preheat_minutes(outdoor_temp: Optional[float], target_temp: float, curre
 
 def calculate_schedule(
     neohub_name: str,
-    zone_config: Dict[str, Any],
+    location_config: Dict[str, Any],
     churchsuite_data: List[Dict[str, Any]],
     zones_live_data: Dict[str, Any],
+    location_name: str # The room name as used in ChurchSuite events
 ) -> Dict[str, Any]:
-    """Generates the heating profile data for a single zone based on events."""
+    """Generates the heating profile data for a single location based on events."""
     
-    local_timezone = pytz.timezone(zone_config.get("timezone", "UTC"))
+    local_timezone = pytz.timezone(location_config.get("timezone", "UTC"))
     
     # Get current indoor temperature for pre-heat calculation
-    zone_name = zone_config["zone_name"]
-    current_indoor_temp = None
-    if zone_name in zones_live_data and zones_live_data[zone_name].get("temp") is not None:
+    current_indoor_temp = zones_live_data.get(location_name, {}).get("temp")
+    if current_indoor_temp is not None:
          # Temperature is expected to be a float from the live data
-        current_indoor_temp = float(zones_live_data[zone_name]["temp"])
+        current_indoor_temp = float(current_indoor_temp)
     
     # Get outdoor temperature
     outdoor_temp = zones_live_data.get("outdoor_temp")
@@ -191,13 +254,14 @@ def calculate_schedule(
     
     # --- 1. Filter and Process Events ---
     
-    # Get relevant events for the current zone and time frame (Next 7 days)
+    # Get relevant events for the current location (which matches the room name) and time frame (Next 7 days)
     now = datetime.datetime.now(local_timezone)
     seven_days_later = now + datetime.timedelta(days=7)
 
     relevant_events = [
         event for event in churchsuite_data
-        if zone_config["zone_name"] in event.get("rooms", []) and 
+        # Filter events where the location_name (ChurchSuite room) is in the event's 'rooms' list
+        if location_name in event.get("rooms", []) and 
            dateutil.parser.parse(event["end_date"]).replace(tzinfo=local_timezone) > now and
            dateutil.parser.parse(event["start_date"]).replace(tzinfo=local_timezone) < seven_days_later
     ]
@@ -236,10 +300,6 @@ def calculate_schedule(
             day_schedule_slots.append(("wake", heating_start_time, DEFAULT_TEMPERATURE))
 
             # Add subsequent events (Level 1-4, Sleep) based on events.
-            # For simplicity and to avoid complexity, we'll map the next 4 event start times
-            # and the final sleep time, or use default filler times if needed.
-            
-            # Use the actual event start times for the next levels if available
             event_index = 1
             for event in events_on_day[1:]:
                  if event_index <= 4: # Map up to level4
@@ -280,7 +340,6 @@ def calculate_schedule(
         
         # Add filler data for missing slots (e.g., using the previous slot's time/temp)
         last_dt = now.replace(hour=0, minute=0, second=0, microsecond=0) # Start of day
-        last_temp = ECO_TEMPERATURE
         
         final_day_slots: List[tuple[str, datetime.datetime, float]] = []
         
@@ -291,7 +350,6 @@ def calculate_schedule(
                 final_day_slots.append((name, dt, temp))
             else:
                 # Use a default time 1 minute after the last valid time for filler slots
-                # This ensures chronological order even for unused slots.
                 filler_dt = last_dt + datetime.timedelta(minutes=1)
                 
                 # Check if the filler time crossed midnight
@@ -304,8 +362,7 @@ def calculate_schedule(
             last_dt = final_day_slots[-1][1] 
 
 
-        # Re-sort the final list to ensure chronological order, using the name as a secondary key 
-        # to preserve the wake/level/sleep order when times are identical.
+        # Re-sort the final list to ensure chronological order
         final_day_slots.sort(key=lambda x: x[1])
 
         # --- 4. Chronology Enforcer (The 1-Minute Rule) ---
@@ -319,12 +376,9 @@ def calculate_schedule(
             # Check for chronological violation
             if event_time <= last_time_sent:
                 # Calculate new time: 1 minute after the last time sent
-                
-                # Create a temporary datetime object using the last sent time
-                temp_dt = event_dt.replace(hour=last_time_sent.hour, minute=last_time_sent.minute, second=0, microsecond=0)
-                
-                # Add 1 minute
-                new_dt = temp_dt + datetime.timedelta(minutes=1)
+                # Create a temporary datetime object using the last sent time and the current date
+                temp_dt_for_correction = event_dt.replace(hour=last_time_sent.hour, minute=last_time_sent.minute, second=0, microsecond=0)
+                new_dt = temp_dt_for_correction + datetime.timedelta(minutes=1)
                 event_time = new_dt.time()
                 
                 logging.debug(f"[{day_name.upper()}] Time clash corrected for {name}. Original: {event_dt.strftime('%H:%M')}. New: {event_time.strftime('%H:%M')}")
@@ -332,10 +386,9 @@ def calculate_schedule(
             # Store the final, corrected level data
             day_data[name] = [
                 event_time.strftime("%H:%M"),
-                # FIX: Temperature is now a float (required by NeoHub)
                 temperature,  
-                5,  # Hysteresis
-                True, # Active
+                5,  # Hysteresis (constant 5 minutes delay/tolerance for NeoHub)
+                True, # Active (always set to True for scheduled events)
             ]
             
             # Update the last time sent for the next iteration
@@ -346,8 +399,6 @@ def calculate_schedule(
 
     # The final schedule data is ready
     return schedule_data
-
-# ... rest of the file ...
 
 async def store_profile2(neohub_name: str, profile_name: str, profile_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Stores a heating profile on the Neohub, ensuring single-escaped JSON string is passed."""
@@ -362,55 +413,78 @@ async def store_profile2(neohub_name: str, profile_name: str, profile_data: Dict
     }
 
     # 2. SERIALIZE TO A CLEAN JSON STRING
-    # This ensures all quotes are DOUBLE QUOTES (") and all booleans are 'true'.
     command_json_string = json.dumps(inner_payload) 
     
-    # 3. DEBUGGING ECHO: Log the final JSON string we are attempting to send.
     logging.debug(f"DEBUG: FINAL JSON Payload String for Hub: {command_json_string}")
 
-    # 4. SEND THE COMMAND STRING DIRECTLY
-    # This structure is necessary to bypass the neohubapi library's incorrect
-    # internal serialization for complex nested commands.
+    # 3. SEND THE COMMAND STRING DIRECTLY
     response = await send_command(neohub_name, command_json_string)
     return response
 
-async def apply_schedule_to_heating(neohub_name: str, schedule_name: str, zones_config: Dict[str, Any]):
-    """Applies the calculated schedule to all configured heating zones."""
+# Helper to group locations by hub for scheduling
+def group_locations_by_hub(locations_config: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    """Groups location configurations based on the 'neohub' identifier."""
+    hubs_to_locations: Dict[str, Dict[str, Any]] = {}
     
-    # 1. Fetch data
-    outdoor_temp = await get_weather_data(OPENWEATHERMAP_CITY)
-    churchsuite_data = await get_churchsuite_events()
-    
-    # Dummy live data for indoor temperature (for preheat calc)
-    zones_live_data: Dict[str, Any] = {"outdoor_temp": outdoor_temp} 
-    
-    # For a real application, fetch live temp for all zones from the hub.
-    # We will assume a default indoor temp for now if no live data is fetched.
-    
-    # 2. Iterate and apply schedule
-    for zone_id, zone_config in zones_config.items():
-        logging.info(f"Processing schedule for zone: {zone_config['zone_name']}")
+    for location_name, location_config in locations_config.items():
+        hub_id = location_config["neohub"]
+        if hub_id not in hubs_to_locations:
+            hubs_to_locations[hub_id] = {} 
         
-        # Calculate the schedule data for the current zone
+        hubs_to_locations[hub_id][location_name] = location_config
+        
+    return hubs_to_locations
+
+async def apply_schedule_to_heating(neohub_id: str, locations_to_schedule: Dict[str, Any], all_churchsuite_events: List[Dict[str, Any]], outdoor_temp: Optional[float]):
+    """Applies the calculated schedule to all configured locations belonging to one hub."""
+
+    logging.info(f"--- Starting schedule application for NeoHub: {neohub_id} ---")
+
+    # For a real application, fetch live temp for all zones from the hub (GET_LIVE_DATA).
+    zones_live_data: Dict[str, Any] = {"outdoor_temp": outdoor_temp} 
+
+    schedule_profile_name = "CS_PROFILE"
+
+    # Iterate over each ChurchSuite location that maps to this hub
+    for location_name, location_config in locations_to_schedule.items():
+        
+        logging.info(f"Processing schedule for location: {location_name}")
+        
+        # Calculate the schedule data for the current location
         profile_data = calculate_schedule(
-            neohub_name, zone_config, churchsuite_data, zones_live_data
+            neohub_id, 
+            location_config, 
+            all_churchsuite_events, 
+            zones_live_data,
+            location_name # Location name corresponds to the room name in ChurchSuite
         )
 
-        # Apply the profile to the hub
-        response = await store_profile2(neohub_name, schedule_name, profile_data)
+        # 1. Store the profile on the hub
+        response = await store_profile2(neohub_id, schedule_profile_name, profile_data)
         
         if response and response.get("response") and "OK" in response["response"]:
-            logging.info(f"Successfully stored profile '{schedule_name}' for zone {zone_config['zone_name']}.")
+            logging.info(f"Successfully stored profile '{schedule_profile_name}' for location {location_name} on Hub {neohub_id}.")
+            
+            # 2. Apply the profile to the specific zones associated with this location
+            # The location config contains the list of NeoHub zones to apply this profile to.
+            for zone_name in location_config["zones"]:
+                 # Command structure: {"SET_ZONE_PROFILE": {"zone_name": "...", "profile_name": "..."}}
+                 set_profile_command = {
+                    "SET_ZONE_PROFILE": {
+                        "zone_name": zone_name,
+                        "profile_name": schedule_profile_name
+                    }
+                 }
+                 set_response = await send_command(neohub_id, json.dumps(set_profile_command))
+                 
+                 if set_response and set_response.get("response") and "OK" in set_response["response"]:
+                    logging.info(f"Successfully applied profile '{schedule_profile_name}' to zone '{zone_name}'.")
+                 else:
+                    logging.error(f"Failed to apply profile '{schedule_profile_name}' to zone '{zone_name}'. Response: {set_response}")
+                    
         else:
-            logging.error(f"Failed to store profile '{schedule_name}' for zone {zone_config['zone_name']}. Response: {response}")
+            logging.error(f"Failed to store profile '{schedule_profile_name}' for location {location_name} on Hub {neohub_id}. Response: {response}")
 
-def validate_config(config: Dict[str, Any]) -> bool:
-    """Validate the loaded configuration structure."""
-    if not config.get("neohubs"):
-        logging.error("Config missing 'neohubs' section.")
-        return False
-    # Add more validation logic as needed
-    return True
 
 async def update_heating_schedule():
     """Main function to run schedule updates."""
@@ -418,19 +492,53 @@ async def update_heating_schedule():
     if not config:
         logging.error("Configuration failed to load. Cannot update schedule.")
         return
-        
-    for neohub_name, neohub_config in config["neohubs"].items():
-        schedule_name = neohub_config.get("schedule_name", "Current Week")
-        zones_config = neohub_config.get("zones", {})
-        
-        if not zones_config:
-            logging.warning(f"No zones configured for Neohub: {neohub_name}. Skipping.")
+    
+    if not validate_config(config):
+        logging.error("Invalid configuration. Cannot update schedule.")
+        return
+
+    # 1. Fetch global data once
+    outdoor_temp = await get_weather_data(OPENWEATHERMAP_CITY)
+    churchsuite_data = await get_churchsuite_events()
+    
+    # 2. Group all locations by their associated NeoHub
+    hubs_to_locations = group_locations_by_hub(config["locations"])
+    
+    # 3. Schedule updates, grouped by NeoHub
+    for neohub_id, locations_to_schedule in hubs_to_locations.items():
+        # Check if we have an active connection instance for this hub (set up in main())
+        if neohub_id not in neohubs:
+            logging.error(f"Cannot find active connection for NeoHub '{neohub_id}'. Check environment variables and config.")
             continue
             
-        await apply_schedule_to_heating(neohub_name, schedule_name, zones_config)
+        # Apply the schedule for all locations served by this single NeoHub
+        await apply_schedule_to_heating(
+            neohub_id, 
+            locations_to_schedule, 
+            churchsuite_data, 
+            outdoor_temp
+        )
+
+def validate_config(config: Dict[str, Any]) -> bool:
+    """Validate the loaded configuration structure (now checking 'locations')."""
+    if not config.get("locations"):
+        logging.error("Config missing 'locations' section. Please ensure 'locations' key is present and contains your heating zones.")
+        return False
+    # Additional checks: ensure each location has 'neohub' and 'zones'
+    for loc_name, loc_config in config["locations"].items():
+        if not loc_config.get("neohub"):
+            logging.error(f"Location '{loc_name}' in config is missing the 'neohub' identifier.")
+            return False
+        if not loc_config.get("zones") or not isinstance(loc_config["zones"], list):
+            logging.error(f"Location '{loc_name}' in config is missing 'zones' or 'zones' is not a list.")
+            return False
+    return True
         
 def main():
     """Application entry point."""
+    # NEW: Parse environment variables before loading config or connecting
+    parse_neohub_env_vars() 
+
     config = load_config()
     if not config:
         logging.error("Configuration failed to load. Exiting.")
@@ -440,13 +548,13 @@ def main():
         logging.error("Invalid configuration. Exiting.")
         exit()
         
-    # Debug log to confirm config structure
-    if LOGGING_LEVEL == "DEBUG":
-        logging.debug(f"Loaded config: {json.dumps(config, indent=2)}")
+    # 1. Find all unique NeoHubs referenced in the locations config
+    unique_neohub_ids = set(loc["neohub"] for loc in config["locations"].values())
 
-    for neohub_name, neohub_config in config["neohubs"].items():
-        if not connect_to_neohub(neohub_name, neohub_config):
-            logging.error(f"Failed to connect to Neohub: {neohub_name}. Exiting.")
+    # 2. Connect to all unique NeoHubs using the parsed Environment Variables
+    for neohub_id in unique_neohub_ids:
+        if not connect_to_neohub(neohub_id):
+            logging.error(f"Failed to connect to Neohub: {neohub_id}. Check Environment Variables. Exiting.")
             exit()
 
     # Create a scheduler.
