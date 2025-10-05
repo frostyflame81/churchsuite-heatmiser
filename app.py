@@ -4,15 +4,15 @@ import json
 import logging
 import time
 import requests # type: ignore
-from apscheduler.schedulers.background import BackgroundScheduler # type: ignore
+from apscheduler.schedulers.background import BackgroundScheduler # type ignore
 import argparse
 import os
-import pytz # type: ignore
-import dateutil.parser # type: ignore
+import pytz # type ignore
+import dateutil.parser # type ignore
 from typing import Dict, Any, List, Optional
-import websockets # type: ignore
+import websockets # type ignore
 import ssl
-from neohubapi.neohub import NeoHub, NeoHubUsageError, NeoHubConnectionError, WebSocketClient # type: ignore
+from neohubapi.neohub import NeoHub, NeoHubUsageError, NeoHubConnectionError, WebSocketClient # type ignore
 
 # Configuration
 OPENWEATHERMAP_API_KEY = os.environ.get("OPENWEATHERMAP_API_KEY")
@@ -434,6 +434,11 @@ def main():
     if not config:
         logging.error("Configuration failed to load. Exiting.")
         return
+        
+    if not validate_config(config):
+        logging.error("Invalid configuration. Exiting.")
+        exit()
+        
     # Debug log to confirm config structure
     if LOGGING_LEVEL == "DEBUG":
         logging.debug(f"Loaded config: {json.dumps(config, indent=2)}")
@@ -443,10 +448,6 @@ def main():
             logging.error(f"Failed to connect to Neohub: {neohub_name}. Exiting.")
             exit()
 
-    if not validate_config(config):
-        logging.error("Invalid configuration. Exiting.")
-        exit()
-        
     # Create a scheduler.
     scheduler = BackgroundScheduler()
 
@@ -463,4 +464,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
