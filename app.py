@@ -133,7 +133,6 @@ def get_churchsuite_events() -> List[Dict[str, Any]]:
         response.raise_for_status()
         
         # ChurchSuite sometimes wraps the JSON data in a list or has extra keys.
-        # Assuming the events are a list of objects under a main key, or the root is a list.
         data = response.json()
         
         if isinstance(data, dict):
@@ -163,7 +162,7 @@ def get_churchsuite_events() -> List[Dict[str, Any]]:
 # --- Heating Schedule Calculation Logic ---
 
 def calculate_schedule(
-    events: List[Any], # Changed to List[Any] to reflect that elements might not be Dicts (which caused the error)
+    events: List[Any],
     location_name: str,
     preheat_time_minutes: int,
     default_temperature: float,
@@ -218,8 +217,9 @@ def calculate_schedule(
             end_dt_utc = dateutil.parser.parse(event["end_date"])
 
             # Convert to local timezone for processing
-            start_dt_local = start_dt_utc.astimezone(local_tz)
-            end_dt_local = end_dt_utc.astimezone(local_tz)
+            local_tz_dt = pytz.timezone(os.environ.get("CHURCHSUITE_TIMEZONE", "UTC"))
+            start_dt_local = start_dt_utc.astimezone(local_tz_dt)
+            end_dt_local = end_dt_utc.astimezone(local_tz_dt)
 
             # Calculate the time to start heating (preheat time before the event starts)
             preheat_start_dt = start_dt_local - datetime.timedelta(
@@ -302,11 +302,17 @@ async def apply_schedule_to_heating(
             # We are using the profile data to determine the next ON/OFF time.
             # Find the next heating ON event in the profile
             next_on_event = None
-            now_local = datetime.datetime.now(pytz.timezone(CHURCHSUITE_TIMEZONE))
+            
+            # The original code did not define CHURCHSUITE_TIMEZONE globally,
+            # but it is set in env variables. We'll grab it here for safety, 
+            # or assume the `timezone_str` passed to calculate_schedule is sufficient.
+            # However, for applying, we need the current timezone.
+            timezone_str = os.environ.get("CHURCHSUITE_TIMEZONE", "UTC")
+            now_local = datetime.datetime.now(pytz.timezone(timezone_str))
             
             for event in profile_data:
                 # The 'time' field is an ISO-formatted string from calculate_schedule
-                event_time = dateutil.parser.parse(event["time"]).astimezone(pytz.timezone(CHURCHSUITE_TIMEZONE))
+                event_time = dateutil.parser.parse(event["time"]).astimezone(pytz.timezone(timezone_str))
                 
                 if event_time > now_local and event["type"] == "ON":
                     next_on_event = event
@@ -314,17 +320,14 @@ async def apply_schedule_to_heating(
             
             if next_on_event:
                 # Calculate duration in minutes for the 'HOLD' command
-                # The hold should last until the OFF time associated with this ON event.
                 
                 # Find the next OFF event that follows the next ON event
                 next_off_event = None
-                on_event_time = dateutil.parser.parse(next_on_event["time"]).astimezone(pytz.timezone(CHURCHSUITE_TIMEZONE))
+                on_event_time = dateutil.parser.parse(next_on_event["time"]).astimezone(pytz.timezone(timezone_str))
                 
                 # Find the corresponding OFF time for this ON time.
-                # In the simple implementation, the ON is followed by the OFF for the same event.
-                
                 for event in profile_data:
-                    event_time = dateutil.parser.parse(event["time"]).astimezone(pytz.timezone(CHURCHSUITE_TIMEZONE))
+                    event_time = dateutil.parser.parse(event["time"]).astimezone(pytz.timezone(timezone_str))
                     
                     # Look for the first OFF event strictly after the ON time
                     if event_time > on_event_time and event["type"] == "OFF":
@@ -332,7 +335,7 @@ async def apply_schedule_to_heating(
                         break
 
                 if next_off_event:
-                    off_event_time = dateutil.parser.parse(next_off_event["time"]).astimezone(pytz.timezone(CHURCHSUITE_TIMEZONE))
+                    off_event_time = dateutil.parser.parse(next_off_event["time"]).astimezone(pytz.timezone(timezone_str))
                     
                     # Duration from now until the OFF time in minutes
                     duration_td = off_event_time - now_local
@@ -340,35 +343,21 @@ async def apply_schedule_to_heating(
 
                     if duration_minutes > 0:
                         # Schedule to HOLD until the OFF time at the target temperature
-                        # The neohub API expects the target temperature for the hold.
                         target_temp = next_on_event["target_temp"]
                         
-                        # Check if the current actual temperature is already close to the target
-                        if zone.temp > target_temp - (TEMPERATURE_SENSITIVITY / 10):
-                            logging.info(
-                                f"Zone '{zone.name}' already close to target temp ({zone.temp}°C vs {target_temp}°C). "
-                                f"No hold applied."
-                            )
-                            # Instead of applying a hold, we could just set a temporary hold to ECO until the next OFF time
-                            # or simply proceed to the ECO state below if no immediate action is required.
-                        else:
-                            logging.info(
-                                f"Zone '{zone.name}' schedule ON: HOLD at {target_temp}°C for {duration_minutes} mins (until {off_event_time.strftime('%H:%M')})"
-                            )
-                            # The NeoHub API hold is typically a temperature and a duration (in minutes or hours).
-                            # Assuming the NeoHub API takes a duration in minutes.
-                            await hub.set_hold(zone.name, target_temp, duration_minutes)
+                        # Apply the hold command
+                        logging.info(
+                            f"Zone '{zone.name}' schedule ON: HOLD at {target_temp}°C for {duration_minutes} mins (until {off_event_time.strftime('%H:%M')})"
+                        )
+                        await hub.set_hold(zone.name, target_temp, duration_minutes)
                     else:
                         logging.info(f"Zone '{zone.name}' next ON event time is in the past or duration is zero. Skipping hold.")
                 
             # If no future ON event is found, set the temperature to ECO
-            # This implicitly happens if the loop finishes without setting a hold.
             if not next_on_event:
                 logging.info(f"Zone '{zone.name}' has no future ON events. Setting to ECO temperature ({ECO_TEMPERATURE}°C).")
-                # Apply an indefinite hold at ECO temperature, or revert to schedule (if no schedule is active, it defaults to ECO)
-                # For safety, let's explicitly set a very long hold at ECO temperature, 
-                # effectively overriding the schedule until the next run.
-                await hub.set_hold(zone.name, ECO_TEMPERATURE, 1440 * 7) # Hold for 7 days at ECO
+                # Set a hold for 7 days (10080 minutes) at ECO, assuming schedule is not used/set.
+                await hub.set_hold(zone.name, ECO_TEMPERATURE, 10080) 
                 
         await hub.disconnect()
 
@@ -381,6 +370,9 @@ async def update_heating_schedule():
     """Main function to orchestrate fetching data and applying heating schedules."""
     logging.info("--- Starting heating schedule update ---")
     
+    # Define CHURCHSUITE_TIMEZONE locally for safety since it's an env var
+    CHURCHSUITE_TIMEZONE = os.environ.get("CHURCHSUITE_TIMEZONE", "UTC")
+
     # 1. Fetch external data
     external_temp = get_external_temperature()
     events = get_churchsuite_events()
@@ -404,7 +396,7 @@ async def update_heating_schedule():
                 heat_loss_factor=heat_loss_factor,
                 min_external_temp=min_external_temp,
                 adjustment_per_degree=PREHEAT_ADJUSTMENT_MINUTES_PER_DEGREE,
-                timezone_str=CHURCHSUITE_TIMEZONE,
+                timezone_str=CHURCHSUITE_TIMEZONE, # Pass timezone for safety
             )
 
             # 4. Apply the profile to the NeoHub zones
@@ -437,9 +429,11 @@ def main():
         return
     config = config_data # Store globally
 
+    # This check needs to be placed after config is loaded but before it's used to connect.
     if not validate_config(config):
         logging.error("Invalid configuration. Exiting.")
-        return
+        exit()
+
     # Debug log to confirm config structure
     if LOGGING_LEVEL == "DEBUG":
         logging.debug(f"Loaded config: {json.dumps(config, indent=2)}")
@@ -448,8 +442,8 @@ def main():
     for neohub_name, neohub_config in config["neohubs"].items():
         if not connect_to_neohub(neohub_name, neohub_config):
             logging.error(f"Failed to connect to Neohub: {neohub_name}. Exiting.")
-            # We don't exit here, we just continue as other neohubs might work
-
+            exit()
+            
     # Optional: Fetch and log zones (for debug/info)
     for neohub_name in config["neohubs"]:
         try:
@@ -461,15 +455,12 @@ def main():
         except Exception as e:
              logging.error(f"Error getting zones for {neohub_name}: {e}")
 
+
     # Create a scheduler.
     scheduler = BackgroundScheduler()
 
     # Run update_heating_schedule() immediately, and then schedule it to run every 60 minutes.
-    try:
-        asyncio.run(update_heating_schedule())  # Run immediately
-    except Exception as e:
-        # Catch errors from the immediate run to prevent the whole app from crashing
-        logging.exception("Initial update_heating_schedule run failed.")
+    asyncio.run(update_heating_schedule())  # Run immediately
         
     scheduler.add_job(lambda: asyncio.run(update_heating_schedule()), "interval", minutes=60)
     scheduler.start()
