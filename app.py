@@ -167,13 +167,29 @@ async def store_profile(neohub_name: str, profile_name: str, profile_data: Dict[
     return response
 
 async def store_profile2(neohub_name: str, profile_name: str, profile_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """Stores a heating profile on the Neohub using neohubapi."""
+    """Stores a heating profile on the Neohub, ensuring single-escaped JSON string is passed."""
     logging.info(f"Storing profile {profile_name} on Neohub {neohub_name}")
-    command = {"STORE_PROFILE2": {"name": profile_name, "info": profile_data}}
+
+    # 1. CREATE THE COMMAND PAYLOAD (clean Python dict with float temps)
+    inner_payload = {
+        "STORE_PROFILE2": {
+            "name": profile_name,
+            "info": profile_data
+        }
+    }
+
+    # 2. SERIALIZE TO A CLEAN JSON STRING
+    # This ensures correct quotes (") and types (true).
+    command_json_string = json.dumps(inner_payload) 
     
-    # Pass the 'command' dictionary directly, NOT a JSON string
-    response = await send_command(neohub_name, command) 
-    
+    # 3. DEBUGGING ECHO
+    logging.debug(f"DEBUG: FINAL JSON Payload String: {command_json_string}")
+
+    # 4. SEND THE COMMAND STRING DIRECTLY
+    # We are bypassing the library's assumption of a Python dictionary and 
+    # feeding it the exact string it needs for the Hub's "COMMAND" value.
+    # The library will wrap this string with the token/COMMANDS/COMMANDID keys.
+    response = await send_command(neohub_name, command_json_string)
     return response
 
 async def get_profile(neohub_name: str, profile_name: str) -> Optional[Dict[str, Any]]:
