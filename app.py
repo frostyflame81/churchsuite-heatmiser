@@ -167,10 +167,10 @@ async def store_profile(neohub_name: str, profile_name: str, profile_data: Dict[
     return response
 
 async def store_profile2(neohub_name: str, profile_name: str, profile_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """Stores a heating profile on the Neohub using neohubapi, with forced JSON serialization."""
+    """Stores a heating profile on the Neohub, ensuring single-escaped JSON string is passed."""
     logging.info(f"Storing profile {profile_name} on Neohub {neohub_name}")
 
-    # 1. CREATE THE INNER COMMAND PAYLOAD (clean Python dict with float temps)
+    # 1. CREATE THE COMMAND PAYLOAD (clean Python dict with float temps)
     inner_payload = {
         "STORE_PROFILE2": {
             "name": profile_name,
@@ -179,22 +179,17 @@ async def store_profile2(neohub_name: str, profile_name: str, profile_data: Dict
     }
 
     # 2. SERIALIZE TO A CLEAN JSON STRING
-    # This ensures all quotes are DOUBLE QUOTES (") and all booleans are 'true'.
-    inner_json_string = json.dumps(inner_payload) 
+    # This ensures correct quotes (") and types (true).
+    command_json_string = json.dumps(inner_payload) 
     
-    # 3. DEBUGGING ECHO: Log the final JSON string we are attempting to send.
-    logging.debug(f"DEBUG: Inner JSON Payload: {inner_json_string}")
+    # 3. DEBUGGING ECHO
+    logging.debug(f"DEBUG: FINAL JSON Payload String: {command_json_string}")
 
-    # 4. CONSTRUCT THE FINAL COMMAND DICT FOR send_command
-    # This structure prevents the library from incorrectly adding single quotes (').
-    final_command_for_hub = {
-        "COMMAND": inner_json_string
-    }
-
-    # 5. SEND THE COMMAND
-    # The library will correctly wrap this dictionary and perform the final single escape (\")
-    # on the inner_json_string.
-    response = await send_command(neohub_name, final_command_for_hub)
+    # 4. SEND THE COMMAND STRING DIRECTLY
+    # We are bypassing the library's assumption of a Python dictionary and 
+    # feeding it the exact string it needs for the Hub's "COMMAND" value.
+    # The library will wrap this string with the token/COMMANDS/COMMANDID keys.
+    response = await send_command(neohub_name, command_json_string)
     return response
 
 async def get_profile(neohub_name: str, profile_name: str) -> Optional[Dict[str, Any]]:
