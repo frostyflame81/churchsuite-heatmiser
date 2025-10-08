@@ -246,11 +246,9 @@ async def update_heating_schedule():
     if LOGGING_LEVEL == "DEBUG":
         logging.debug(f"Raw ChurchSuite Data: {data}")
 
-    # --- THE CRITICAL FIX IS HERE ---
     # Use 'booked_resources' and 'resources' based on the confirmed API structure
     bookings = data.get("booked_resources", []) 
     resource_map = data.get("resources", {})
-    # --- END CRITICAL FIX ---
 
     if not bookings and not resource_map:
         logging.warning("No bookings or resource map found in data. Aborting update.")
@@ -311,16 +309,6 @@ async def update_heating_schedule():
         loc_config = config["locations"][resource_name]
         
         # Calculate the required pre-heat time
-        # This calculation needs the current internal temperature which we don't have easily.
-        # For simplicity, we can assume the internal starting temp is a few degrees above the eco temp, 
-        # or just use a fixed value like 15°C if the neoHubs don't expose current room temp reliably/quickly.
-        # Since we cannot easily and quickly get the current internal temperature of all zones, 
-        # we will use a conservative guess for 'current_internal_temp' in the calculation,
-        # or better yet, just omit it and focus on the external differential.
-        # Let's use a simplified model based on external temp for now.
-        
-        # NOTE: A true implementation would fetch the *actual* current room temp for that zone
-        # using await neohub.get_zones(), which is slow for a loop.
         
         # Target internal temperature (use DEFAULT_TEMPERATURE for all bookings)
         target_temp = DEFAULT_TEMPERATURE
@@ -426,11 +414,17 @@ def main():
     if config is None:
         logging.error("Failed to load configuration. Exiting.")
         return
+        
+    # CRITICAL FIX: Ensure 'neohubs' key exists in the config dictionary. 
+    # This prevents the KeyError when trying to add NeoHubs from environment variables.
+    if "neohubs" not in config:
+        config["neohubs"] = {}
+        
     # Debug log to confirm config structure
     if LOGGING_LEVEL == "DEBUG":
         logging.debug(f"Loaded config: {json.dumps(config, indent=2)}")
 
-    # Initialize NeoHub connections
+    # Initialize NeoHub connections by reading environment variables first
     # Note: NEOHUB_* environment variables can override config.json here
     neohub_count = 1
     while True:
@@ -444,6 +438,7 @@ def main():
         
         if all([name_env, address, port, token]):
             port_int = int(port) if port.isdigit() else 4243
+            # This line caused the error when 'neohubs' didn't exist
             config["neohubs"][name_env] = {
                 "address": address,
                 "port": port_int,
