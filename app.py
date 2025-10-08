@@ -242,11 +242,11 @@ async def connect_to_neohub(name: str, neohub_config: Dict[str, Any]) -> bool:
 
         logging.info(f"Attempting connection to NeoHub '{name}' at {address}:{port}")
 
+        # FIX: Removed 'loop=asyncio.get_event_loop()' as it causes an error in newer versions
         hub = NeoHub(
             address,
             port,
             token=token,
-            loop=asyncio.get_event_loop()
         )
         await hub.connect()
         NEOHUBS[name] = hub
@@ -297,6 +297,7 @@ async def update_neohub_zone(neohub_name: str, zone_name: str, temp: float) -> b
 
         if current_zone_info:
             current_temp = current_zone_info.get('temp')
+            # Check if the current temperature is already close enough to the target
             if current_temp is not None and current_temp >= temp - sensitivity_offset:
                  logging.debug(
                     f"Zone {zone_name} is already at {current_temp}°C. "
@@ -349,7 +350,8 @@ async def update_heating_schedule():
 
     if not bookings or not resource_map:
         logging.info("No bookings or resource map found in data. Setting all to ECO temp.")
-        bookings = [] # Ensure we continue to step 4 to set ECO temp
+        # Bookings remains empty, which ensures all zones are set to ECO temp in step 4
+        pass
 
     # Map resource IDs to location names for easier lookups
     location_map: Dict[str, str] = {
@@ -444,20 +446,17 @@ async def update_heating_schedule():
 
     # 4. Apply schedules to NeoHub zones
     all_neohub_zones: Dict[str, List[str]] = {}
-    for hub_name in config["neohubs"].keys():
-        all_neohub_zones[hub_name] = []
-
-    # Compile all zones that should be ON
-    zones_to_heat: Dict[str, Dict[str, float]] = {} # {neohohub_name: {zone_name: target_temp}}
-
-    # Identify all configured zones across all hubs
+    # Compile a complete list of all zones associated with a hub via the configuration
     for loc_config in config["locations"].values():
         hub_name = loc_config["neohub"]
+        all_neohub_zones.setdefault(hub_name, [])
         for zone in loc_config["zones"]:
              if zone not in all_neohub_zones[hub_name]:
                  all_neohub_zones[hub_name].append(zone)
 
-    # Determine which zones need heat and at what temperature
+    # Determine which zones should be ON and at what temperature
+    zones_to_heat: Dict[str, Dict[str, float]] = {} # {neohohub_name: {zone_name: target_temp}}
+
     for schedule in target_schedules.values():
         hub_name = schedule["neohub"]
         temp = schedule["target_temp"]
@@ -468,6 +467,7 @@ async def update_heating_schedule():
         for zone in zones_for_schedule:
             current_target = zones_to_heat[hub_name].get(zone)
             if current_target is None or temp > current_target:
+                # Set the highest required temperature for the zone
                 zones_to_heat[hub_name][zone] = temp
                 
     # Apply ON schedules
@@ -509,6 +509,7 @@ def main():
 
     # Initialize NeoHub connections
     for neohub_name, neohub_config in config["neohubs"].items():
+        # Use asyncio.run() to execute the async connection function
         if not asyncio.run(connect_to_neohub(neohub_name, neohub_config)):
             logging.error(f"Failed to connect to Neohub: {neohub_name}. Exiting.")
             exit()
