@@ -112,7 +112,7 @@ def connect_to_neohub(neohub_name: str, neohub_config: Dict[str, Any]) -> bool:
             neohub_config["address"],
             neohub_config["port"],
             neohub_config["token"],
-            config=neohub_config,
+            # config=neohub_config, <-- Removed the problematic argument
         )
         NEOHUBS[neohub_name] = neohub
         logging.info(
