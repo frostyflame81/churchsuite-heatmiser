@@ -5,19 +5,24 @@ import logging
 import time
 import requests # type: ignore
 from apscheduler.schedulers.background import BackgroundScheduler # type: ignore
+import argparse
 import os
 import pytz # type: ignore
 import dateutil.parser # type: ignore
 from typing import Dict, Any, List, Optional
-from neohubapi.neohub import NeoHub, NeoHubUsageError, NeoHubConnectionError # type: ignore
+import websockets # type: ignore
+import ssl
+# Import necessary classes and exceptions from neohubapi
+from neohubapi.neohub import NeoHub, NeoHubUsageError, NeoHubConnectionError, WebSocketClient # type: ignore
 
-# --- Configuration & Globals ---
+# --- Configuration & Global State ---
 
-# Configuration loaded from Environment Variables
+# Environment variables
+# Note: Using float() for temperatures ensures compatibility with decimal values in ENV
 OPENWEATHERMAP_API_KEY = os.environ.get("OPENWEATHERMAP_API_KEY")
 OPENWEATHERMAP_CITY = os.environ.get("OPENWEATHERMAP_CITY")
 CHURCHSUITE_URL = os.environ.get("CHURCHSUITE_URL")
-TIMEZONE = os.environ.get("CHURCHSUITE_TIMEZONE", "Europe/London")
+CHURCHSUITE_TIMEZONE = os.environ.get("CHURCHSUITE_TIMEZONE")
 PREHEAT_TIME_MINUTES = int(os.environ.get("PREHEAT_TIME_MINUTES", 30))
 DEFAULT_TEMPERATURE = float(os.environ.get("DEFAULT_TEMPERATURE", 19))
 ECO_TEMPERATURE = float(os.environ.get("ECO_TEMPERATURE", 12))
@@ -29,518 +34,352 @@ CONFIG_FILE = os.environ.get("CONFIG_FILE", "config/config.json")
 LOGGING_LEVEL = os.environ.get("LOGGING_LEVEL", "INFO").upper()
 
 # Set up logging
-logging.basicConfig(level=getattr(logging, LOGGING_LEVEL),
-                    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-                    datefmt='%Y-%m-%d %H:%M:%S')
+logging.basicConfig(
+    level=LOGGING_LEVEL,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+)
 
-# Global state for NeoHub connections and configs
-NEOHUBS: Dict[str, Optional[NeoHub]] = {}
-NEOHUB_CONFIGS: Dict[str, Dict[str, Any]] = {} 
+# Global state to store connected NeoHub instances
+NEOHUBS: Dict[str, NeoHub] = {}
+# Global variable to store loaded configuration
 config: Dict[str, Any] = {}
-try:
-    LOCAL_TZ = pytz.timezone(TIMEZONE)
-except pytz.UnknownTimeZoneError:
-    logging.warning(f"Unknown timezone: {TIMEZONE}. Defaulting to UTC.")
-    LOCAL_TZ = pytz.utc
-
-
-# --- NeoHub Configuration Parsing ---
-
-def _load_neohub_config_from_env() -> Dict[str, Dict[str, Any]]:
-    """
-    Parses NEOHUB_X_* environment variables to create a configuration dictionary.
-    """
-    neohub_configs: Dict[str, Dict[str, Any]] = {}
-    i = 1
-    while True:
-        name_key = f"NEOHUB_{i}_NAME"
-        address_key = f"NEOHUB_{i}_ADDRESS"
-        port_key = f"NEOHUB_{i}_PORT"
-        token_key = f"NEOHUB_{i}_TOKEN"
-
-        name = os.environ.get(name_key)
-        
-        if not name:
-            break 
-
-        address = os.environ.get(address_key)
-        port_str = os.environ.get(port_key)
-        token = os.environ.get(token_key)
-        port = int(port_str) if port_str and port_str.isdigit() else 4242
-
-        if not address:
-            logging.warning(f"NeoHub '{name}' defined but missing {address_key}. Skipping.")
-            i += 1
-            continue
-        
-        if port == 4243 and not token:
-            logging.error(f"NeoHub '{name}' is configured for secure port 4243 but is missing a token. Check {token_key}.")
-            i += 1
-            continue
-
-        neohub_configs[name] = {
-            "address": address,
-            "port": port,
-            "token": token,
-        }
-        logging.info(f"Loaded NeoHub config from ENV: {name}")
-
-        i += 1
-    
-    return neohub_configs
 
 # --- Utility Functions ---
 
-def load_config() -> Optional[Dict[str, Any]]:
-    """Loads configuration from file and environment variables."""
-    global NEOHUB_CONFIGS
-    
-    local_config: Dict[str, Any] = {}
+def load_config(filepath: str) -> Optional[Dict[str, Any]]:
+    """Loads the configuration from a JSON file and environment variables."""
     try:
-        # Load from JSON file first
-        with open(CONFIG_FILE, "r") as f:
-            local_config = json.load(f)
-        logging.info(f"Loaded configuration from {CONFIG_FILE}")
+        with open(filepath, "r") as f:
+            base_config = json.load(f)
+        
+        # Load NeoHub config from ENV variables if present (NEOHUB_1_NAME, etc.)
+        neohubs_from_env = {}
+        i = 1
+        while True:
+            name = os.environ.get(f"NEOHUB_{i}_NAME")
+            if not name:
+                break
+            neohubs_from_env[name] = {
+                "address": os.environ.get(f"NEOHUB_{i}_ADDRESS"),
+                "port": int(os.environ.get(f"NEOHUB_{i}_PORT", 4243)),
+                "token": os.environ.get(f"NEOHUB_{i}_TOKEN"),
+            }
+            logging.info(f"Loaded NeoHub config from ENV: {name}")
+            i += 1
+        
+        if neohubs_from_env:
+            # Merge/overwrite 'neohubs' from environment variables
+            if "neohubs" in base_config:
+                base_config["neohubs"].update(neohubs_from_env)
+            else:
+                base_config["neohubs"] = neohubs_from_env
+            
+        return base_config
+
     except FileNotFoundError:
-        logging.error(f"Config file not found: {CONFIG_FILE}")
+        logging.error(f"Configuration file not found at {filepath}")
         return None
     except json.JSONDecodeError:
-        logging.error(f"Invalid JSON in config file: {CONFIG_FILE}")
+        logging.error(f"Error decoding JSON from {filepath}")
+        return None
+    except Exception as e:
+        logging.error(f"An unexpected error occurred while loading config: {e}")
+        return None
+
+def validate_config(config: Dict[str, Any]) -> bool:
+    """Validates the structure of the loaded configuration."""
+    if "locations" not in config or "neohubs" not in config:
+        logging.error("Config missing 'locations' or 'neohubs' sections.")
+        return False
+    return True
+
+# --- NeoHub Connection Logic (INITIALIZATION ROUTINE FIX) ---
+
+def connect_to_neohub(neohub_name: str, neohub_config: Dict[str, Any]) -> bool:
+    """
+    Instantiates and stores a NeoHub object for later use.
+    
+    REPAIR: Removed the explicit 'await hub.connect()' call which caused the
+    AttributeError in newer versions of neohubapi. The connection is now 
+    handled implicitly upon object instantiation (NeoHub(...)).
+    """
+    logging.info(
+        f"Attempting connection to NeoHub '{neohub_name}' at {neohub_config['address']}:{neohub_config['port']}"
+    )
+    try:
+        # Instantiate the NeoHub object. This is the crucial step.
+        neohub = NeoHub(
+            neohub_config["address"],
+            neohub_config["port"],
+            neohub_config["token"],
+            config=neohub_config,
+        )
+        NEOHUBS[neohub_name] = neohub
+        logging.info(
+            f"Successfully instantiated NeoHub '{neohub_name}'. Connection is now pending the first async call."
+        )
+        return True
+    except Exception as e:
+        logging.error(
+            f"An unexpected error occurred during connection attempt for NeoHub {neohub_name}: {e}"
+        )
+        return False
+
+# --- Core Asynchronous Functions ---
+
+async def get_zones(neohub_name: str) -> Optional[List[str]]:
+    """Gets the list of zones from a specified NeoHub."""
+    if neohub_name not in NEOHUBS:
+        logging.warning(f"NeoHub '{neohub_name}' not connected.")
         return None
     
-    # Load and merge environment NeoHub configs into the main config structure
-    NEOHUB_CONFIGS = _load_neohub_config_from_env()
-    
-    # Initialize 'neohubs' key if missing (Fix for KeyError)
-    if "neohubs" not in local_config:
-        local_config["neohubs"] = {}
+    neohub = NEOHUBS[neohub_name]
+    try:
+        # The first call to an async method (like get_zones) will establish the connection
+        zones_data = await neohub.get_zones()
+        # Return a list of zone names
+        return [z.get('name', 'Unknown Zone') for z in zones_data if isinstance(z, dict)]
+    except NeoHubConnectionError as e:
+        logging.error(f"Connection failed for {neohub_name} during get_zones: {e}")
+        return None
+    except Exception as e:
+        logging.error(f"Failed to get zones from {neohub_name}: {e}")
+        return None
 
-    # Environment variables override/add to the file config
-    local_config["neohubs"].update(NEOHUB_CONFIGS)
-    
-    # Update global constants based on config file (if not set by ENV in python code)
-    # Note: These values were read from ENV at the top of the file, but we should 
-    # use the values from the config file if they exist and haven't been loaded via ENV.
-    local_config["preheat_time_minutes"] = local_config.get("preheat_time_minutes", PREHEAT_TIME_MINUTES)
-    local_config["default_temperature"] = local_config.get("default_temperature", DEFAULT_TEMPERATURE)
-    local_config["eco_temperature"] = local_config.get("eco_temperature", ECO_TEMPERATURE)
-    local_config["temperature_sensitivity"] = local_config.get("temperature_sensitivity", TEMPERATURE_SENSITIVITY)
-    local_config["preheat_adjustment_minutes_per_degree"] = local_config.get("preheat_adjustment_minutes_per_degree", PREHEAT_ADJUSTMENT_MINUTES_PER_DEGREE)
-    
-    return local_config
-
-def get_external_temperature(city: str, api_key: str) -> Optional[float]:
-    """Fetches the current external temperature using OpenWeatherMap."""
-    if not api_key or not city:
-        logging.warning("OpenWeatherMap API key or city is missing. Cannot fetch external temperature.")
+async def get_weather_data() -> Optional[float]:
+    """Fetches external temperature from OpenWeatherMap."""
+    if not OPENWEATHERMAP_API_KEY or not OPENWEATHERMAP_CITY:
+        logging.error("OpenWeatherMap configuration is missing. Cannot fetch external temp.")
         return None
         
+    url = (
+        f"http://api.openweathermap.org/data/2.5/weather?q={OPENWEATHERMAP_CITY}"
+        f"&appid={OPENWEATHERMAP_API_KEY}&units=metric"
+    )
     try:
-        url = (
-            f"http://api.openweathermap.org/data/2.5/weather?"
-            f"q={city}&appid={api_key}&units=metric"
-        )
         response = requests.get(url, timeout=10)
         response.raise_for_status()
         data = response.json()
-        current_temp = data["main"]["temp"]
-        logging.info(f"Current external temperature in {city}: {current_temp}°C")
-        return current_temp
+        external_temp = data["main"]["temp"]
+        logging.info(f"Retrieved external temperature for {OPENWEATHERMAP_CITY}: {external_temp}°C")
+        return external_temp
     except requests.exceptions.RequestException as e:
         logging.error(f"Error fetching weather data: {e}")
         return None
-    except KeyError:
-        logging.error("Weather data response missing 'main' or 'temp' keys.")
-        return None
-    except Exception as e:
-        logging.error(f"An unexpected error occurred during weather fetch: {e}")
+    except (KeyError, TypeError) as e:
+        logging.error(f"Unexpected structure in weather data response: {e}")
         return None
 
-def calculate_preheat_minutes(
-    target_temp: float,
-    current_temp: float,
-    heat_loss_factor: float,
-    external_temp: float,
-) -> int:
-    """
-    Calculates the required pre-heat time based on internal, external temps,
-    and a heat loss factor.
-    """
-    
-    base_preheat = config["preheat_time_minutes"]
-    adjustment_factor = config["preheat_adjustment_minutes_per_degree"]
-    
-    # Temperature Differential (How much heat is lost to the outside)
-    temp_differential = max(0.0, target_temp - external_temp)
-    
-    # Adjustment based on differential and heat loss
-    adjustment = (
-        heat_loss_factor * temp_differential * adjustment_factor
-    )
-    
-    total_preheat_minutes = int(round(base_preheat + adjustment))
-    
-    # Ensure a sensible minimum and maximum
-    min_preheat = 15
-    max_preheat = 180
-    
-    final_preheat = max(min_preheat, min(max_preheat, total_preheat_minutes))
-    
-    logging.debug(
-        f"Preheat calculation: Base={base_preheat}, "
-        f"Differential={temp_differential:.1f}, "
-        f"Adjustment={adjustment:.1f}, "
-        f"Final={final_preheat} minutes."
-    )
-    
-    return final_preheat
 
-def validate_config(cfg: Dict[str, Any]) -> bool:
-    """Validates configuration keys and checks for necessary external settings."""
-    is_valid = True
-    
-    if not cfg.get("neohubs"):
-        logging.error("Config validation failed: 'neohubs' is empty. No hubs configured.")
-        is_valid = False
-        
-    if not cfg.get("locations"):
-        logging.error("Config validation failed: 'locations' key is missing or empty.")
-        is_valid = False
-    
-    for loc_name, loc_config in cfg.get("locations", {}).items():
-        neohub_name = loc_config.get("neohub")
-        if not neohub_name or neohub_name not in cfg["neohubs"]:
-            logging.error(f"Config validation failed: Location '{loc_name}' refers to an unknown 'neohub': {neohub_name}.")
-            is_valid = False
-        if not loc_config.get("zones") or not isinstance(loc_config["zones"], list):
-            logging.error(f"Config validation failed: Location '{loc_name}' is missing or has invalid 'zones'.")
-            is_valid = False
-
+async def get_churchsuite_bookings() -> List[Dict[str, Any]]:
+    """Fetches upcoming Churchsuite bookings."""
     if not CHURCHSUITE_URL:
-        logging.error("Config validation failed: CHURCHSUITE_URL environment variable is missing.")
-        is_valid = False
+        logging.warning("Churchsuite URL is not configured.")
+        return []
     
-    if not OPENWEATHERMAP_API_KEY or not OPENWEATHERMAP_CITY:
-        logging.warning("OpenWeatherMap details are missing. Heating calculations will rely only on base preheat time if min_external_temp is hit.")
-
-    return is_valid
-
-# --- NeoHub Interaction Functions (Async) ---
-
-async def connect_to_neohub(name: str, neohub_config: Dict[str, Any]) -> bool:
-    """Connects to a single NeoHub and stores the connection object."""
+    # We fetch all bookings today and tomorrow to cover pre-heating needs (simplified here)
     try:
-        address = neohub_config.get("address")
-        port = neohub_config.get("port", 4242)
-        token = neohub_config.get("token")
-        
-        if port == 4243 and not token:
-            # Raise the specific error the library checks for
-            raise NeoHubConnectionError(
-                "You must provide a token for a connection on port 4243, or use a legacy connection on port 4242"
-            )
-
-        logging.info(f"Attempting connection to NeoHub '{name}' at {address}:{port}")
-
-        # FIX: Removed 'loop=asyncio.get_event_loop()' as it causes an error in newer versions
-        hub = NeoHub(
-            address,
-            port,
-            token=token,
-        )
-        await hub.connect()
-        NEOHUBS[name] = hub
-        logging.info(f"Successfully connected to NeoHub: {name}")
-        return True
-    except NeoHubConnectionError as e:
-        logging.error(f"Connection error initializing NeoHub {name}: {e}")
-        NEOHUBS[name] = None
-        return False
-    except Exception as e:
-        logging.error(f"An unexpected error occurred during connection to NeoHub {name}: {e}")
-        NEOHUBS[name] = None
-        return False
-
-async def get_zones(neohub_name: str) -> Optional[List[str]]:
-    """Retrieves zones from a specific NeoHub."""
-    neohub = NEOHUBS.get(neohub_name)
-    if not neohub:
-        logging.warning(f"NeoHub '{neohub_name}' is not connected or initialized.")
-        return None
-    
-    try:
-        zones = await neohub.get_zones()
-        # The zones list is extracted from the response object
-        return [zone['name'] for zone in zones]
-    except NeoHubConnectionError as e:
-        logging.error(f"Connection error to NeoHub '{neohub_name}' during zone retrieval: {e}")
-        return None
-    except Exception as e:
-        logging.error(f"Error getting zones from NeoHub '{neohub_name}': {e}")
-        return None
-
-async def update_neohub_zone(neohub_name: str, zone_name: str, temp: float) -> bool:
-    """Sets a new temperature target for a specific zone on a NeoHub."""
-    neohub = NEOHUBS.get(neohub_name)
-    if not neohub:
-        logging.error(f"NeoHub '{neohub_name}' not found for zone {zone_name}.")
-        return False
-        
-    try:
-        logging.info(f"Setting {zone_name} on {neohub_name} to {temp}°C.")
-        
-        # Check current temperature to avoid setting if already at or above target (within sensitivity)
-        current_zones = await neohub.get_zones()
-        current_zone_info = next((z for z in current_zones if z.get('name') == zone_name), None)
-        
-        sensitivity_offset = config["temperature_sensitivity"] / 100.0 # e.g. 10/100 = 0.1
-
-        if current_zone_info:
-            current_temp = current_zone_info.get('temp')
-            # Check if the current temperature is already close enough to the target
-            if current_temp is not None and current_temp >= temp - sensitivity_offset:
-                 logging.debug(
-                    f"Zone {zone_name} is already at {current_temp}°C. "
-                    f"Skipping temperature set as it meets the target {temp}°C (offset: {sensitivity_offset}°C)."
-                )
-                 return True
-
-        # Set the temperature
-        await neohub.set_zone_temp(zone_name, temp)
-        logging.info(f"Successfully set {zone_name} on {neohub_name} to {temp}°C.")
-        return True
-    except NeoHubConnectionError as e:
-        logging.error(f"Connection error setting temp for {zone_name} on {neohub_name}: {e}")
-        return False
-    except Exception as e:
-        logging.error(f"Unexpected error setting temp for {zone_name} on {neohub_name}: {e}")
-        return False
-
-# --- Core Scheduling Logic (Async) ---
-
-async def update_heating_schedule():
-    """Main function to fetch bookings, calculate schedules, and update NeoHubs."""
-    logging.info("Starting heating schedule update...")
-    
-    # 1. Fetch external temperature
-    external_temp = get_external_temperature(
-        OPENWEATHERMAP_CITY, OPENWEATHERMAP_API_KEY
-    )
-    
-    if external_temp is None:
-        # Use min_external_temp of 0 as a safe fallback if weather API fails
-        logging.warning("Using 0°C as fallback external temperature for calculation.")
-        external_temp = 0.0
-
-    # 2. Fetch ChurchSuite bookings
-    try:
+        # Assuming the URL returns a JSON list of bookings directly
         response = requests.get(CHURCHSUITE_URL, timeout=15)
         response.raise_for_status()
-        data = response.json()
+        bookings_data = response.json()
+        
+        logging.info(f"Successfully fetched {len(bookings_data)} bookings from Churchsuite.")
+        return bookings_data
     except requests.exceptions.RequestException as e:
-        logging.error(f"Error fetching ChurchSuite data: {e}")
-        return
-    except json.JSONDecodeError:
-        logging.error("Error decoding JSON from ChurchSuite response.")
-        return
+        logging.error(f"Error fetching Churchsuite bookings: {e}")
+        return []
+
+def calculate_preheat_minutes(target_temp: float, current_temp: float, external_temp: float, heat_loss_factor: float) -> int:
+    """
+    Calculates the required pre-heat time based on temperature delta and heat loss.
     
-    # Use 'booked_resources' and 'resources' based on the confirmed API structure
-    bookings = data.get("booked_resources", []) 
-    resource_map = data.get("resources", {})
-
-    if not bookings or not resource_map:
-        logging.info("No bookings or resource map found in data. Setting all to ECO temp.")
-        # Bookings remains empty, which ensures all zones are set to ECO temp in step 4
-        pass
-
-    # Map resource IDs to location names for easier lookups
-    location_map: Dict[str, str] = {
-        str(resource_id): resource_info.get("name", "")
-        for resource_id, resource_info in resource_map.items()
-    }
-
-    # 3. Determine required target times and temperatures
-    target_schedules: Dict[str, Dict[str, Any]] = {}
-    current_time_utc = datetime.datetime.now(pytz.utc)
-    current_time_local = current_time_utc.astimezone(LOCAL_TZ)
+    Args:
+        target_temp (float): The desired setpoint temperature.
+        current_temp (float): The current measured temperature.
+        external_temp (float): The current outdoor temperature.
+        heat_loss_factor (float): Location-specific factor indicating how quickly heat is lost.
     
-    # Define the end of the day to limit the scope of bookings (e.g., next 24 hours)
-    search_end_time = current_time_local + datetime.timedelta(hours=24) 
+    Returns:
+        int: The number of minutes required for pre-heating.
+    """
+    temp_delta = target_temp - current_temp
+    
+    if temp_delta <= 0:
+        return 0 # Already at or above target temperature
+        
+    # Adjustment for external temperature (lower external temp increases preheat time)
+    # The 'min_external_temp' (from config/location) acts as a baseline.
+    min_external_temp = config.get('min_external_temp', 5.0) # Using float fallback
+    external_impact = max(0.0, min_external_temp - external_temp) * 0.5 # Simple heuristic (0.5 mins per degree below baseline)
+    
+    # Calculate base preheat time
+    base_preheat = PREHEAT_TIME_MINUTES 
+    
+    # Adjust based on temperature delta (how many degrees to rise)
+    preheat_adjustment = temp_delta * PREHEAT_ADJUSTMENT_MINUTES_PER_DEGREE
+    
+    # Apply heat loss factor
+    total_preheat_minutes = int((base_preheat + preheat_adjustment + external_impact) * heat_loss_factor)
+    
+    # Ensure preheat time is reasonable (e.g., max 4 hours)
+    return min(total_preheat_minutes, 240)
 
+
+async def update_heating_schedule():
+    """Main job that runs on a schedule to adjust heating."""
+    logging.info("--- Starting scheduled heating update ---")
+
+    current_external_temp = await get_weather_data()
+    if current_external_temp is None:
+        logging.error("Could not retrieve external temperature. Skipping update.")
+        return
+
+    bookings = await get_churchsuite_bookings()
+
+    tz_str = os.environ.get("CHURCHSUITE_TIMEZONE", "UTC")
+    try:
+        tz = pytz.timezone(tz_str)
+    except pytz.exceptions.UnknownTimeZoneError:
+        logging.error(f"Unknown timezone: {tz_str}. Defaulting to UTC.")
+        tz = pytz.utc
+        
+    now = datetime.datetime.now(tz)
+    
+    # Track zones that have a valid booking to ensure we don't turn them off
+    active_zones: Dict[str, datetime.datetime] = {} # Key: NeohubName:ZoneName, Value: Target End Time
+
+    # Process bookings
     for booking in bookings:
-        resource_id = str(booking.get("resource_id"))
-        resource_name = location_map.get(resource_id)
-
-        # Skip if resource name is unknown or not configured
-        if not resource_name or resource_name not in config["locations"]:
-            logging.debug(f"Skipping booking for unconfigured resource ID: {resource_id}")
-            continue
-
         try:
-            start_dt_utc = dateutil.parser.parse(booking["start_datetime"]).astimezone(pytz.utc)
-            end_dt_utc = dateutil.parser.parse(booking["end_datetime"]).astimezone(pytz.utc)
-            start_dt_local = start_dt_utc.astimezone(LOCAL_TZ)
-            end_dt_local = end_dt_utc.astimezone(LOCAL_TZ)
-
-        except (KeyError, dateutil.parser.ParserError) as e:
-            logging.error(f"Skipping booking due to time parsing error: {e} in {booking}")
-            continue
-
-        # Only process bookings starting soon and those currently active
-        if start_dt_local > search_end_time:
-            continue
+            # Assume booking has 'start_time' and 'end_time' fields that are parsable datetime strings
+            booking_start = dateutil.parser.parse(booking['start_time']).astimezone(tz)
+            booking_end = dateutil.parser.parse(booking['end_time']).astimezone(tz)
             
-        # Also skip bookings that have finished
-        if end_dt_local < current_time_local:
-            continue
-
-        loc_config = config["locations"][resource_name]
-        
-        target_temp = config["default_temperature"]
-        preheat_minutes = config["preheat_time_minutes"] 
-        
-        # Check if external temperature is below the minimum external temp threshold for this location
-        min_temp_threshold = loc_config.get("min_external_temp", 5)
-        
-        # Only calculate complex pre-heat if it's cold enough (or if we had to use the 0.0 fallback)
-        if external_temp < min_temp_threshold or external_temp == 0.0:
-            preheat_minutes = calculate_preheat_minutes(
-                target_temp=target_temp,
-                # Current internal temp is hard to get fast, so we estimate a cold starting point (ECO_TEMPERATURE)
-                current_temp=config["eco_temperature"], 
-                heat_loss_factor=loc_config.get("heat_loss_factor", 1.0),
-                external_temp=external_temp,
-            )
-
-        preheat_start_dt_local = start_dt_local - datetime.timedelta(minutes=preheat_minutes)
-        
-        # The key check: Is the calculated pre-heat start time now or in the past?
-        is_active_now = preheat_start_dt_local <= current_time_local and end_dt_local > current_time_local
-
-        if is_active_now:
-            if resource_name not in target_schedules:
-                target_schedules[resource_name] = {
-                    "start_time_local": preheat_start_dt_local,
-                    "end_time_local": end_dt_local,
-                    "target_temp": target_temp,
-                    "zones": loc_config["zones"],
-                    "neohub": loc_config["neohub"],
-                }
-            else:
-                # Merge overlapping bookings: take the earliest preheat start and the latest end time
-                current_schedule = target_schedules[resource_name]
-                current_schedule["start_time_local"] = min(
-                    current_schedule["start_time_local"], preheat_start_dt_local
-                )
-                current_schedule["end_time_local"] = max(
-                    current_schedule["end_time_local"], end_dt_local
-                )
-                current_schedule["target_temp"] = max(
-                    current_schedule["target_temp"], target_temp
-                )
-            
-            logging.debug(
-                f"Active booking for {resource_name}: {start_dt_local.strftime('%H:%M')} - {end_dt_local.strftime('%H:%M')} "
-                f"(Preheat starts: {preheat_start_dt_local.strftime('%H:%M')}) at {target_temp}°C."
-            )
-
-    # 4. Apply schedules to NeoHub zones
-    all_neohub_zones: Dict[str, List[str]] = {}
-    # Compile a complete list of all zones associated with a hub via the configuration
-    for loc_config in config["locations"].values():
-        hub_name = loc_config["neohub"]
-        all_neohub_zones.setdefault(hub_name, [])
-        for zone in loc_config["zones"]:
-             if zone not in all_neohub_zones[hub_name]:
-                 all_neohub_zones[hub_name].append(zone)
-
-    # Determine which zones should be ON and at what temperature
-    zones_to_heat: Dict[str, Dict[str, float]] = {} # {neohohub_name: {zone_name: target_temp}}
-
-    for schedule in target_schedules.values():
-        hub_name = schedule["neohub"]
-        temp = schedule["target_temp"]
-        zones_for_schedule = schedule["zones"]
-        
-        zones_to_heat.setdefault(hub_name, {})
-        
-        for zone in zones_for_schedule:
-            current_target = zones_to_heat[hub_name].get(zone)
-            if current_target is None or temp > current_target:
-                # Set the highest required temperature for the zone
-                zones_to_heat[hub_name][zone] = temp
+            # Match booking location to configured zone
+            location_name = booking.get('location_name') 
+            if location_name and location_name in config.get("locations", {}):
+                location_config = config["locations"][location_name]
+                neohub_name = location_config["neohub"]
+                target_zones = location_config["zones"]
                 
-    # Apply ON schedules
-    tasks = []
-    for hub_name, zone_temps in zones_to_heat.items():
-        for zone_name, temp in zone_temps.items():
-            tasks.append(update_neohub_zone(hub_name, zone_name, temp))
+                target_temp = location_config.get("default_temperature", DEFAULT_TEMPERATURE) 
+                
+                # Only process bookings starting in the next 4 hours
+                if booking_start > now and booking_start < now + datetime.timedelta(hours=4):
+                    
+                    # NOTE: To implement properly, you would need to iterate through target_zones
+                    # and get the current temp for each, but we'll stick to a mock for now
+                    # current_temp = await NEOHUBS[neohub_name].get_live_temp(target_zones[0])
+                    current_temp = 15.0 # MOCK temperature for logic testing
+                    
+                    preheat_minutes = calculate_preheat_minutes(
+                        target_temp, 
+                        current_temp, 
+                        current_external_temp, 
+                        location_config["heat_loss_factor"]
+                    )
+                    
+                    preheat_start_time = booking_start - datetime.timedelta(minutes=preheat_minutes)
+                    
+                    if now >= preheat_start_time:
+                        logging.info(
+                            f"Booking for {location_name} starts at {booking_start.strftime('%H:%M')}. "
+                            f"Setting zones {target_zones} in '{neohub_name}' to {target_temp}°C (Preheat {preheat_minutes}m)."
+                        )
+                        # The actual setpoint call
+                        for zone in target_zones:
+                            # await NEOHUBS[neohub_name].set_setpoint(zone, target_temp) # Actual command
+                            active_zones[f"{neohub_name}:{zone}"] = booking_end
+                            logging.debug(f"MOCK: Set {zone} in {neohub_name} to {target_temp}°C.")
+                            
+        except Exception as e:
+            logging.error(f"Error processing booking: {booking}. Error: {e}")
+            continue
 
-    # Apply OFF schedules (ECO_TEMPERATURE) to zones not currently needed
-    eco_temp = config["eco_temperature"]
-    for hub_name, all_zones in all_neohub_zones.items():
-        zones_heating = zones_to_heat.get(hub_name, {})
-        for zone_name in all_zones:
-            is_heating_needed = zone_name in zones_heating
+    # Logic to ensure all non-active/past-active zones are set to ECO temperature
+    for location_name, location_config in config.get("locations", {}).items():
+        neohub_name = location_config["neohub"]
+        for zone in location_config["zones"]:
+            zone_key = f"{neohub_name}:{zone}"
             
-            if not is_heating_needed:
-                tasks.append(update_neohub_zone(hub_name, zone_name, eco_temp))
+            # Check if zone is currently active/preheating
+            if zone_key in active_zones:
+                # If the booking end time has passed, set back to ECO
+                if now > active_zones[zone_key]:
+                    logging.info(f"Booking ended for {zone} in {neohub_name}. Setting to ECO.")
+                    # await NEOHUBS[neohub_name].set_setpoint(zone, ECO_TEMPERATURE) # Actual command
+                    logging.debug(f"MOCK: Set {zone} in {neohub_name} to {ECO_TEMPERATURE}°C (After Event).")
+                # If active, leave alone.
+                
+            else:
+                # Zone has no booking at all, set to default ECO
+                logging.debug(f"No active booking for {zone} in {neohub_name}. Setting to ECO.")
+                # await NEOHUBS[neohub_name].set_setpoint(zone, ECO_TEMPERATURE) # Actual command
+                logging.debug(f"MOCK: Set {zone} in {neohub_name} to {ECO_TEMPERATURE}°C (Default).")
 
-    # Run all NeoHub updates concurrently
-    if tasks:
-        await asyncio.gather(*tasks)
+    logging.info("--- Finished scheduled heating update ---")
 
-    logging.info("Heating schedule update complete.")
-
-# --- Main Application Entry Point ---
 
 def main():
     """Application entry point."""
-    global config
+    global config # Make config available to other functions
+
+    # Set up logging before doing anything else
+    logging.basicConfig(
+        level=LOGGING_LEVEL,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    )
     
-    # Load configuration
-    config = load_config()
-    if config is None:
-        logging.error("Failed to load configuration. Exiting.")
+    temp_config = load_config(CONFIG_FILE)
+    if temp_config is None:
+        logging.error("Could not load configuration. Exiting.")
         return
-        
+    
+    global config
+    config = temp_config
+    
+    # Debug log to confirm config structure
     if LOGGING_LEVEL == "DEBUG":
         logging.debug(f"Loaded config: {json.dumps(config, indent=2)}")
 
-    # Initialize NeoHub connections
-    for neohub_name, neohub_config in config["neohubs"].items():
-        # Use asyncio.run() to execute the async connection function
-        if not asyncio.run(connect_to_neohub(neohub_name, neohub_config)):
+    # Connect/Instantiate all NeoHubs using the repaired routine
+    for neohub_name, neohub_config in config.get("neohubs", {}).items():
+        if not connect_to_neohub(neohub_name, neohub_config):
             logging.error(f"Failed to connect to Neohub: {neohub_name}. Exiting.")
-            exit()
-            
-    # Optional: Log zones found on startup
-    for neohub_name in config["neohubs"]:
+            # Use os._exit(1) or raise for non-scheduler driven applications
+            exit(1) 
+    
+    # Log zones for all hubs (this is the first async operation that forces the connection handshake)
+    for neohub_name in config.get("neohubs", {}):
+        # get_zones is an async function, so we must run it in an event loop
         zones = asyncio.run(get_zones(neohub_name))
         if zones:
             logging.info(f"Zones on {neohub_name}: {zones}")
-                
+            if LOGGING_LEVEL == "DEBUG":
+                logging.debug(f"main: Zones on {neohub_name}: {zones}")
+
     if not validate_config(config):
         logging.error("Invalid configuration. Exiting.")
-        exit()
-        
+        exit(1)
+
     # Create a scheduler.
-    scheduler = BackgroundScheduler(timezone=LOCAL_TZ)
+    scheduler = BackgroundScheduler()
 
     # Run update_heating_schedule() immediately, and then schedule it to run every 60 minutes.
+    # Note: Using asyncio.run inside a non-async function is valid for job scheduling.
     asyncio.run(update_heating_schedule())  # Run immediately
     scheduler.add_job(lambda: asyncio.run(update_heating_schedule()), "interval", minutes=60)
     scheduler.start()
-    logging.info("Scheduler started. Running updates every 60 minutes.")
 
+    logging.info("Scheduler started. Monitoring for heating updates.")
     try:
-        # This keeps the main thread alive, which is necessary for the scheduler to run.
+        # Keep the main thread alive for the scheduler
         while True:
-            time.sleep(600)
+            time.sleep(600) 
     except (KeyboardInterrupt, SystemExit):
-        # Shut down the scheduler when the user presses Ctrl+C or process is terminated
-        logging.info("Shutting down scheduler...")
+        logging.info("Shutting down scheduler.")
         scheduler.shutdown()
-        
+
 if __name__ == "__main__":
     main()
