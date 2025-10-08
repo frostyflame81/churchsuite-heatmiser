@@ -112,6 +112,30 @@ async def send_command(neohub_name: str, command: Dict[str, Any]) -> Optional[An
     if hub is None:
         logging.error(f"Not connected to Neohub: {neohub_name}")
         return None
+    # --- START FIX: Correct payload format for profile commands ---
+    command_to_send = command
+    
+    # Check if the command is a dictionary, which is the expected format for a dict payload
+    if isinstance(command, dict):
+        # Create a mutable copy to modify the payload
+        command_to_send = command.copy()
+        
+        # Check for profile commands that require a JSON string value
+        for key in ["STORE_PROFILE", "STORE_PROFILE2"]:
+            if key in command_to_send and isinstance(command_to_send[key], dict):
+                # Serialize the inner dictionary (the profile data) into a JSON string
+                try:
+                    serialized_value = json.dumps(command_to_send[key])
+                    
+                    # Replace the dictionary value with the JSON string value
+                    command_to_send[key] = serialized_value
+                    logging.debug(f"send_command: Serialized {key} payload to JSON string to prevent escaping issues.")
+                except TypeError as e:
+                    logging.error(f"Error serializing payload for {key}: {e}")
+
+    # If the original command was a string (e.g., from the old store_profile), 
+    # command_to_send remains the string, and hub._send will handle it as before.
+    # --- END FIX ---
     try:
         response = await hub._send(command)
         return response
