@@ -93,26 +93,22 @@ def validate_config(config: Dict[str, Any]) -> bool:
         return False
     return True
 
-# --- NeoHub Connection Logic (INITIALIZATION ROUTINE FIX) ---
+# --- NeoHub Connection Logic (FIX APPLIED: Using keyword arguments for NeoHub init) ---
 
 def connect_to_neohub(neohub_name: str, neohub_config: Dict[str, Any]) -> bool:
     """
-    Instantiates and stores a NeoHub object for later use.
-    
-    REPAIR: Removed the explicit 'await hub.connect()' call which caused the
-    AttributeError in newer versions of neohubapi. The connection is now 
-    handled implicitly upon object instantiation (NeoHub(...)).
+    Instantiates and stores a NeoHub object for later use, using keyword arguments 
+    to ensure 'token' is correctly identified by the neohubapi library.
     """
     logging.info(
         f"Attempting connection to NeoHub '{neohub_name}' at {neohub_config['address']}:{neohub_config['port']}"
     )
     try:
-        # Instantiate the NeoHub object. This is the crucial step.
+        # FIX: Explicitly use keyword arguments (host, port, token) to ensure token is passed correctly.
         neohub = NeoHub(
-            neohub_config["address"],
-            neohub_config["port"],
-            neohub_config["token"],
-            # config=neohub_config, <-- Removed the problematic argument
+            host=neohub_config["address"],
+            port=neohub_config["port"],
+            token=neohub_config["token"],
         )
         NEOHUBS[neohub_name] = neohub
         logging.info(
@@ -120,6 +116,7 @@ def connect_to_neohub(neohub_name: str, neohub_config: Dict[str, Any]) -> bool:
         )
         return True
     except Exception as e:
+        # Catching the specific error type related to instantiation failure
         logging.error(
             f"An unexpected error occurred during connection attempt for NeoHub {neohub_name}: {e}"
         )
@@ -300,6 +297,11 @@ async def update_heating_schedule():
     # Logic to ensure all non-active/past-active zones are set to ECO temperature
     for location_name, location_config in config.get("locations", {}).items():
         neohub_name = location_config["neohub"]
+        # Ensure the hub is actually initialized before trying to use it
+        if neohub_name not in NEOHUBS:
+            logging.warning(f"NeoHub '{neohub_name}' is not initialized. Skipping ECO setting for its zones.")
+            continue
+
         for zone in location_config["zones"]:
             zone_key = f"{neohub_name}:{zone}"
             
@@ -358,6 +360,8 @@ def main():
             logging.info(f"Zones on {neohub_name}: {zones}")
             if LOGGING_LEVEL == "DEBUG":
                 logging.debug(f"main: Zones on {neohub_name}: {zones}")
+        else:
+            logging.error(f"Failed to retrieve zones for {neohub_name}. This indicates a connection or authentication issue.")
 
     if not validate_config(config):
         logging.error("Invalid configuration. Exiting.")
