@@ -77,7 +77,6 @@ def load_config(config_file: str) -> Optional[Dict[str, Any]]:
         return None
 
 
-
 def connect_to_neohub(neohub_name: str, neohub_config: Dict[str, Any]) -> bool:
     """Connects to a Neohub using neohubapi."""
     global hubs
@@ -109,10 +108,12 @@ async def send_command(neohub_name: str, command: Dict[str, Any]) -> Optional[An
     """
     Sends a command to the Neohub using neohubapi.
     
-    This version applies the minimal fix: it serializes ONLY the complex 
-    profile data value (the inner dictionary) into a JSON string. The rest of 
-    the command dictionary (the key, e.g., "STORE_PROFILE2") is left as a 
-    Python dictionary structure for neohubapi to handle the final serialization.
+    This version applies a two-part fix for STORE_PROFILE commands:
+    1. The inner profile data is left as a Python dictionary (NOT serialized to a string)
+       to satisfy the server's requirement for an 'object'.
+    2. The entire command is manually serialized to a JSON string (using json.dumps)
+       to bypass the neohubapi's broken str() conversion that produces invalid 
+       single-quoted command keys. This string is then passed to hub._send.
     """
     global hubs
     hub = hubs.get(neohub_name)
@@ -121,40 +122,49 @@ async def send_command(neohub_name: str, command: Dict[str, Any]) -> Optional[An
         return None
 
     # --- START FIX: Correct payload format for profile commands ---
-    command_to_send = command
+    command_to_send: Any = command
     
     # Check if the command is a dictionary, which is the expected format
     if isinstance(command, dict):
-        # Create a mutable copy to modify the payload
-        command_to_send = command.copy()
+        # We must use a copy if we modify it, but here we replace the whole variable
         
-        # Look for profile commands that require a JSON string value
+        # Look for profile commands
         for key in ["STORE_PROFILE", "STORE_PROFILE2"]:
-            if key in command_to_send and isinstance(command_to_send[key], dict):
+            if key in command_to_send:
                 
-                # FIX: ONLY serialize the INNER dictionary (the profile data) 
-                # into a JSON string.
-                try:
-                    serialized_inner_value = json.dumps(command_to_send[key])
+                # Check if the value is a dictionary (the profile data)
+                if isinstance(command_to_send[key], dict):
                     
-                    # Replace the dictionary value with the JSON string value
-                    command_to_send[key] = serialized_inner_value
+                    # FIX 1: We leave the inner profile data as a DICTIONARY (no inner json.dumps)
+                    # This ensures the server receives a JSON OBJECT for the profile data,
+                    # which resolves the 'Argument should be an object' error.
                     
-                    logging.debug(f"send_command: Serialized {key} INNER payload to JSON string.")
-                    break # Exit the loop once a profile command is processed
-                except TypeError as e:
-                    logging.error(f"Error serializing INNER payload for {key}: {e}")
-                    # Keep the original command in case of failure
-                    command_to_send = command 
-                    break 
+                    # FIX 2: We manually serialize the entire command dictionary (e.g., {"STORE_PROFILE2": {...}})
+                    # to a JSON STRING. This forces double quotes for all keys and strings,
+                    # bypassing the neohubapi's broken str() conversion (which uses single quotes).
+                    try:
+                        # command_to_send is now a JSON string ready for the library to wrap
+                        command_to_send = json.dumps(command_to_send)
+                        
+                        logging.debug(f"send_command: Pre-serialized entire {key} command to string to fix single-quote issue.")
+                        break # Exit the loop once a profile command is processed
+                    except TypeError as e:
+                        logging.error(f"Error serializing command for {key}: {e}")
+                        # Revert to original command if serialization fails
+                        command_to_send = command 
+                        break 
+                
+                # If the value is a string, assume it's pre-serialized (e.g. from an old version) 
+                # and proceed to the next command/out of the loop.
 
-    # command_to_send is now a dictionary like:
-    # {"STORE_PROFILE2": "{\"name\": \"Next Week\", ...}"}
-    # neohubapi's _send will handle the outermost serialization, which should now
-    # correctly escape the inner JSON string.
+    # If the command is a simple dict (e.g., {"GET_ZONES": 0}), it remains a dict and is handled normally.
+    # If the command is a profile command, it is now a JSON string.
     # --- END FIX ---
     
     try:
+        # hub._send will now receive either a dict (normal command) or a pre-serialized 
+        # JSON string (profile command). The library should then handle the outer
+        # command list wrapper and websocket transmission.
         response = await hub._send(command_to_send)
         return response
     except (NeoHubUsageError, NeoHubConnectionError) as e:
