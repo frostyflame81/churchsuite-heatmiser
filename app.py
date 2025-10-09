@@ -106,16 +106,25 @@ def validate_config(config: Dict[str, Any]) -> bool:
     return True
 
 async def send_command(neohub_name: str, command: Dict[str, Any]) -> Optional[Any]:
-    """Sends a command to the Neohub using neohubapi."""
+    """
+    Sends a command to the Neohub using neohubapi.
+    
+    This version correctly handles STORE_PROFILE commands by:
+    1. Manually serializing the inner profile data to a JSON string.
+    2. Manually serializing the entire command dictionary to a JSON string
+       to prevent the neohubapi from incorrectly converting it to a single-quoted
+       Python string representation.
+    """
     global hubs
     hub = hubs.get(neohub_name)
     if hub is None:
         logging.error(f"Not connected to Neohub: {neohub_name}")
         return None
+
     # --- START FIX: Correct payload format for profile commands ---
-    command_to_send = command
+    command_to_send: Any = command
     
-    # Check if the command is a dictionary, which is the expected format for a dict payload
+    # Check if the command is a dictionary, which is the expected format
     if isinstance(command, dict):
         # Create a mutable copy to modify the payload
         command_to_send = command.copy()
@@ -123,21 +132,33 @@ async def send_command(neohub_name: str, command: Dict[str, Any]) -> Optional[An
         # Check for profile commands that require a JSON string value
         for key in ["STORE_PROFILE", "STORE_PROFILE2"]:
             if key in command_to_send and isinstance(command_to_send[key], dict):
-                # Serialize the inner dictionary (the profile data) into a JSON string
+                
+                # 1. Serialize the inner dictionary (the profile data) into a JSON string
+                # This prevents the double escaping issue.
                 try:
-                    serialized_value = json.dumps(command_to_send[key])
+                    serialized_inner_value = json.dumps(command_to_send[key])
+                    command_to_send[key] = serialized_inner_value
                     
-                    # Replace the dictionary value with the JSON string value
-                    command_to_send[key] = serialized_value
-                    logging.debug(f"send_command: Serialized {key} payload to JSON string to prevent escaping issues.")
+                    # 2. Serialize the entire command dictionary into a JSON string.
+                    # This prevents the neohubapi from using str() which produces 
+                    # invalid single-quoted JSON (e.g., 'STORE_PROFILE2').
+                    command_to_send = json.dumps(command_to_send)
+                    
+                    logging.debug(f"send_command: Pre-serialized entire {key} command to fix single-quote issue.")
+                    break # Exit the loop once a profile command is processed
                 except TypeError as e:
                     logging.error(f"Error serializing payload for {key}: {e}")
+                    # Revert to original command if serialization fails
+                    command_to_send = command 
+                    break 
 
-    # If the original command was a string (e.g., from the old store_profile), 
-    # command_to_send remains the string, and hub._send will handle it as before.
+    # For simple commands (like GET_ZONES), command_to_send remains a dictionary.
+    # For profile commands, command_to_send is now a JSON string.
     # --- END FIX ---
+    
     try:
-        response = await hub._send(command)
+        # hub._send is called with either a dict (simple commands) or a JSON string (profile commands)
+        response = await hub._send(command_to_send)
         return response
     except (NeoHubUsageError, NeoHubConnectionError) as e:
         logging.error(f"Error sending command to Neohub {neohub_name}: {e}")
@@ -148,8 +169,6 @@ async def send_command(neohub_name: str, command: Dict[str, Any]) -> Optional[An
     except Exception as e:
         logging.error(f"An unexpected error occurred: {e}")
         return None
-
-
 
 async def get_zones(neohub_name: str) -> Optional[List[str]]:
     """Retrieves zone names from the Neohub using neohubapi."""
