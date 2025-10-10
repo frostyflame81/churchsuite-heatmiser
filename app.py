@@ -15,6 +15,8 @@ import websockets # type: ignore
 import ssl
 from neohubapi.neohub import NeoHub, NeoHubUsageError, NeoHubConnectionError, WebSocketClient # type: ignore
 
+_command_id_counter = itertools.count(start=100)
+
 # Configuration
 OPENWEATHERMAP_API_KEY = os.environ.get("OPENWEATHERMAP_API_KEY")
 OPENWEATHERMAP_CITY = os.environ.get("OPENWEATHERMAP_CITY")
@@ -117,10 +119,11 @@ async def send_command(neohub_name: str, command: Dict[str, Any]) -> Optional[An
 
     # --- START FIX: Custom raw send for complex commands ---
     is_profile_command = False
-    for key in ["STORE_PROFILE", "STORE_PROFILE2"]:
-        if key in command and isinstance(command[key], dict):
-            is_profile_command = True
-            break
+    if isinstance(command, dict):
+        for key in ["STORE_PROFILE", "STORE_PROFILE2"]:
+            if key in command and isinstance(command[key], dict):
+                is_profile_command = True
+                break
             
     if is_profile_command:
         # Bypass the broken hub._send() for profile commands
@@ -214,6 +217,7 @@ async def _send_raw_profile_command(hub: NeoHub, command: Dict[str, Any]) -> Opt
     
     if not hub_token or not hub_client:
         logging.error("Could not access private token or client (_token or _client) for raw send.")
+        # Raise an error that is handled higher up
         raise NeoHubUsageError("Hub object is missing necessary internal attributes for manual send.")
 
     try:
@@ -221,7 +225,6 @@ async def _send_raw_profile_command(hub: NeoHub, command: Dict[str, Any]) -> Opt
         command_id = next(_command_id_counter)
 
         # 1. The COMMAND value (The dictionary to be executed on the hub)
-        # This is a JSON string where internal quotes are double-quoted.
         command_value_str = json.dumps(command, separators=(',', ':'))
 
         # 2. The value of the "message" key (The inner payload)
@@ -238,7 +241,7 @@ async def _send_raw_profile_command(hub: NeoHub, command: Dict[str, Any]) -> Opt
         # 3. The FINAL payload for the WebSocket (Outer wrapper)
         final_payload_dict = {
             "message_type": "hm_get_command_queue",
-            # The manual serialization here ensures one final layer of escaping for the 'message' value.
+            # This serialization nests the inner message string, applying the necessary escaping
             "message": json.dumps(inner_message_dict, separators=(',', ':')) 
         }
         
@@ -248,7 +251,6 @@ async def _send_raw_profile_command(hub: NeoHub, command: Dict[str, Any]) -> Opt
         raw_ws_send = getattr(getattr(hub_client, '_ws', None), 'send', None)
         
         if not raw_ws_send:
-            # Fallback to an internal method name if the raw connection is not directly exposed
             raw_ws_send = getattr(hub_client, '_ws_send', None) 
         
         if not raw_ws_send:
@@ -259,13 +261,13 @@ async def _send_raw_profile_command(hub: NeoHub, command: Dict[str, Any]) -> Opt
         # Send the manually composed, correctly-escaped JSON string directly
         await raw_ws_send(final_payload_string)
         
-        # We rely on the library to receive and log the command response.
-        # Returning True indicates the raw send was executed successfully.
-        return True 
+        # NOTE: This does not wait for a response queue since we bypassed it. 
+        # We rely on the library's receiver to log the response.
+        return {"command_id": command_id, "status": "Sent via raw bypass"}
 
     except Exception as e:
         logging.error(f"Error during raw WebSocket send for profile command: {e}")
-        return False
+        return None
 
 async def get_profile(neohub_name: str, profile_name: str) -> Optional[Dict[str, Any]]:
     """Retrieves a heating profile from the Neohub using neohubapi."""
