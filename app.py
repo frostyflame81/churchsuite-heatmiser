@@ -204,35 +204,13 @@ async def store_profile2(neohub_name: str, profile_name: str, profile_data: Dict
     response = await send_command(neohub_name, inner_payload)
     return response
 
-def _convert_booleans_to_strings(command: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Recursively converts boolean literals (True/False) that are inside lists 
-    of the schedule 'info' dictionary to the string literals "true"/"false".
-    """
-    new_command = command.copy()
-    
-    profile_data = new_command.get('STORE_PROFILE2')
-    if not profile_data or not isinstance(profile_data, dict):
-        return command
-
-    info = profile_data.get('info')
-    if not info or not isinstance(info, dict):
-        return command
-
-    # Iterate through days and schedule levels
-    for day_data in info.values():
-        if not isinstance(day_data, dict): continue
-        for level_key, level_data in day_data.items():
-            if isinstance(level_data, list) and len(level_data) == 4:
-                if isinstance(level_data[3], bool):
-                    level_data[3] = str(level_data[3]).lower()
-    
-    return new_command
 
 async def _send_raw_profile_command(hub: NeoHub, command: Dict[str, Any]) -> Optional[Any]:
     """
     Manually constructs, sends, and waits for the response for the STORE_PROFILE2 
-    command, applying manual string injection and the specific quote hacks.
+    command. It uses manual string injection, single-quote replacement, and final 
+    backslash stripping to satisfy the finicky Neohub parser while preserving the 
+    required four-item schedule list with unquoted booleans.
     """
     global _command_id_counter
     
@@ -244,18 +222,20 @@ async def _send_raw_profile_command(hub: NeoHub, command: Dict[str, Any]) -> Opt
         return None
 
     try:
-        # 0. Pre-process the command dictionary (bools converted to strings)
-        command_to_send = _convert_booleans_to_strings(command)
+        # 0. Preparation: The input 'command' now relies on Python True/False 
+        # being correctly serialized to unquoted true/false by json.dumps.
+        command_to_send = command
         
-        # 1. Serialize the command to double-quoted JSON
+        # 1. Serialize the command to double-quoted JSON (this results in unquoted true/false)
         command_id = next(_command_id_counter)
         command_value_str = json.dumps(command_to_send, separators=(',', ':'))
 
         # 2. **HACK 1: Convert all double quotes to single quotes** for the inner command content.
+        # This is CRUCIAL: it leaves the unquoted 'true'/'false' untouched.
         command_value_str_hacked = command_value_str.replace('"', "'")
         
         # 3. **HACK 2: Manually construct the INNER_MESSAGE string**
-        # We use two backslashes (\\) around keys/values for the 'message' field.
+        # We manually insert the required escaped double quotes (\\") around keys/values
         message_str = (
             '{\\"token\\": \\"' + hub_token + '\\", '
             '\\"COMMANDS\\": ['
@@ -270,13 +250,12 @@ async def _send_raw_profile_command(hub: NeoHub, command: Dict[str, Any]) -> Opt
             "message": message_str 
         }
         
-        # 5. **Final Serialization & Escaping Hack**
+        # 5. **Final Serialization & Escaping Hacks**
         # Use standard json.dumps to add spaces to the outer JSON wrapper.
         final_payload_string = json.dumps(final_payload_dict) 
         
-        # **HACK 3: Strip excess escaping (as requested)**
-        # This replaces the sequence of triple-backslashes followed by a quote (which is likely
-        # what the previous json.dumps steps created) with a single escaped quote.
+        # **HACK 3 (User Request): Strip excess escaping**
+        # This removes any accidental triple-backslash sequences created during the nested serialization.
         final_payload_string = final_payload_string.replace('\\\\\\"', '\\"')
         
         # 6. Hook into the response mechanism
@@ -321,7 +300,7 @@ async def _send_raw_profile_command(hub: NeoHub, command: Dict[str, Any]) -> Opt
         # Clean up the pending request
         if pending_requests and 'command_id' in locals() and command_id in pending_requests:
             del pending_requests[command_id]
-
+            
 async def get_profile(neohub_name: str, profile_name: str) -> Optional[Dict[str, Any]]:
     """Retrieves a heating profile from the Neohub using neohubapi."""
     logging.info(f"Getting profile {profile_name} from Neohub {neohub_name}")
