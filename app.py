@@ -205,7 +205,7 @@ async def store_profile2(neohub_name: str, profile_name: str, profile_data: Dict
     return response
 
 
-async def _send_raw_profile_command(hub: NeoHub, command: Dict[str, Any]) -> Optional[Any]:
+aasync def _send_raw_profile_command(hub: NeoHub, command: Dict[str, Any]) -> Optional[Any]:
     """
     Manually constructs, sends, and waits for the response for the STORE_PROFILE2 
     command, focusing on correctly quoting time strings within the list structure 
