@@ -207,11 +207,11 @@ async def store_profile2(neohub_name: str, profile_name: str, profile_data: Dict
 async def _send_raw_profile_command(hub: NeoHub, command: Dict[str, Any]) -> Optional[Any]:
     """
     Manually composes and sends the STORE_PROFILE2 command directly via the WebSocket
-    to bypass the neohubapi library's broken serialization for this complex command.
+    using the hardcoded internal connection path (hub._client._ws.send).
     """
     global _command_id_counter
     
-    # Access private attributes needed for manual composition
+    # Access private attributes
     hub_token = getattr(hub, '_token', None)
     hub_client = getattr(hub, '_client', None)
     
@@ -220,14 +220,10 @@ async def _send_raw_profile_command(hub: NeoHub, command: Dict[str, Any]) -> Opt
         return None
 
     try:
-        # Get the next command ID
+        # 1. Manually construct the correctly escaped JSON payload
         command_id = next(_command_id_counter)
-
-        # 1. The COMMAND value (The dictionary to be executed on the hub)
-        # This serializes the user command to a string with correct quotes, ready for nesting.
         command_value_str = json.dumps(command, separators=(',', ':'))
 
-        # 2. The value of the "message" key (The inner payload)
         inner_message_dict = {
             "token": hub_token,
             "COMMANDS": [
@@ -238,41 +234,37 @@ async def _send_raw_profile_command(hub: NeoHub, command: Dict[str, Any]) -> Opt
             ]
         }
         
-        # 3. The FINAL payload for the WebSocket (Outer wrapper)
         final_payload_dict = {
             "message_type": "hm_get_command_queue",
-            # This serialization nests the inner message string, applying the necessary escaping
+            # This serializes the inner message string, applying the necessary single layer of escaping
             "message": json.dumps(inner_message_dict, separators=(',', ':')) 
         }
         
         final_payload_string = json.dumps(final_payload_dict, separators=(',', ':'))
         
-        # --- FIX: Robust search for the raw send method ---
-        # Path 1: Directly from the client object (most common for wrappers)
-        raw_ws_send = getattr(hub_client, 'send', None) 
-        
+        # 2. Hardcoded access to the raw websockets send function (most common path)
+        raw_connection = getattr(hub_client, '_ws', None)
+        raw_ws_send = getattr(raw_connection, 'send', None) if raw_connection else None
+
+        # Fallback 1: The client object itself might have the send method
         if not raw_ws_send:
-            # Path 2: Via the client's internal WebSocket connection object (_ws)
-            raw_ws_send = getattr(getattr(hub_client, '_ws', None), 'send', None)
-        
-        if not raw_ws_send:
-            # Path 3: Fallback to an internal method name seen in some async libraries
-            raw_ws_send = getattr(hub_client, '_ws_send', None) 
+            raw_ws_send = getattr(hub_client, 'send', None)
 
         if not raw_ws_send:
-            # Final failure if no path found
-            raise AttributeError("Could not find a raw WebSocket send method on hub_client or its internals.")
+            # If this fails, the internal connection object is named something custom.
+            logging.error("Final direct access attempt failed. The raw WebSocket connection attribute name is likely non-standard.")
+            raise AttributeError("Could not find a raw WebSocket send method.")
 
         logging.debug(f"Raw Sending: {final_payload_string}")
         
-        # Send the manually composed, correctly-escaped JSON string directly
+        # 3. Send the manually composed, correctly-escaped JSON string directly
         await raw_ws_send(final_payload_string)
         
-        # NOTE: Returning a dictionary for consistency, even though it bypasses the queue.
         return {"command_id": command_id, "status": "Sent via raw bypass"}
 
     except AttributeError as e:
-        logging.error(f"Error finding internal method for raw WebSocket send: {e}")
+        # Log the specific failure for debugging the attribute name
+        logging.error(f"Error during raw WebSocket send for profile command: {e}")
         return None
     except Exception as e:
         logging.error(f"Error during raw WebSocket send for profile command: {e}")
