@@ -3,6 +3,7 @@ import datetime
 import json
 import logging
 import time
+import itertools
 import requests # type: ignore
 from apscheduler.schedulers.background import BackgroundScheduler # type: ignore
 import argparse
@@ -106,14 +107,7 @@ def validate_config(config: Dict[str, Any]) -> bool:
 
 async def send_command(neohub_name: str, command: Dict[str, Any]) -> Optional[Any]:
     """
-    Sends a command to the Neohub using neohubapi.
-    
-    This version implements a hack to fix STORE_PROFILE2/STORE_PROFILE commands
-    by counteracting the neohubapi library's double-serialization flaw:
-    1. The command dictionary is serialized once to a JSON string.
-    2. The backslashes added by that serialization are manually removed.
-    3. The library then adds the final, correct layer of escaping when wrapping
-       the message, resulting in a perfectly single-escaped payload for the server.
+    Sends a command to the Neohub, using a custom raw send for complex profile commands.
     """
     global hubs
     hub = hubs.get(neohub_name)
@@ -121,10 +115,7 @@ async def send_command(neohub_name: str, command: Dict[str, Any]) -> Optional[An
         logging.error(f"Not connected to Neohub: {neohub_name}")
         return None
 
-    # --- START FIX: Manual under-serialization to counteract broken library logic ---
-    command_to_send: Any = command
-    
-    # Check for the complex profile commands
+    # --- START FIX: Custom raw send for complex commands ---
     is_profile_command = False
     for key in ["STORE_PROFILE", "STORE_PROFILE2"]:
         if key in command and isinstance(command[key], dict):
@@ -132,27 +123,13 @@ async def send_command(neohub_name: str, command: Dict[str, Any]) -> Optional[An
             break
             
     if is_profile_command:
-        try:
-            # Step 1: Serialize the whole command dictionary to get correct double quotes.
-            command_json_str = json.dumps(command)
-            
-            # Step 2 (The Hack): Remove the escaping added by Step 1.
-            # This is necessary because the library will re-escape the string when it wraps it.
-            # Passing this *under-escaped* string compensates for the library's over-escaping.
-            # This relies on the fact that only backslashes followed by a double quote are needed for JSON escaping.
-            command_to_send = command_json_str.replace('\\"', '"') 
-            
-            logging.debug("send_command: Hacked under-escaped JSON string to counteract library over-escaping.")
-            
-        except TypeError as e:
-            logging.error(f"Error serializing command for profile: {e}")
-            command_to_send = command # Revert to original command in case of failure
+        # Bypass the broken hub._send() for profile commands
+        return await _send_raw_profile_command(hub, command)
     # --- END FIX ---
     
+    # Normal command handling (for simple commands like GET_ZONES)
     try:
-        # hub._send is called with either a dict (simple command) or a hacked, 
-        # under-escaped JSON string (profile command).
-        response = await hub._send(command_to_send)
+        response = await hub._send(command)
         return response
     except (NeoHubUsageError, NeoHubConnectionError) as e:
         logging.error(f"Error sending command to Neohub {neohub_name}: {e}")
@@ -177,7 +154,6 @@ async def get_zones(neohub_name: str) -> Optional[List[str]]:
     return None
 
 
-
 async def set_temperature(neohub_name: str, zone_name: str, temperature: float) -> Optional[Dict[str, Any]]:
     """Sets the temperature for a specified zone using neohubapi."""
     logging.info(f"Setting temperature for zone {zone_name} on Neohub {neohub_name} to {temperature}")
@@ -192,7 +168,6 @@ async def get_live_data(neohub_name: str) -> Optional[Dict[str, Any]]:
     command = {"GET_LIVE_DATA": 0}
     response = await send_command(neohub_name, command)
     return response
-
 
 
 async def store_profile(neohub_name: str, profile_name: str, profile_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -225,6 +200,72 @@ async def store_profile2(neohub_name: str, profile_name: str, profile_data: Dict
     # for the WebSocket transport, avoiding the double-encoding issue.
     response = await send_command(neohub_name, inner_payload)
     return response
+
+async def _send_raw_profile_command(hub: NeoHub, command: Dict[str, Any]) -> Optional[Any]:
+    """
+    Manually composes and sends the STORE_PROFILE2 command directly via the WebSocket
+    to bypass the neohubapi library's broken serialization for this complex command.
+    """
+    global _command_id_counter
+    
+    # Access private attributes needed for manual composition
+    hub_token = getattr(hub, '_token', None)
+    hub_client = getattr(hub, '_client', None)
+    
+    if not hub_token or not hub_client:
+        logging.error("Could not access private token or client (_token or _client) for raw send.")
+        raise NeoHubUsageError("Hub object is missing necessary internal attributes for manual send.")
+
+    try:
+        # Get the next command ID
+        command_id = next(_command_id_counter)
+
+        # 1. The COMMAND value (The dictionary to be executed on the hub)
+        # This is a JSON string where internal quotes are double-quoted.
+        command_value_str = json.dumps(command, separators=(',', ':'))
+
+        # 2. The value of the "message" key (The inner payload)
+        inner_message_dict = {
+            "token": hub_token,
+            "COMMANDS": [
+                {
+                    "COMMAND": command_value_str,
+                    "COMMANDID": command_id
+                }
+            ]
+        }
+        
+        # 3. The FINAL payload for the WebSocket (Outer wrapper)
+        final_payload_dict = {
+            "message_type": "hm_get_command_queue",
+            # The manual serialization here ensures one final layer of escaping for the 'message' value.
+            "message": json.dumps(inner_message_dict, separators=(',', ':')) 
+        }
+        
+        final_payload_string = json.dumps(final_payload_dict, separators=(',', ':'))
+        
+        # Attempt to access the raw WebSocket connection's send method
+        raw_ws_send = getattr(getattr(hub_client, '_ws', None), 'send', None)
+        
+        if not raw_ws_send:
+            # Fallback to an internal method name if the raw connection is not directly exposed
+            raw_ws_send = getattr(hub_client, '_ws_send', None) 
+        
+        if not raw_ws_send:
+            raise AttributeError("Could not find a raw WebSocket send method.")
+
+        logging.debug(f"Raw Sending: {final_payload_string}")
+        
+        # Send the manually composed, correctly-escaped JSON string directly
+        await raw_ws_send(final_payload_string)
+        
+        # We rely on the library to receive and log the command response.
+        # Returning True indicates the raw send was executed successfully.
+        return True 
+
+    except Exception as e:
+        logging.error(f"Error during raw WebSocket send for profile command: {e}")
+        return False
 
 async def get_profile(neohub_name: str, profile_name: str) -> Optional[Dict[str, Any]]:
     """Retrieves a heating profile from the Neohub using neohubapi."""
