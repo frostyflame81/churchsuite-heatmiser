@@ -208,9 +208,8 @@ async def store_profile2(neohub_name: str, profile_name: str, profile_data: Dict
 async def _send_raw_profile_command(hub: NeoHub, command: Dict[str, Any]) -> Optional[Any]:
     """
     Manually constructs, sends, and waits for the response for the STORE_PROFILE2 
-    command. It uses manual string injection, single-quote replacement, and final 
-    backslash stripping to satisfy the finicky Neohub parser while preserving the 
-    required four-item schedule list with unquoted booleans.
+    command, focusing on correctly quoting time strings within the list structure 
+    to fix the 'Invalid Json' error.
     """
     global _command_id_counter
     
@@ -222,25 +221,50 @@ async def _send_raw_profile_command(hub: NeoHub, command: Dict[str, Any]) -> Opt
         return None
 
     try:
-        # 0. Preparation: The input 'command' now relies on Python True/False 
-        # being correctly serialized to unquoted true/false by json.dumps.
         command_to_send = command
         
-        # 1. Serialize the command to double-quoted JSON (this results in unquoted true/false)
+        # 1. Serialize the command to condensed double-quoted JSON
         command_id = next(_command_id_counter)
         command_value_str = json.dumps(command_to_send, separators=(',', ':'))
 
         # 2. **HACK 1: Convert all double quotes to single quotes** for the inner command content.
-        # This is CRUCIAL: it leaves the unquoted 'true'/'false' untouched.
+        # This gives us the Python dictionary string with single quotes, but leaves "true" unquoted.
         command_value_str_hacked = command_value_str.replace('"', "'")
         
-        # 3. **HACK 2: Manually construct the INNER_MESSAGE string**
-        # We manually insert the required escaped double quotes (\\") around keys/values
+        # 3. **CRITICAL HACK:** Ensure time strings are correctly single-quoted inside the list.
+        # The Python list serialization is not putting single quotes around the time string elements 
+        # because the time strings were double-quoted initially, and then those were changed to single quotes. 
+        # This re-replaces the single quotes around the time (and boolean) to ensure they are quoted strings.
+        # This step forces the strings to be wrapped in quotes for the parser.
+        # Note: If the boolean was 'true' (string), it would be 'true'. Since it's 'true' (unquoted literal), it remains that way.
+        # We need to target the time string quotes. Since time is the first element, it will always be the first string.
+        # The simplest way to ensure quoting is to re-re-quote the time string if necessary, but that leads to complexity.
+
+        # LET'S REVERSE THE LOGIC: Preserve quoted strings inside the list, and only convert outer braces.
+        # This means the inner list elements must remain double-quoted until the very last manual step.
+        
+        # Re-Attempting the command string generation with this insight:
+        
+        # 1. Start with the raw JSON string with correct escaping for the inner message.
+        inner_command_id = next(_command_id_counter)
+        # Use separators=(',', ':') to get the most condensed JSON string, but this time,
+        # we do *not* convert double quotes to single quotes yet.
+        inner_command_json = json.dumps(command, separators=(',', ':'))
+
+        # The structure we want for the COMMAND value is: '{"STORE_PROFILE2":{...}}'
+        # The contents of the command should be valid JSON *but quoted by single quotes*
+
+        # 2. **HACK 1: Manually construct the inner JSON message with double quotes (and correct escaping)**
+        # This ensures the time string is double-quoted: "wake":["08:00",19.0,5,true]
+        message_str_inner_command = inner_command_json.replace('"', '\\"')
+        
+        # 3. **HACK 2: Construct the full 'message' payload, enclosing the COMMAND in single quotes**
+        # This achieves: COMMAND: '{"STORE_PROFILE2":{...}}'
         message_str = (
             '{\\"token\\": \\"' + hub_token + '\\", '
             '\\"COMMANDS\\": ['
-                '{\\"COMMAND\\": \\"' + command_value_str_hacked + '\\", ' # Inject the single-quoted string
-                '\\"COMMANDID\\": ' + str(command_id) + '}' # COMMANDID is not quoted
+                '{\\"COMMAND\\": \'' + message_str_inner_command + '\', ' # ***Changed to single quotes around the inner command string***
+                '\\"COMMANDID\\": ' + str(inner_command_id) + '}'
             ']}'
         )
 
@@ -251,11 +275,9 @@ async def _send_raw_profile_command(hub: NeoHub, command: Dict[str, Any]) -> Opt
         }
         
         # 5. **Final Serialization & Escaping Hacks**
-        # Use standard json.dumps to add spaces to the outer JSON wrapper.
         final_payload_string = json.dumps(final_payload_dict) 
         
-        # **HACK 3 (User Request): Strip excess escaping**
-        # This removes any accidental triple-backslash sequences created during the nested serialization.
+        # **HACK 3: Strip excess escaping**
         final_payload_string = final_payload_string.replace('\\\\\\"', '\\"')
         
         # 6. Hook into the response mechanism
@@ -268,7 +290,7 @@ async def _send_raw_profile_command(hub: NeoHub, command: Dict[str, Any]) -> Opt
              raise AttributeError("Could not find internal mechanisms needed for raw send/receive.")
         
         future: asyncio.Future[Any] = asyncio.Future()
-        pending_requests[command_id] = future
+        pending_requests[inner_command_id] = future
 
         logging.debug(f"Raw Sending: {final_payload_string}")
         
@@ -276,31 +298,31 @@ async def _send_raw_profile_command(hub: NeoHub, command: Dict[str, Any]) -> Opt
         await raw_ws_send(final_payload_string)
         response_dict = await asyncio.wait_for(future, timeout=request_timeout)
         
-        # 8. Process the response
-        logging.debug(f"Received STORE_PROFILE2 response (COMMANDID {command_id}): {response_dict}")
+        # 8. Process the response (removed old command_id reference, used new one)
+        logging.debug(f"Received STORE_PROFILE2 response (COMMANDID {inner_command_id}): {response_dict}")
 
         if response_dict and "STORE_PROFILE2" in response_dict and "PROFILE_ID" in response_dict["STORE_PROFILE2"]:
              profile_id = response_dict["STORE_PROFILE2"]["PROFILE_ID"]
              logging.info(f"Successfully stored profile with ID: {profile_id}")
-             return {"command_id": command_id, "status": "Success", "profile_id": profile_id}
+             return {"command_id": inner_command_id, "status": "Success", "profile_id": profile_id}
         elif isinstance(response_dict, dict) and "error" in response_dict:
-             logging.error(f"Neohub returned error for command {command_id}: {response_dict['error']}")
-             return {"command_id": command_id, "status": "Error", "neohub_error": response_dict['error']}
+             logging.error(f"Neohub returned error for command {inner_command_id}: {response_dict['error']}")
+             return {"command_id": inner_command_id, "status": "Error", "neohub_error": response_dict['error']}
         else:
-             logging.error(f"Neohub returned unexpected response for command {command_id}: {response_dict}")
-             return {"command_id": command_id, "status": "Unexpected Response", "response": response_dict}
+             logging.error(f"Neohub returned unexpected response for command {inner_command_id}: {response_dict}")
+             return {"command_id": inner_command_id, "status": "Unexpected Response", "response": response_dict}
 
     except asyncio.TimeoutError:
-        logging.error(f"Timeout waiting for response for command {command_id}.")
-        return {"command_id": command_id, "status": "Timeout"}
+        logging.error(f"Timeout waiting for response for command {inner_command_id}.")
+        return {"command_id": inner_command_id, "status": "Timeout"}
     except Exception as e:
         logging.error(f"Error during raw WebSocket send/receive for profile command: {e}")
         return None
     finally:
         # Clean up the pending request
-        if pending_requests and 'command_id' in locals() and command_id in pending_requests:
-            del pending_requests[command_id]
-            
+        if pending_requests and 'inner_command_id' in locals() and inner_command_id in pending_requests:
+            del pending_requests[inner_command_id]
+
 async def get_profile(neohub_name: str, profile_name: str) -> Optional[Dict[str, Any]]:
     """Retrieves a heating profile from the Neohub using neohubapi."""
     logging.info(f"Getting profile {profile_name} from Neohub {neohub_name}")
