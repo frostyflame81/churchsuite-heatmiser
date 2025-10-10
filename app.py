@@ -10,7 +10,7 @@ import argparse
 import os
 import pytz # type: ignore
 import dateutil.parser # type: ignore
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Union
 import websockets # type: ignore
 import ssl
 from neohubapi.neohub import NeoHub, NeoHubUsageError, NeoHubConnectionError, WebSocketClient # type: ignore
@@ -204,10 +204,37 @@ async def store_profile2(neohub_name: str, profile_name: str, profile_data: Dict
     response = await send_command(neohub_name, inner_payload)
     return response
 
+def _convert_booleans_to_strings(command: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Recursively converts boolean literals (True/False) that are inside lists 
+    of the schedule 'info' dictionary to the string literals "true"/"false".
+    """
+    new_command = command.copy()
+    
+    # Check if this is a STORE_PROFILE2 command
+    profile_data = new_command.get('STORE_PROFILE2')
+    if not profile_data or not isinstance(profile_data, dict):
+        return command # Not a profile command, return unchanged
+
+    info = profile_data.get('info')
+    if not info or not isinstance(info, dict):
+        return command # No schedule info, return unchanged
+
+    # Iterate through days and schedule levels
+    for day_data in info.values():
+        if not isinstance(day_data, dict): continue
+        for level_key, level_data in day_data.items():
+            if isinstance(level_data, list) and len(level_data) == 4:
+                # The fourth element is the boolean we need to convert
+                if isinstance(level_data[3], bool):
+                    level_data[3] = str(level_data[3]).lower()
+    
+    return new_command
+
 async def _send_raw_profile_command(hub: NeoHub, command: Dict[str, Any]) -> Optional[Any]:
     """
     Manually constructs, sends, and waits for the response for the STORE_PROFILE2 
-    command by hooking into the hub's internal pending requests mechanism.
+    command, applying string manipulation to fix the broken JSON escaping.
     """
     global _command_id_counter
     
@@ -219,58 +246,65 @@ async def _send_raw_profile_command(hub: NeoHub, command: Dict[str, Any]) -> Opt
         return None
 
     try:
-        # 1. Manually construct the correctly escaped JSON payload
+        # 0. Pre-process the command dictionary (bools to strings)
+        command_to_send = _convert_booleans_to_strings(command)
+        
+        # 1. Serialize the command into a string (COMMAND_VALUE_STR)
         command_id = next(_command_id_counter)
-        command_value_str = json.dumps(command, separators=(',', ':'))
+        command_value_str = json.dumps(command_to_send, separators=(',', ':'))
 
+        # 2. **THE CORE HACK: FIX THE ESCAPING**
+        # The string "COMMAND" will be serialized again, creating excess escapes on the quotes inside.
+        # We replace the double-escaped quotes (\\") with single-escaped quotes (\") in the string value.
+        # This is non-standard but required for the broken hub parser.
+        escaped_command_str = command_value_str.replace('"', '\\"').replace('\\\\"', '\\"') # Safely replace the required quotes
+        
+        # 3. Construct the inner message string using the fixed command string
         inner_message_dict = {
             "token": hub_token,
-            "COMMANDS": [{"COMMAND": command_value_str, "COMMANDID": command_id}]
+            "COMMANDS": [{"COMMAND": escaped_command_str, "COMMANDID": command_id}]
         }
         
+        message_str = json.dumps(inner_message_dict, separators=(',', ':')) 
+
+        # 4. Construct the final payload for transmission
         final_payload_dict = {
             "message_type": "hm_get_command_queue",
-            "message": json.dumps(inner_message_dict, separators=(',', ':')) 
+            "message": message_str 
         }
         final_payload_string = json.dumps(final_payload_dict, separators=(',', ':'))
         
-        # 2. **HOOK INTO THE RESPONSE MECHANISM (THE FIX)**
+        # 5. Hook into the response mechanism
         raw_connection = getattr(hub_client, '_websocket', None)
         raw_ws_send = getattr(raw_connection, 'send', None) if raw_connection else None
-        
         pending_requests = getattr(hub_client, '_pending_requests', None)
-        request_timeout = getattr(hub_client, '_request_timeout', 60) # Default to 60s
+        request_timeout = getattr(hub_client, '_request_timeout', 60) 
         
         if not raw_ws_send or pending_requests is None:
              raise AttributeError("Could not find internal mechanisms needed for raw send/receive.")
         
-        # Create a Future and manually insert it into the client's queue
         future: asyncio.Future[Any] = asyncio.Future()
         pending_requests[command_id] = future
 
         logging.debug(f"Raw Sending: {final_payload_string}")
         
-        # 3. Send the message
+        # 6. Send and wait
         await raw_ws_send(final_payload_string)
-        
-        # 4. Wait for the response (this is what hub._send does automatically)
         response_dict = await asyncio.wait_for(future, timeout=request_timeout)
         
-        # 5. Log the raw response for debugging purposes
+        # 7. Process the response
         logging.debug(f"Received STORE_PROFILE2 response (COMMANDID {command_id}): {response_dict}")
 
-        # The profile ID is expected in the response dictionary on success
         if response_dict and "STORE_PROFILE2" in response_dict and "PROFILE_ID" in response_dict["STORE_PROFILE2"]:
              profile_id = response_dict["STORE_PROFILE2"]["PROFILE_ID"]
+             logging.info(f"Successfully stored profile with ID: {profile_id}")
              return {"command_id": command_id, "status": "Success", "profile_id": profile_id}
-        elif response_dict and "error" in response_dict:
+        elif isinstance(response_dict, dict) and "error" in response_dict:
              logging.error(f"Neohub returned error for command {command_id}: {response_dict['error']}")
              return {"command_id": command_id, "status": "Error", "neohub_error": response_dict['error']}
         else:
-             # Log the full response if it doesn't match the expected success/error format
              logging.error(f"Neohub returned unexpected response for command {command_id}: {response_dict}")
              return {"command_id": command_id, "status": "Unexpected Response", "response": response_dict}
-
 
     except asyncio.TimeoutError:
         logging.error(f"Timeout waiting for response for command {command_id}.")
@@ -279,8 +313,8 @@ async def _send_raw_profile_command(hub: NeoHub, command: Dict[str, Any]) -> Opt
         logging.error(f"Error during raw WebSocket send/receive for profile command: {e}")
         return None
     finally:
-        # Crucial: Clean up the pending request whether successful or not
-        if pending_requests and command_id in pending_requests:
+        # Crucial: Clean up the pending request
+        if pending_requests and 'command_id' in locals() and command_id in pending_requests:
             del pending_requests[command_id]
 
 async def get_profile(neohub_name: str, profile_name: str) -> Optional[Dict[str, Any]]:
