@@ -217,14 +217,14 @@ async def _send_raw_profile_command(hub: NeoHub, command: Dict[str, Any]) -> Opt
     
     if not hub_token or not hub_client:
         logging.error("Could not access private token or client (_token or _client) for raw send.")
-        # Raise an error that is handled higher up
-        raise NeoHubUsageError("Hub object is missing necessary internal attributes for manual send.")
+        return None
 
     try:
         # Get the next command ID
         command_id = next(_command_id_counter)
 
         # 1. The COMMAND value (The dictionary to be executed on the hub)
+        # This serializes the user command to a string with correct quotes, ready for nesting.
         command_value_str = json.dumps(command, separators=(',', ':'))
 
         # 2. The value of the "message" key (The inner payload)
@@ -247,24 +247,33 @@ async def _send_raw_profile_command(hub: NeoHub, command: Dict[str, Any]) -> Opt
         
         final_payload_string = json.dumps(final_payload_dict, separators=(',', ':'))
         
-        # Attempt to access the raw WebSocket connection's send method
-        raw_ws_send = getattr(getattr(hub_client, '_ws', None), 'send', None)
+        # --- FIX: Robust search for the raw send method ---
+        # Path 1: Directly from the client object (most common for wrappers)
+        raw_ws_send = getattr(hub_client, 'send', None) 
         
         if not raw_ws_send:
+            # Path 2: Via the client's internal WebSocket connection object (_ws)
+            raw_ws_send = getattr(getattr(hub_client, '_ws', None), 'send', None)
+        
+        if not raw_ws_send:
+            # Path 3: Fallback to an internal method name seen in some async libraries
             raw_ws_send = getattr(hub_client, '_ws_send', None) 
-        
+
         if not raw_ws_send:
-            raise AttributeError("Could not find a raw WebSocket send method.")
+            # Final failure if no path found
+            raise AttributeError("Could not find a raw WebSocket send method on hub_client or its internals.")
 
         logging.debug(f"Raw Sending: {final_payload_string}")
         
         # Send the manually composed, correctly-escaped JSON string directly
         await raw_ws_send(final_payload_string)
         
-        # NOTE: This does not wait for a response queue since we bypassed it. 
-        # We rely on the library's receiver to log the response.
+        # NOTE: Returning a dictionary for consistency, even though it bypasses the queue.
         return {"command_id": command_id, "status": "Sent via raw bypass"}
 
+    except AttributeError as e:
+        logging.error(f"Error finding internal method for raw WebSocket send: {e}")
+        return None
     except Exception as e:
         logging.error(f"Error during raw WebSocket send for profile command: {e}")
         return None
