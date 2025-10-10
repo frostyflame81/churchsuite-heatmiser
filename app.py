@@ -211,14 +211,13 @@ def _convert_booleans_to_strings(command: Dict[str, Any]) -> Dict[str, Any]:
     """
     new_command = command.copy()
     
-    # Check if this is a STORE_PROFILE2 command
     profile_data = new_command.get('STORE_PROFILE2')
     if not profile_data or not isinstance(profile_data, dict):
-        return command # Not a profile command, return unchanged
+        return command
 
     info = profile_data.get('info')
     if not info or not isinstance(info, dict):
-        return command # No schedule info, return unchanged
+        return command
 
     # Iterate through days and schedule levels
     for day_data in info.values():
@@ -253,27 +252,27 @@ async def _send_raw_profile_command(hub: NeoHub, command: Dict[str, Any]) -> Opt
         command_id = next(_command_id_counter)
         command_value_str = json.dumps(command_to_send, separators=(',', ':'))
 
-        # 2. **THE CORE HACK: FIX THE ESCAPING**
-        # The string "COMMAND" will be serialized again, creating excess escapes on the quotes inside.
-        # We replace the double-escaped quotes (\\") with single-escaped quotes (\") in the string value.
-        # This is non-standard but required for the broken hub parser.
-        escaped_command_str = command_value_str.replace('"', '\\"').replace('\\\\"', '\\"') # Safely replace the required quotes
-        
-        # 3. Construct the inner message string using the fixed command string
+        # 2. Construct the inner message dictionary using the fully escaped COMMAND_VALUE_STR
         inner_message_dict = {
             "token": hub_token,
-            "COMMANDS": [{"COMMAND": escaped_command_str, "COMMANDID": command_id}]
+            "COMMANDS": [{"COMMAND": command_value_str, "COMMANDID": command_id}]
         }
         
         message_str = json.dumps(inner_message_dict, separators=(',', ':')) 
 
-        # 4. Construct the final payload for transmission
+        # 3. Construct the final payload for transmission (outer wrapper)
         final_payload_dict = {
             "message_type": "hm_get_command_queue",
             "message": message_str 
         }
         final_payload_string = json.dumps(final_payload_dict, separators=(',', ':'))
         
+        # 4. **THE FINAL HACK (User-requested): Fix escaping on final string**
+        # The hub rejects the payload due to over-escaping on the quotes within the 'COMMAND' value.
+        # The previous attempt produced strings with four backslashes before a quote: \\\\\" in the log.
+        # We replace the excessive backslash sequences to reduce the escaping by one layer.
+        final_payload_string = final_payload_string.replace('\\\\\\"', '\\"') 
+
         # 5. Hook into the response mechanism
         raw_connection = getattr(hub_client, '_websocket', None)
         raw_ws_send = getattr(raw_connection, 'send', None) if raw_connection else None
@@ -300,6 +299,7 @@ async def _send_raw_profile_command(hub: NeoHub, command: Dict[str, Any]) -> Opt
              logging.info(f"Successfully stored profile with ID: {profile_id}")
              return {"command_id": command_id, "status": "Success", "profile_id": profile_id}
         elif isinstance(response_dict, dict) and "error" in response_dict:
+             # This will capture the "Invalid Json" or any other hub error
              logging.error(f"Neohub returned error for command {command_id}: {response_dict['error']}")
              return {"command_id": command_id, "status": "Error", "neohub_error": response_dict['error']}
         else:
@@ -313,7 +313,7 @@ async def _send_raw_profile_command(hub: NeoHub, command: Dict[str, Any]) -> Opt
         logging.error(f"Error during raw WebSocket send/receive for profile command: {e}")
         return None
     finally:
-        # Crucial: Clean up the pending request
+        # Clean up the pending request
         if pending_requests and 'command_id' in locals() and command_id in pending_requests:
             del pending_requests[command_id]
 
