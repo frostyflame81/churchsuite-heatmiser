@@ -206,9 +206,8 @@ async def store_profile2(neohub_name: str, profile_name: str, profile_data: Dict
 
 async def _send_raw_profile_command(hub: NeoHub, command: Dict[str, Any]) -> Optional[Any]:
     """
-    Manually composes and sends the STORE_PROFILE2 command directly via the WebSocket
-    using the internally discovered attribute '_websocket' to bypass the library's
-    broken serialization logic.
+    Manually constructs, sends, and waits for the response for the STORE_PROFILE2 
+    command by hooking into the hub's internal pending requests mechanism.
     """
     global _command_id_counter
     
@@ -231,31 +230,58 @@ async def _send_raw_profile_command(hub: NeoHub, command: Dict[str, Any]) -> Opt
         
         final_payload_dict = {
             "message_type": "hm_get_command_queue",
-            # This serialization nests the inner message string, applying the necessary single layer of escaping
             "message": json.dumps(inner_message_dict, separators=(',', ':')) 
         }
-        
         final_payload_string = json.dumps(final_payload_dict, separators=(',', ':'))
         
-        # 2. **THE FIX**: Access the raw connection object using the discovered attribute name.
+        # 2. **HOOK INTO THE RESPONSE MECHANISM (THE FIX)**
         raw_connection = getattr(hub_client, '_websocket', None)
         raw_ws_send = getattr(raw_connection, 'send', None) if raw_connection else None
-
-        if not raw_ws_send:
-            # This should not happen now, but keep the check for robustness.
-            raise AttributeError("The raw WebSocket connection object was found but the 'send' method was not.")
+        
+        pending_requests = getattr(hub_client, '_pending_requests', None)
+        request_timeout = getattr(hub_client, '_request_timeout', 60) # Default to 60s
+        
+        if not raw_ws_send or pending_requests is None:
+             raise AttributeError("Could not find internal mechanisms needed for raw send/receive.")
+        
+        # Create a Future and manually insert it into the client's queue
+        future: asyncio.Future[Any] = asyncio.Future()
+        pending_requests[command_id] = future
 
         logging.debug(f"Raw Sending: {final_payload_string}")
         
-        # 3. Send the manually composed, correctly-escaped JSON string directly
+        # 3. Send the message
         await raw_ws_send(final_payload_string)
         
-        # Success is indicated by the raw send completing without exception
-        return {"command_id": command_id, "status": "Sent via raw bypass"}
+        # 4. Wait for the response (this is what hub._send does automatically)
+        response_dict = await asyncio.wait_for(future, timeout=request_timeout)
+        
+        # 5. Log the raw response for debugging purposes
+        logging.debug(f"Received STORE_PROFILE2 response (COMMANDID {command_id}): {response_dict}")
 
+        # The profile ID is expected in the response dictionary on success
+        if response_dict and "STORE_PROFILE2" in response_dict and "PROFILE_ID" in response_dict["STORE_PROFILE2"]:
+             profile_id = response_dict["STORE_PROFILE2"]["PROFILE_ID"]
+             return {"command_id": command_id, "status": "Success", "profile_id": profile_id}
+        elif response_dict and "error" in response_dict:
+             logging.error(f"Neohub returned error for command {command_id}: {response_dict['error']}")
+             return {"command_id": command_id, "status": "Error", "neohub_error": response_dict['error']}
+        else:
+             # Log the full response if it doesn't match the expected success/error format
+             logging.error(f"Neohub returned unexpected response for command {command_id}: {response_dict}")
+             return {"command_id": command_id, "status": "Unexpected Response", "response": response_dict}
+
+
+    except asyncio.TimeoutError:
+        logging.error(f"Timeout waiting for response for command {command_id}.")
+        return {"command_id": command_id, "status": "Timeout"}
     except Exception as e:
-        logging.error(f"Error during raw WebSocket send for profile command: {e}")
+        logging.error(f"Error during raw WebSocket send/receive for profile command: {e}")
         return None
+    finally:
+        # Crucial: Clean up the pending request whether successful or not
+        if pending_requests and command_id in pending_requests:
+            del pending_requests[command_id]
 
 async def get_profile(neohub_name: str, profile_name: str) -> Optional[Dict[str, Any]]:
     """Retrieves a heating profile from the Neohub using neohubapi."""
