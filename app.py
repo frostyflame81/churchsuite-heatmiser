@@ -81,22 +81,26 @@ def load_config(config_file: str) -> Optional[Dict[str, Any]]:
         return None
 
 
-def connect_to_neohub(neohub_name: str, neohub_config: Dict[str, Any]) -> bool:
-    """Connects to a Neohub using neohubapi."""
-    global hubs
+async def connect_to_neohub(neohub_name: str, neohub_config: Dict[str, Any]) -> bool:
+    """Initializes and connects to a NeoHub, storing the connection object."""
+    global hubs 
+    
+    hub = NeoHub(
+        neohub_config["address"],
+        neohub_config["port"],
+        neohub_config["token"],
+    )
+    # Store the hub object immediately
+    hubs[neohub_name] = hub 
+    
     try:
-        # Use the port from the environment variable, defaulting to 4243
-        port = neohub_config['port']
-        token = neohub_config.get('token')  # Token is optional
-        hub = NeoHub(host=neohub_config['address'], port=port, token=token)
-        hubs[neohub_name] = hub  # Store
-        logging.info(f"Connected to Neohub: {neohub_name} at {neohub_config['address']}:{port}")
+        # 🔑 CRITICAL FIX: AWAIT the connection
+        await hub.client.connect() 
+        logging.info(f"Connected to Neohub: {neohub_name} at {neohub_config['address']}:{neohub_config['port']}")
         return True
-    except (NeoHubConnectionError, NeoHubUsageError) as e:
-        logging.error(f"Error connecting to Neohub {neohub_name}: {e}")
-        return False
     except Exception as e:
-        logging.error(f"An unexpected error occurred: {e}")
+        # Catches network/DNS errors (like the one for church_hall) and connection errors
+        logging.error(f"Connection failed for {neohub_name}: {e}")
         return False
 
 def get_hub(neohub_name: str) -> Optional[NeoHub]:
