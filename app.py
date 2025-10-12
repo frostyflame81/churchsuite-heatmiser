@@ -480,52 +480,79 @@ def get_json_data(url: str) -> Optional[Dict[str, Any]]:
         logging.error(f"Error fetching JSON data from {url}: {e}")
         return None
 
-def _fetch_raw_churchsuite_data() -> Optional[List[Dict[str, Any]]]:
+def _fetch_raw_churchsuite_data() -> List[Dict[str, Any]]:
     """
-    Internal helper to fetch raw JSON data from ChurchSuite and extract the 
-    'booked_resources' list.
+    Fetches raw ChurchSuite data, performs resource ID-to-Name lookup, 
+    and returns a flattened list of booking records.
     """
-    if LOGGING_LEVEL == "DEBUG": 
-        logging.debug(f"_fetch_raw_churchsuite_data: Fetching data from {CHURCHSUITE_URL}")
-        
-    raw_data = get_json_data(CHURCHSUITE_URL)
-    
-    # Check for successful data fetch and the correct key
-    if not raw_data or "booked_resources" not in raw_data:
-        logging.error("Failed to fetch ChurchSuite data or 'booked_resources' key is missing.")
-        return None
-        
-    # Return the list of resources/bookings
-    return raw_data.get("booked_resources", [])
+    if not CHURCHSUITE_URL:
+        logging.error("CHURCHSUITE_URL is not configured.")
+        return []
+
+    logging.debug(f"_fetch_raw_churchsuite_data: Fetching data from {CHURCHSUITE_URL}")
+    try:
+        response = requests.get(CHURCHSUITE_URL, timeout=10)
+        response.raise_for_status()  # Raises an HTTPError for bad responses (4xx or 5xx)
+        response_json = response.json()
+    except requests.exceptions.RequestException as e:
+        logging.error(f"Error fetching ChurchSuite data: {e}")
+        return []
+
+    # 1. Create the resource map (ID -> Name) from the 'resources' array
+    resource_map = {
+        resource.get("id"): resource.get("name")
+        for resource in response_json.get("resources", [])
+    }
+
+    # 2. Iterate over 'booked_resources' and inject the friendly name
+    processed_bookings = []
+    for booking in response_json.get("booked_resources", []):
+        resource_id = booking.get("resource_id")
+        resource_name = resource_map.get(resource_id)
+
+        if resource_name:
+            # Create a new, flatter booking record with the friendly name
+            # This is the crucial change to fix the downstream parsing
+            processed_bookings.append({
+                "resource_name": resource_name, # <-- The new, corrected key
+                "starts_at": booking.get("starts_at"),
+                "ends_at": booking.get("ends_at"),
+                # You can add other keys from the booking if needed
+            })
+        else:
+            logging.warning(f"Booking ID {booking.get('id')} has unknown resource_id {resource_id}. Skipping.")
+
+    if LOGGING_LEVEL == "DEBUG":
+        logging.debug(f"Fetched {len(processed_bookings)} processed bookings.")
+
+    return processed_bookings
 
 def get_bookings_and_locations() -> Dict[tuple[str, str], List[Dict[str, Any]]]:
     """
-    Fetches raw resources/bookings and aggregates them into a map keyed by the 
-    required (NeoHub, Zone) pair. This prepares the data for profile generation.
+    Fetches processed booking records and aggregates them into a map keyed by the 
+    required (NeoHub, Zone) pair.
     
-    Returns: { (neohub_name, zone_name): [raw_resource_dict1, raw_resource_dict2, ...] }
+    Returns: { (neohub_name, zone_name): [processed_booking_dict1, processed_booking_dict2, ...] }
     """
     global config
-    raw_resources = _fetch_raw_churchsuite_data()
+    # This now returns a list of dictionaries with the 'resource_name' key
+    processed_bookings = _fetch_raw_churchsuite_data() 
 
-    if not raw_resources or not config:
-        logging.warning("No raw resources fetched or configuration is missing.")
+    if not processed_bookings or not config:
+        logging.warning("No processed bookings fetched or configuration is missing.")
         return {}
 
-    # Key: (neohub_name, zone_name) -> Value: List[raw_resource_dict]
     consolidated_bookings: Dict[tuple[str, str], List[Dict[str, Any]]] = {}
 
-    for resource in raw_resources:
-        # ** FIX HERE: The 'resource' key contains a dictionary with the 'name' **
-        resource_data = resource.get("resource", {})
-        location_name = resource_data.get("name") # <-- Use .get("name") on the nested dict
+    for booking in processed_bookings:
+        # 🔑 FIX: Look for the 'resource_name' key injected by the fetch function
+        location_name = booking.get("resource_name") 
 
+        # The rest of the logic is now correct:
         if not location_name:
-            # This is only useful for debugging if the name field is actually missing
-            logging.warning("Resource name is missing or empty. Skipping resource.")
+            logging.warning("Resource name is missing or empty in processed booking. Skipping.")
             continue
-            
-        # 1. Find the corresponding location configuration
+
         location_config = config["locations"].get(location_name)
 
         if not location_config:
@@ -534,17 +561,15 @@ def get_bookings_and_locations() -> Dict[tuple[str, str], List[Dict[str, Any]]]:
 
         neohub_name = location_config["neohub"]
 
-        # 2. A single resource affects multiple zones (e.g., Chancel affects "Main Church" and "Raphael Room...")
         for zone_name in location_config["zones"]:
             key = (neohub_name, zone_name)
 
-            # 3. Add the raw resource/booking to the consolidated list for this hub/zone
             if key not in consolidated_bookings:
                 consolidated_bookings[key] = []
-            consolidated_bookings[key].append(resource)
+            consolidated_bookings[key].append(booking) # Append the processed booking
 
     if LOGGING_LEVEL == "DEBUG":
-        logging.debug(f"get_bookings_and_locations: Consolidated {len(raw_resources)} raw resources into {len(consolidated_bookings)} Hub/Zone profiles.")
+        logging.debug(f"get_bookings_and_locations: Consolidated {len(processed_bookings)} processed bookings into {len(consolidated_bookings)} Hub/Zone profiles.")
 
     return consolidated_bookings
 
