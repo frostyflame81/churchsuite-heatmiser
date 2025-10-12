@@ -318,74 +318,103 @@ async def activate_profile_on_zone(neohub_name: str, zone_name: str, profile_id:
 async def _send_raw_command(hub: NeoHub, command: Dict[str, Any], command_name: str) -> Optional[Dict[str, Any]]:
     """
     Manually constructs, sends, and waits for the response for any raw command.
-    Uses the necessary escaping hacks for the command payload.
-    Returns the final parsed response dictionary from the hub.
+    Includes error handling and a reconnect attempt to address dropped connections.
     """
-    global _command_id_counter
+    global _command_id_counter, hubs, config # Added hubs and config for reconnect logic
     
     hub_token = getattr(hub, '_token', None)
-    hub_client = getattr(hub, '_client', None)
     
-    if not hub_token or not hub_client:
-        logging.error("Could not access private token or client (_token or _client) for raw send.")
+    # Get the neohub name for use in logging/reconnecting
+    neohub_name = next((name for name, h in hubs.items() if h == hub), None)
+    if not neohub_name or not hub_token:
+        logging.error("Could not access private token or hub name for raw send.")
         return None
 
-    try:
-        command_to_send = command
-        
-        # 1. Serialize the command (retaining the unquoted boolean format for STORE_PROFILE2)
-        command_id = next(_command_id_counter)
-        command_value_str = json.dumps(command_to_send, separators=(',', ':'))
+    for attempt in range(2):
+        hub_client = getattr(hub, '_client', None)
+        if not hub_client:
+            logging.error(f"Hub client is unavailable on {neohub_name} during attempt {attempt + 1}.")
+            if attempt == 0:
+                neohub_config = config["neohubs"][neohub_name]
+                if connect_to_neohub(neohub_name, neohub_config):
+                    hub = hubs[neohub_name] # Update hub reference
+                    logging.info(f"Reconnected to Neohub: {neohub_name}. Retrying command.")
+                    continue
+                else:
+                    logging.error(f"Failed to reconnect to Neohub: {neohub_name}. Command failed.")
+                    break
+            else:
+                break
 
-        # 2. HACK 1: Convert all double quotes to single quotes
-        command_value_str_hacked = command_value_str.replace('"', "'")
-        
-        # 3. HACK 2: Manually construct the INNER_MESSAGE string
-        message_str = (
-            '{\\"token\\": \\"' + hub_token + '\\", '
-            '\\"COMMANDS\\": ['
-                '{\\"COMMAND\\": \\"' + command_value_str_hacked + '\\", '
-                '\\"COMMANDID\\": ' + str(command_id) + '}'
-            ']}'
-        )
+        try:
+            command_to_send = command
+            command_id = next(_command_id_counter)
+            command_value_str = json.dumps(command_to_send, separators=(',', ':'))
 
-        # 4. Construct the final payload dictionary (outer wrapper)
-        final_payload_dict = {
-            "message_type": "hm_get_command_queue",
-            "message": message_str 
-        }
-        
-        # 5. Final Serialization & Escaping Hacks
-        final_payload_string = json.dumps(final_payload_dict) 
-        final_payload_string = final_payload_string.replace('\\\\\\"', '\\"')
-        
-        # 6. Send and wait
-        raw_connection = getattr(hub_client, '_websocket', None)
-        raw_ws_send = getattr(raw_connection, 'send', None) if raw_connection else None
-        pending_requests = getattr(hub_client, '_pending_requests', None)
-        request_timeout = getattr(hub_client, '_request_timeout', 60) 
-        
-        future: asyncio.Future[Any] = asyncio.Future()
-        pending_requests[command_id] = future
+            # 1. HACK 1: Convert all double quotes to single quotes
+            command_value_str_hacked = command_value_str.replace('"', "'")
+            
+            # 2. HACK 2: Manually construct the INNER_MESSAGE string
+            message_str = (
+                '{\\"token\\": \\"' + hub_token + '\\", '
+                '\\"COMMANDS\\": ['
+                    '{\\"COMMAND\\": \\"' + command_value_str_hacked + '\\", '
+                    '\\"COMMANDID\\": ' + str(command_id) + '}'
+                ']}'
+            )
 
-        logging.debug(f"Raw Sending ({command_name}): {final_payload_string}")
-        
-        await raw_ws_send(final_payload_string)
-        response_dict = await asyncio.wait_for(future, timeout=request_timeout)
-        
-        logging.debug(f"Received {command_name} response (COMMANDID {command_id}): {response_dict}")
+            # 3. Construct the final payload dictionary (outer wrapper)
+            final_payload_dict = {
+                "message_type": "hm_get_command_queue",
+                "message": message_str 
+            }
+            
+            # 4. Final Serialization & Escaping Hacks
+            final_payload_string = json.dumps(final_payload_dict) 
+            final_payload_string = final_payload_string.replace('\\\\\\"', '\\"')
+            
+            # 5. Send and wait logic
+            raw_connection = getattr(hub_client, '_websocket', None)
+            raw_ws_send = getattr(raw_connection, 'send', None) if raw_connection else None
+            pending_requests = getattr(hub_client, '_pending_requests', None)
+            request_timeout = getattr(hub_client, '_request_timeout', 60) 
+            
+            # 🔑 FIX CHECK: If raw_ws_send is None, this is the source of the 'NoneType' error
+            if raw_ws_send is None:
+                raise RuntimeError("WebSocket send function is unavailable (connection likely dropped).")
+                
+            future: asyncio.Future[Any] = asyncio.Future()
+            pending_requests[command_id] = future
 
-        return response_dict
+            logging.debug(f"Raw Sending ({command_name}): {final_payload_string}")
+            
+            await raw_ws_send(final_payload_string)
+            response_dict = await asyncio.wait_for(future, timeout=request_timeout)
+            
+            logging.debug(f"Received {command_name} response (COMMANDID {command_id}): {response_dict}")
 
-    except asyncio.TimeoutError:
-        logging.error(f"Timeout waiting for response for command {command_id}.")
-        return {"command_id": command_id, "status": "Timeout"}
-    except Exception as e:
-        logging.error(f"Error during raw WebSocket send/receive for {command_name}: {e}")
-        return None
-    finally:
-        if pending_requests and 'command_id' in locals() and command_id in pending_requests:
-            del pending_requests[command_id]
+            return response_dict # Successful return
+
+        except Exception as e:
+            # Catch all exceptions, including the raised RuntimeError for connection status
+            logging.error(f"Error during raw WebSocket send/receive for {command_name} (Attempt {attempt + 1}): {e}")
+            
+            if attempt == 0:
+                neohub_config = config["neohubs"][neohub_name]
+                if connect_to_neohub(neohub_name, neohub_config):
+                    hub = hubs[neohub_name] # Update hub reference
+                    logging.info(f"Reconnected to Neohub: {neohub_name}. Retrying command.")
+                    # The loop will continue to the next attempt
+                else:
+                    logging.error(f"Failed to reconnect to Neohub: {neohub_name}. Command failed.")
+                    break # Exit loop after failed reconnect
+            else:
+                break # Both attempts failed
+        finally:
+            if pending_requests and 'command_id' in locals() and command_id in pending_requests:
+                del pending_requests[command_id]
+
+    return None
 
 async def get_profile(neohub_name: str, profile_name: str) -> Optional[Dict[str, Any]]:
     """Retrieves a heating profile from the Neohub using neohubapi."""
@@ -710,8 +739,15 @@ async def calculate_schedule(neohub_name: str, zone_name: str, raw_bookings: Lis
     # 3. Process each raw booking
     for booking in raw_bookings:
         location_name = booking.get("resource") # Use the 'resource' key
-        start_time_str = booking.get("start")
-        end_time_str = booking.get("end")
+        
+        # 🔑 FIX: Use the correct keys from the ChurchSuite API response
+        start_time_str = booking.get("starts_at")
+        end_time_str = booking.get("ends_at")
+        
+        # Guard against missing time strings (though they should be present now)
+        if not start_time_str or not end_time_str:
+             logging.warning(f"Booking for {location_name} is missing start/end times. Skipping.")
+             continue
 
         try:
             # Find the specific config for the location that generated this booking
@@ -770,23 +806,17 @@ async def calculate_schedule(neohub_name: str, zone_name: str, raw_bookings: Lis
             continue
             
         # Simplistic Consolidation: Merge events that start within 30 minutes of each other.
-        # This prevents using multiple fixed NeoHub levels for close events.
-        
         consolidated_day_events: List[Dict[str, Any]] = []
-        
-        # Sort events by start time to process them sequentially
         events_for_day.sort(key=lambda x: x['start_time'])
         
         for event in events_for_day:
             if not consolidated_day_events:
-                # Start the first consolidated event
                 consolidated_day_events.append(event)
                 continue
                 
             last_consolidated = consolidated_day_events[-1]
             
-            # Check if the current event is close enough to the last one to merge (30 min buffer)
-            # OR if the new event starts before the last one ends (full overlap)
+            # Check if the current event is close enough to the last one to merge or if there's overlap
             if event['start_time'] - last_consolidated['start_time'] < datetime.timedelta(minutes=30) or \
                event['start_time'] < last_consolidated['end_time']:
                 
