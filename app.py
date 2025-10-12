@@ -516,9 +516,15 @@ def get_bookings_and_locations() -> Dict[tuple[str, str], List[Dict[str, Any]]]:
     consolidated_bookings: Dict[tuple[str, str], List[Dict[str, Any]]] = {}
 
     for resource in raw_resources:
-        # Assuming the ChurchSuite resource structure places the name in the 'resource' key
-        location_name = resource.get("resource")
-        
+        # ** FIX HERE: The 'resource' key contains a dictionary with the 'name' **
+        resource_data = resource.get("resource", {})
+        location_name = resource_data.get("name") # <-- Use .get("name") on the nested dict
+
+        if not location_name:
+            # This is only useful for debugging if the name field is actually missing
+            logging.warning("Resource name is missing or empty. Skipping resource.")
+            continue
+            
         # 1. Find the corresponding location configuration
         location_config = config["locations"].get(location_name)
 
