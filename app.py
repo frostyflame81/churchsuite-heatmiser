@@ -85,17 +85,18 @@ async def connect_to_neohub(neohub_name: str, neohub_config: Dict[str, Any]) -> 
     """Initializes and connects to a NeoHub, storing the connection object."""
     global hubs 
     
-    # CRITICAL: Create the NeoHub instance
+    # CRITICAL FIX: Pass arguments as keywords to prevent constructor mismatch error
     hub = NeoHub(
-        neohub_config["address"],
-        neohub_config["port"],
-        neohub_config["token"],
+        host=neohub_config["address"],
+        port=neohub_config["port"],
+        token=neohub_config["token"],
     )
-    # CRITICAL: Store the hub object immediately in the global dictionary
+    
+    # Store the hub object immediately
     hubs[neohub_name] = hub 
     
     try:
-        # CRITICAL: AWAIT the connection
+        # AWAIT the connection
         await hub.client.connect() 
         logging.info(f"Connected to Neohub: {neohub_name} at {neohub_config['address']}:{neohub_config['port']}")
         return True
