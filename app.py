@@ -85,21 +85,22 @@ async def connect_to_neohub(neohub_name: str, neohub_config: Dict[str, Any]) -> 
     """Initializes and connects to a NeoHub, storing the connection object."""
     global hubs 
     
+    # CRITICAL: Create the NeoHub instance
     hub = NeoHub(
         neohub_config["address"],
         neohub_config["port"],
         neohub_config["token"],
     )
-    # Store the hub object immediately
+    # CRITICAL: Store the hub object immediately in the global dictionary
     hubs[neohub_name] = hub 
     
     try:
-        # 🔑 CRITICAL FIX: AWAIT the connection
+        # CRITICAL: AWAIT the connection
         await hub.client.connect() 
         logging.info(f"Connected to Neohub: {neohub_name} at {neohub_config['address']}:{neohub_config['port']}")
         return True
     except Exception as e:
-        # Catches network/DNS errors (like the one for church_hall) and connection errors
+        # Catches network/DNS errors and connection errors
         logging.error(f"Connection failed for {neohub_name}: {e}")
         return False
 
@@ -1028,9 +1029,13 @@ def main():
         logging.debug(f"Loaded config: {json.dumps(config, indent=2)}")
 
     for neohub_name, neohub_config in config["neohubs"].items():
-        if not connect_to_neohub(neohub_name, neohub_config):
+        # CRITICAL FIX: Use asyncio.run to execute the async connect function
+        if not asyncio.run(connect_to_neohub(neohub_name, neohub_config)): 
             logging.error(f"Failed to connect to Neohub: {neohub_name}. Exiting.")
-            exit()
+            # Do NOT exit yet, as main_church might be down, but church_hall might be up
+            # or vice-versa, allowing the working hub to be scheduled.
+            # However, for a production system, it's safer to exit if a critical hub fails.
+            pass # Allow script to continue with available hubs
     for neohub_name in config["neohubs"]:
         zones = asyncio.run(get_zones(neohub_name))
         if zones:
