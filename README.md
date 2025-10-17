@@ -1,7 +1,7 @@
 # ChurchSuite Heatmiser Integration
 
 ## Status
-This product is in alpha - it currently compiles and runs with errors - this is the bug fix phase to actually get it working!
+This product is pre-alpha - it currently compiles and runs with errors - this is the bug fix phase to actually get it working!
 
 ## Purpose
 
