@@ -496,9 +496,6 @@ async def apply_schedule_to_heating(
     # Store the profile using the neohubapi library's store_profile2 function
     response = await store_profile2(neohub_name, profile_name, schedule_data)
 
-    # Call the test function instead
-    # await test_store_basic_profile(neohub_name)
-
     if response:
          logging.info(
              f"Successfully stored profile {profile_name} on Neohub {neohub_name}"
