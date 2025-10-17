@@ -18,7 +18,6 @@ from neohubapi.neohub import NeoHub, NeoHubUsageError, NeoHubConnectionError, We
 _command_id_counter = itertools.count(start=100)
 
 # Configuration
-CHURCHSUITE_TIMEZONE = os.environ.get("CHURCHSUITE_TIMEZONE")
 OPENWEATHERMAP_API_KEY = os.environ.get("OPENWEATHERMAP_API_KEY")
 OPENWEATHERMAP_CITY = os.environ.get("OPENWEATHERMAP_CITY")
 CHURCHSUITE_URL = os.environ.get("CHURCHSUITE_URL")
@@ -81,37 +80,23 @@ def load_config(config_file: str) -> Optional[Dict[str, Any]]:
         return None
 
 
-async def connect_to_neohub(neohub_name: str, neohub_config: Dict[str, Any]) -> bool:
-    """Initializes and connects to a NeoHub, storing the connection object."""
-    global hubs 
-    
-    # CRITICAL FIX: Pass arguments as keywords to prevent constructor mismatch error
-    hub = NeoHub(
-        host=neohub_config["address"],
-        port=neohub_config["port"],
-        token=neohub_config["token"],
-    )
-    
-    # Store the hub object immediately
-    hubs[neohub_name] = hub 
-    
+def connect_to_neohub(neohub_name: str, neohub_config: Dict[str, Any]) -> bool:
+    """Connects to a Neohub using neohubapi."""
+    global hubs
     try:
-        # AWAIT the connection
-        await hub.client.connect() 
-        logging.info(f"Connected to Neohub: {neohub_name} at {neohub_config['address']}:{neohub_config['port']}")
+        # Use the port from the environment variable, defaulting to 4243
+        port = neohub_config['port']
+        token = neohub_config.get('token')  # Token is optional
+        hub = NeoHub(host=neohub_config['address'], port=port, token=token)
+        hubs[neohub_name] = hub  # Store
+        logging.info(f"Connected to Neohub: {neohub_name} at {neohub_config['address']}:{port}")
         return True
-    except Exception as e:
-        # Catches network/DNS errors and connection errors
-        logging.error(f"Connection failed for {neohub_name}: {e}")
+    except (NeoHubConnectionError, NeoHubUsageError) as e:
+        logging.error(f"Error connecting to Neohub {neohub_name}: {e}")
         return False
-
-def get_hub(neohub_name: str) -> Optional[NeoHub]:
-    """Retrieves the connected NeoHub object by name."""
-    global hubs # Use the correct global variable
-    hub = hubs.get(neohub_name)
-    if not hub:
-        logging.error(f"NeoHub '{neohub_name}' not connected or found in cache.")
-    return hub
+    except Exception as e:
+        logging.error(f"An unexpected error occurred: {e}")
+        return False
 
 def validate_config(config: Dict[str, Any]) -> bool:
     if "neohubs" not in config or not config["neohubs"]:
@@ -135,14 +120,14 @@ async def send_command(neohub_name: str, command: Dict[str, Any]) -> Optional[An
     # --- START FIX: Custom raw send for complex commands ---
     is_profile_command = False
     if isinstance(command, dict):
-        for key in ["STORE_PROFILE", "STORE_PROFILE2", "GET_PROFILE"]:
-            if key in command and isinstance(command[key], (dict, str)): # Added GET_PROFILE to handle name check
+        for key in ["STORE_PROFILE", "STORE_PROFILE2"]:
+            if key in command and isinstance(command[key], dict):
                 is_profile_command = True
                 break
             
     if is_profile_command:
-        # Bypass the broken hub._send() for profile commands, use the new raw sender
-        return await _send_raw_command(hub, command, "RAW_PROFILE_CMD") # <<-- MODIFIED LINE
+        # Bypass the broken hub._send() for profile commands
+        return await _send_raw_profile_command(hub, command)
     # --- END FIX ---
     
     # Normal command handling (for simple commands like GET_ZONES)
@@ -196,231 +181,147 @@ async def store_profile(neohub_name: str, profile_name: str, profile_data: Dict[
     response = await send_command(neohub_name, command_json)  # Pass the JSON string to send_command
     return response
 
-async def store_profile2(neohub_name: str, profile_name: str, schedule_data: Dict[str, Any]) -> Optional[int]:
-    """
-    Manages profile creation and updating, using GET_PROFILE to find the required ID.
-    Returns the profile ID on success.
-    """
-    hub = get_hub(neohub_name)  # Assuming a global or passed function to get the hub object
-    
-    # 1. Check for existing profile ID
-    profile_id = await get_profile_id_by_name(hub, neohub_name, profile_name)
+async def store_profile2(neohub_name: str, profile_name: str, profile_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Stores a heating profile on the Neohub, passing a Python dictionary structure directly to avoid double-encoding."""
+    logging.info(f"Storing profile {profile_name} on Neohub {neohub_name}")
 
-    # 2. Build the STORE_PROFILE2 command structure
-    command_payload = {
-        "name": profile_name,
-        "P_TYPE": 0,
-        "info": schedule_data
+    # 1. CREATE THE COMMAND PAYLOAD (clean Python dict with float temps and P_TYPE)
+    # This structure is exactly what the Hub expects under the main COMMAND key.
+    inner_payload = {
+        "STORE_PROFILE2": {
+            "name": profile_name,
+            "P_TYPE": 0, # 0 for Heating Profile
+            "info": profile_data
+        }
     }
-    
-    # 3. Conditionally add the PROFILE_ID for updating
-    if profile_id is not None:
-        command_payload["PROFILE_ID"] = profile_id
-        logging.info(f"Preparing to UPDATE profile '{profile_name}' with ID {profile_id} on {neohub_name}.")
-    else:
-        logging.info(f"Preparing to CREATE new profile '{profile_name}' on {neohub_name}.")
 
-    final_command = {"STORE_PROFILE2": command_payload}
-    
-    # 4. Send the command
-    response_dict = await _send_raw_command(hub, final_command, f"STORE_PROFILE2:{profile_name}")
+    # 2. DEBUGGING ECHO
+    logging.debug(f"DEBUG: FINAL Python Dict Payload: {json.dumps(inner_payload)}")
 
-    if not response_dict:
-        logging.error(f"Failed to receive a response for STORE_PROFILE2 for {profile_name}.")
-        return None
+    # 3. SEND THE COMMAND DICT DIRECTLY
+    # The neohubapi library's _send() will now correctly serialize this dictionary 
+    # for the WebSocket transport, avoiding the double-encoding issue.
+    response = await send_command(neohub_name, inner_payload)
+    return response
 
-    # 5. Parse the success/failure response
-    response_inner_str = response_dict.get("response", "{}")
-    
-    # Handle the "No such ID or name already exists" error (the expected outcome if the logic fails)
-    if response_dict.get("error") and "No such ID or name already exists" in response_dict["error"]:
-        logging.critical(f"Profile management error: Profile '{profile_name}' failed. This should not happen if the ID check worked.")
-        return None
-    
-    try:
-        inner_response = json.loads(response_inner_str)
-    except json.JSONDecodeError:
-        logging.error(f"Failed to parse inner STORE_PROFILE2 response for {profile_name}.")
-        return None
-    
-    # A successful response returns '{"ID":<id>,"result":"profile created"}' for creation
-    # For an update, the result might be less verbose, but the core success path is fine.
-    
-    if inner_response.get("result") == "profile created" or inner_response.get("result") == "profile updated":
-        # On creation, the new ID is returned in 'ID'. On update, the existing ID is used.
-        final_id = inner_response.get("ID", profile_id) # Use returned ID or the ID we passed
-        logging.info(f"Profile '{profile_name}' successfully stored/updated with ID: {final_id}")
-        return final_id
-    else:
-        logging.error(f"STORE_PROFILE2 command returned unexpected result: {inner_response}")
-        return None
 
-async def get_profile_id_by_name(hub: NeoHub, neohub_name: str, profile_name: str) -> Optional[int]:
+async def _send_raw_profile_command(hub: NeoHub, command: Dict[str, Any]) -> Optional[Any]:
     """
-    Calls GET_PROFILE to find the profile ID for a given name.
+    Manually constructs, sends, and waits for the response for the STORE_PROFILE2 
+    command, focusing on correctly quoting time strings within the list structure 
+    to fix the 'Invalid Json' error.
     """
-    command = {"GET_PROFILE": profile_name}
-    
-    # Use the new unified sender
-    response_dict = await _send_raw_command(hub, command, f"GET_PROFILE:{profile_name}")
-
-    if not response_dict or "error" in response_dict:
-        logging.warning(f"Error checking profile ID for '{profile_name}' on {neohub_name}: {response_dict}")
-        return None
-
-    # Hub returns a JSON string inside the 'response' key
-    response_inner_str = response_dict.get("response", "{}")
-    try:
-        # Attempt to parse the inner JSON string
-        inner_response = json.loads(response_inner_str)
-    except json.JSONDecodeError:
-        logging.warning(f"Failed to parse inner GET_PROFILE response for {profile_name}.")
-        return None
-
-    # Check for the presence of PROFILE_ID on success (API PDF format)
-    profile_id = inner_response.get("PROFILE_ID")
-    if isinstance(profile_id, int):
-        logging.info(f"Found existing profile '{profile_name}' with ID: {profile_id}")
-        return profile_id
-    
-    # If no ID is found (profile does not exist), this is the intended path for creation
-    logging.info(f"Profile '{profile_name}' not found on {neohub_name}. Will be created.")
-    return None
-
-async def activate_profile_on_zone(neohub_name: str, zone_name: str, profile_id: int):
-    hub = get_hub(neohub_name)
-    
-    # 1. Get the NeoStat device object for the zone name
-    try:
-        # Assuming hub.get_devices_data() is the source of all devices/zones
-        devices_data = await hub.get_devices_data()
-        
-        # Find the device/zone that matches the name
-        device_to_activate = None
-        for device in devices_data.get('neo_devices', []):
-            if device.name == zone_name:
-                device_to_activate = device
-                break
-        
-        if not device_to_activate:
-            logging.error(f"Zone/Device '{zone_name}' not found on {neohub_name}.")
-            return False
-
-        # 2. Call the library function to set the profile ID
-        logging.info(f"Activating profile ID {profile_id} on zone '{zone_name}'...")
-        
-        # The library's NeoStat object has a set_profile_id method
-        response = await device_to_activate.set_profile_id(profile_id)
-        
-        # NOTE: You will need to inspect the 'response' structure to confirm success 
-        # as the library abstracts the raw WebSocket response here.
-        logging.info(f"Profile activation command sent for {zone_name}. Response: {response}")
-        return True
-
-    except Exception as e:
-        logging.error(f"Error during profile activation for zone {zone_name}: {e}")
-        return False
-
-async def _send_raw_command(hub: NeoHub, command: Dict[str, Any], command_name: str) -> Optional[Dict[str, Any]]:
-    """
-    Manually constructs, sends, and waits for the response for any raw command.
-    Includes error handling and a reconnect attempt to address dropped connections.
-    """
-    global _command_id_counter, hubs, config # Added hubs and config for reconnect logic
+    global _command_id_counter
     
     hub_token = getattr(hub, '_token', None)
+    hub_client = getattr(hub, '_client', None)
     
-    # Get the neohub name for use in logging/reconnecting
-    neohub_name = next((name for name, h in hubs.items() if h == hub), None)
-    if not neohub_name or not hub_token:
-        logging.error("Could not access private token or hub name for raw send.")
+    if not hub_token or not hub_client:
+        logging.error("Could not access private token or client (_token or _client) for raw send.")
         return None
 
-    for attempt in range(2):
-        hub_client = getattr(hub, '_client', None)
-        if not hub_client:
-            logging.error(f"Hub client is unavailable on {neohub_name} during attempt {attempt + 1}.")
-            if attempt == 0:
-                neohub_config = config["neohubs"][neohub_name]
-                if connect_to_neohub(neohub_name, neohub_config):
-                    hub = hubs[neohub_name] # Update hub reference
-                    logging.info(f"Reconnected to Neohub: {neohub_name}. Retrying command.")
-                    continue
-                else:
-                    logging.error(f"Failed to reconnect to Neohub: {neohub_name}. Command failed.")
-                    break
-            else:
-                break
+    try:
+        command_to_send = command
+        
+        # 1. Serialize the command to condensed double-quoted JSON
+        command_id = next(_command_id_counter)
+        command_value_str = json.dumps(command_to_send, separators=(',', ':'))
 
-        try:
-            command_to_send = command
-            command_id = next(_command_id_counter)
-            command_value_str = json.dumps(command_to_send, separators=(',', ':'))
+        # 2. **HACK 1: Convert all double quotes to single quotes** for the inner command content.
+        # This gives us the Python dictionary string with single quotes, but leaves "true" unquoted.
+        command_value_str_hacked = command_value_str.replace('"', "'")
+        
+        # 3. **CRITICAL HACK:** Ensure time strings are correctly single-quoted inside the list.
+        # The Python list serialization is not putting single quotes around the time string elements 
+        # because the time strings were double-quoted initially, and then those were changed to single quotes. 
+        # This re-replaces the single quotes around the time (and boolean) to ensure they are quoted strings.
+        # This step forces the strings to be wrapped in quotes for the parser.
+        # Note: If the boolean was 'true' (string), it would be 'true'. Since it's 'true' (unquoted literal), it remains that way.
+        # We need to target the time string quotes. Since time is the first element, it will always be the first string.
+        # The simplest way to ensure quoting is to re-re-quote the time string if necessary, but that leads to complexity.
 
-            # 1. HACK 1: Convert all double quotes to single quotes
-            command_value_str_hacked = command_value_str.replace('"', "'")
-            
-            # 2. HACK 2: Manually construct the INNER_MESSAGE string
-            message_str = (
-                '{\\"token\\": \\"' + hub_token + '\\", '
-                '\\"COMMANDS\\": ['
-                    '{\\"COMMAND\\": \\"' + command_value_str_hacked + '\\", '
-                    '\\"COMMANDID\\": ' + str(command_id) + '}'
-                ']}'
-            )
+        # LET'S REVERSE THE LOGIC: Preserve quoted strings inside the list, and only convert outer braces.
+        # This means the inner list elements must remain double-quoted until the very last manual step.
+        
+        # Re-Attempting the command string generation with this insight:
+        
+        # 1. Start with the raw JSON string with correct escaping for the inner message.
+        inner_command_id = next(_command_id_counter)
+        # Use separators=(',', ':') to get the most condensed JSON string, but this time,
+        # we do *not* convert double quotes to single quotes yet.
+        inner_command_json = json.dumps(command, separators=(',', ':'))
 
-            # 3. Construct the final payload dictionary (outer wrapper)
-            final_payload_dict = {
-                "message_type": "hm_get_command_queue",
-                "message": message_str 
-            }
-            
-            # 4. Final Serialization & Escaping Hacks
-            final_payload_string = json.dumps(final_payload_dict) 
-            final_payload_string = final_payload_string.replace('\\\\\\"', '\\"')
-            
-            # 5. Send and wait logic
-            raw_connection = getattr(hub_client, '_websocket', None)
-            raw_ws_send = getattr(raw_connection, 'send', None) if raw_connection else None
-            pending_requests = getattr(hub_client, '_pending_requests', None)
-            request_timeout = getattr(hub_client, '_request_timeout', 60) 
-            
-            # 🔑 FIX CHECK: If raw_ws_send is None, this is the source of the 'NoneType' error
-            if raw_ws_send is None:
-                raise RuntimeError("WebSocket send function is unavailable (connection likely dropped).")
-                
-            future: asyncio.Future[Any] = asyncio.Future()
-            pending_requests[command_id] = future
+        # The structure we want for the COMMAND value is: '{"STORE_PROFILE2":{...}}'
+        # The contents of the command should be valid JSON *but quoted by single quotes*
 
-            logging.debug(f"Raw Sending ({command_name}): {final_payload_string}")
-            
-            await raw_ws_send(final_payload_string)
-            response_dict = await asyncio.wait_for(future, timeout=request_timeout)
-            
-            logging.debug(f"Received {command_name} response (COMMANDID {command_id}): {response_dict}")
+        # 2. **HACK 1: Manually construct the inner JSON message with double quotes (and correct escaping)**
+        # This ensures the time string is double-quoted: "wake":["08:00",19.0,5,true]
+        message_str_inner_command = inner_command_json.replace('"', '\\"')
+        
+        # 3. **HACK 2: Construct the full 'message' payload, enclosing the COMMAND in single quotes**
+        # This achieves: COMMAND: '{"STORE_PROFILE2":{...}}'
+        message_str = (
+            '{\\"token\\": \\"' + hub_token + '\\", '
+            '\\"COMMANDS\\": ['
+                '{\\"COMMAND\\": \'' + message_str_inner_command + '\', ' # ***Changed to single quotes around the inner command string***
+                '\\"COMMANDID\\": ' + str(inner_command_id) + '}'
+            ']}'
+        )
 
-            return response_dict # Successful return
+        # 4. Construct the final payload dictionary (outer wrapper)
+        final_payload_dict = {
+            "message_type": "hm_get_command_queue",
+            "message": message_str 
+        }
+        
+        # 5. **Final Serialization & Escaping Hacks**
+        final_payload_string = json.dumps(final_payload_dict) 
+        
+        # **HACK 3: Strip excess escaping**
+        final_payload_string = final_payload_string.replace('\\\\\\"', '\\"')
+        
+        # 6. Hook into the response mechanism
+        raw_connection = getattr(hub_client, '_websocket', None)
+        raw_ws_send = getattr(raw_connection, 'send', None) if raw_connection else None
+        pending_requests = getattr(hub_client, '_pending_requests', None)
+        request_timeout = getattr(hub_client, '_request_timeout', 60) 
+        
+        if not raw_ws_send or pending_requests is None:
+             raise AttributeError("Could not find internal mechanisms needed for raw send/receive.")
+        
+        future: asyncio.Future[Any] = asyncio.Future()
+        pending_requests[inner_command_id] = future
 
-        except Exception as e:
-            # Catch all exceptions, including the raised RuntimeError for connection status
-            logging.error(f"Error during raw WebSocket send/receive for {command_name} (Attempt {attempt + 1}): {e}")
-            
-            if attempt == 0:
-                neohub_config = config["neohubs"][neohub_name]
-                if connect_to_neohub(neohub_name, neohub_config):
-                    hub = hubs[neohub_name] # Update hub reference
-                    logging.info(f"Reconnected to Neohub: {neohub_name}. Retrying command.")
-                    # The loop will continue to the next attempt
-                else:
-                    logging.error(f"Failed to reconnect to Neohub: {neohub_name}. Command failed.")
-                    break # Exit loop after failed reconnect
-            else:
-                break # Both attempts failed
-        finally:
-            if pending_requests and 'command_id' in locals() and command_id in pending_requests:
-                del pending_requests[command_id]
+        logging.debug(f"Raw Sending: {final_payload_string}")
+        
+        # 7. Send and wait
+        await raw_ws_send(final_payload_string)
+        response_dict = await asyncio.wait_for(future, timeout=request_timeout)
+        
+        # 8. Process the response (removed old command_id reference, used new one)
+        logging.debug(f"Received STORE_PROFILE2 response (COMMANDID {inner_command_id}): {response_dict}")
 
-    return None
+        if response_dict and "STORE_PROFILE2" in response_dict and "PROFILE_ID" in response_dict["STORE_PROFILE2"]:
+             profile_id = response_dict["STORE_PROFILE2"]["PROFILE_ID"]
+             logging.info(f"Successfully stored profile with ID: {profile_id}")
+             return {"command_id": inner_command_id, "status": "Success", "profile_id": profile_id}
+        elif isinstance(response_dict, dict) and "error" in response_dict:
+             logging.error(f"Neohub returned error for command {inner_command_id}: {response_dict['error']}")
+             return {"command_id": inner_command_id, "status": "Error", "neohub_error": response_dict['error']}
+        else:
+             logging.error(f"Neohub returned unexpected response for command {inner_command_id}: {response_dict}")
+             return {"command_id": inner_command_id, "status": "Unexpected Response", "response": response_dict}
+
+    except asyncio.TimeoutError:
+        logging.error(f"Timeout waiting for response for command {inner_command_id}.")
+        return {"command_id": inner_command_id, "status": "Timeout"}
+    except Exception as e:
+        logging.error(f"Error during raw WebSocket send/receive for profile command: {e}")
+        return None
+    finally:
+        # Clean up the pending request
+        if pending_requests and 'inner_command_id' in locals() and inner_command_id in pending_requests:
+            del pending_requests[inner_command_id]
 
 async def get_profile(neohub_name: str, profile_name: str) -> Optional[Dict[str, Any]]:
     """Retrieves a heating profile from the Neohub using neohubapi."""
@@ -472,372 +373,146 @@ async def get_neohub_firmware_version(neohub_name: str) -> Optional[int]:
         logger.error(f"An unexpected error occurred: {e}")
         return None
 
-async def get_external_temperature() -> float:
-    """Retrieves the current external temperature from OpenWeatherMap."""
-    if not OPENWEATHERMAP_API_KEY or not OPENWEATHERMAP_CITY:
-        logging.warning("OpenWeatherMap API key or city is not configured. Defaulting to 0°C.")
-        return 0.0 # Default to the worst case for safety
-    
-    # Using the 'weather' endpoint for simple current temperature retrieval
-    url = (
-        f"http://api.openweathermap.org/data/2.5/weather?"
-        f"q={OPENWEATHERMAP_CITY}&appid={OPENWEATHERMAP_API_KEY}&units=metric"
-    )
-    
+
+
+def get_external_temperature() -> Optional[float]:
+    """Gets the current external temperature."""
     try:
-        response = requests.get(url, timeout=10)
+        response = requests.get(
+            f"https://api.openweathermap.org/data/2.5/weather?q={OPENWEATHERMAP_CITY}&appid={OPENWEATHERMAP_API_KEY}&units=metric"
+        )
         response.raise_for_status()
         data = response.json()
-        
-        # Check for successful data retrieval
-        if data and data.get("main"):
-            current_temp = data["main"]["temp"]
-            logging.info(f"External temperature in {OPENWEATHERMAP_CITY}: {current_temp}°C")
-            return float(current_temp)
-            
-        logging.error("OpenWeatherMap response missing 'main' data.")
-        return 0.0
+        if LOGGING_LEVEL == "DEBUG":
+            logging.debug(
+                f"get_external_temperature:  Temp from OpenWeatherMap: {data['main']['temp']}"
+            )
+        return data["main"]["temp"]
     except requests.exceptions.RequestException as e:
         logging.error(f"Error fetching external temperature: {e}")
-        return 0.0
+        return None
+    except KeyError:
+        logging.error("Unexpected response format from OpenWeatherMap")
+        return None
+
+
 
 def get_json_data(url: str) -> Optional[Dict[str, Any]]:
-    """Generic function to fetch JSON data from a URL."""
+    """Fetches JSON data from a given URL."""
     try:
-        if not url:
-            logging.error("JSON data URL is not set.")
-            return None
-            
-        response = requests.get(url, timeout=30)
+        response = requests.get(url)
         response.raise_for_status()
+        if LOGGING_LEVEL == "DEBUG":
+            logging.debug(f"get_json_data: Got data from {url}: {response.json()}")
         return response.json()
     except requests.exceptions.RequestException as e:
         logging.error(f"Error fetching JSON data from {url}: {e}")
         return None
 
-def _fetch_raw_churchsuite_data() -> List[Dict[str, Any]]:
-    """
-    Fetches raw ChurchSuite data, performs resource ID-to-Name lookup, 
-    and returns a flattened list of booking records.
-    """
-    if not CHURCHSUITE_URL:
-        logging.error("CHURCHSUITE_URL is not configured.")
-        return []
 
-    logging.debug(f"_fetch_raw_churchsuite_data: Fetching data from {CHURCHSUITE_URL}")
-    try:
-        response = requests.get(CHURCHSUITE_URL, timeout=10)
-        response.raise_for_status()  # Raises an HTTPError for bad responses (4xx or 5xx)
-        response_json = response.json()
-    except requests.exceptions.RequestException as e:
-        logging.error(f"Error fetching ChurchSuite data: {e}")
-        return []
 
-    # 1. Create the resource map (ID -> Name) from the 'resources' array
-    resource_map = {
-        resource.get("id"): resource.get("name")
-        for resource in response_json.get("resources", [])
-    }
-
-    # 2. Iterate over 'booked_resources' and inject the friendly name
-    processed_bookings = []
-    for booking in response_json.get("booked_resources", []):
-        resource_id = booking.get("resource_id")
-        resource_name = resource_map.get(resource_id)
-
-        if resource_name:
-            # Create a new, flatter booking record with the friendly name
-            # This is the crucial change to fix the downstream parsing
-            processed_bookings.append({
-                "resource_name": resource_name, # <-- The new, corrected key
-                "starts_at": booking.get("starts_at"),
-                "ends_at": booking.get("ends_at"),
-                # You can add other keys from the booking if needed
-            })
-        else:
-            logging.warning(f"Booking ID {booking.get('id')} has unknown resource_id {resource_id}. Skipping.")
-
+def get_bookings_and_locations() -> Optional[Dict[str, Any]]:
+    """Fetches bookings and locations data from ChurchSuite."""
     if LOGGING_LEVEL == "DEBUG":
-        logging.debug(f"Fetched {len(processed_bookings)} processed bookings.")
+        logging.debug(f"get_bookings_and_locations: Fetching data from {CHURCHSUITE_URL}")
+    return get_json_data(CHURCHSUITE_URL)
 
-    return processed_bookings
 
-def get_bookings_and_locations() -> Dict[tuple[str, str], List[Dict[str, Any]]]:
-    """
-    Fetches processed booking records and aggregates them into a map keyed by the 
-    required (NeoHub, Zone) pair.
-    
-    Returns: { (neohub_name, zone_name): [processed_booking_dict1, processed_booking_dict2, ...] }
-    """
-    global config
-    # This now returns a list of dictionaries with the 'resource_name' key
-    processed_bookings = _fetch_raw_churchsuite_data() 
 
-    if not processed_bookings or not config:
-        logging.warning("No processed bookings fetched or configuration is missing.")
-        return {}
+def calculate_schedule(
+    booking: Dict[str, Any], config: Dict[str, Any], external_temperature: Optional[float], resource_map: Dict[int, str]
+) -> Optional[Dict[str, Any]]:
+    """Calculates the heating schedule for a single booking."""
+    resource_id = booking["resource_id"]
+    location_name = resource_map.get(resource_id)
+    if not location_name:
+        logging.error(f"Resource ID '{resource_id}' not found in resource map.")
+        return None
 
-    consolidated_bookings: Dict[tuple[str, str], List[Dict[str, Any]]] = {}
+    if location_name not in config["locations"]:
+        logging.error(f"Location '{location_name}' not found in configuration.")
+        return None
 
-    for booking in processed_bookings:
-        # 🔑 FIX: Look for the 'resource_name' key injected by the fetch function
-        location_name = booking.get("resource_name") 
+    location_config = config["locations"][location_name]
+    neohub_name = location_config["neohub"]
+    zones = location_config["zones"]
+    heat_loss_factor = location_config["heat_loss_factor"]
+    min_external_temp = location_config["min_external_temp"]
 
-        # The rest of the logic is now correct:
-        if not location_name:
-            logging.warning("Resource name is missing or empty in processed booking. Skipping.")
-            continue
+    start_time_str = booking.get("starts_at")
+    end_time_str = booking.get("ends_at")
 
-        location_config = config["locations"].get(location_name)
-
-        if not location_config:
-            logging.warning(f"Resource location '{location_name}' not found in config. Skipping resource.")
-            continue
-
-        neohub_name = location_config["neohub"]
-
-        for zone_name in location_config["zones"]:
-            key = (neohub_name, zone_name)
-
-            if key not in consolidated_bookings:
-                consolidated_bookings[key] = []
-            consolidated_bookings[key].append(booking) # Append the processed booking
-
-    if LOGGING_LEVEL == "DEBUG":
-        logging.debug(f"get_bookings_and_locations: Consolidated {len(processed_bookings)} processed bookings into {len(consolidated_bookings)} Hub/Zone profiles.")
-
-    return consolidated_bookings
-
-async def activate_profile_on_zone(neohub_name: str, zone_name: str, profile_id: int) -> bool:
-    """
-    Applies the given profile ID to the thermostat device corresponding to the zone_name.
-    """
-    hub = get_hub(neohub_name)
-    if not hub:
-        return False
-    
-    try:
-        # 1. Fetch all devices to find the NeoStat object by name
-        hub_data = await hub.get_devices_data()
-        
-        # The NeoHub device list contains NeoStat objects which have the set_profile_id method
-        device_to_activate = None
-        for device in hub_data.get('neo_devices', []):
-            if device.name == zone_name:
-                device_to_activate = device
-                break
-        
-        if not device_to_activate:
-            logging.error(f"Zone/Device '{zone_name}' not found on {neohub_name} during activation.")
-            return False
-
-        # 2. Call the library function to set the profile ID
-        logging.info(f"Activating profile ID {profile_id} on zone '{zone_name}'...")
-        
-        # The NeoStat object's method internally calls SET_PROFILE_ID on the hub
-        response = await device_to_activate.set_profile_id(profile_id)
-        
-        # NOTE: The library handles the response. Logging the result is the best we can do.
-        logging.info(f"Profile activation command sent for {zone_name}. Response: {response}")
-        return True
-
-    except Exception as e:
-        logging.error(f"Error during profile activation for zone {zone_name}: {e}")
-        return False
-
-def _create_default_schedule() -> Dict[str, Any]:
-    """Creates a default 7-day schedule dictionary (all levels set to ECO/OFF)."""
-    # [Time "HH:MM", Temperature (float), Sensitivity (int), Heat_on (true/false)]
-    default_level = ["00:00", ECO_TEMPERATURE, TEMPERATURE_SENSITIVITY, False]
-    
-    # Initialize all 6 levels to the default time
-    day_schedule = {
-        "wake": default_level.copy(), "level1": default_level.copy(), 
-        "level2": default_level.copy(), "level3": default_level.copy(), 
-        "level4": default_level.copy(), "sleep": default_level.copy()
-    }
-    
-    # Initialize all 7 days with the default schedule
-    schedule = {}
-    for day in ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]:
-        schedule[day] = day_schedule.copy()
-        
-    return schedule
-
-def _map_events_to_levels(events_for_day: List[Dict[str, Any]]) -> Dict[str, List[Union[str, float, int, bool]]]:
-    """
-    Takes a sorted list of consolidated heating events for one day and maps them 
-    to the 6 rigid NeoHub schedule levels (wake, level1-4, sleep).
-
-    We use the 6 levels as the start of heating periods.
-    """
-    day_levels = _create_default_schedule().get("monday", {}) # Get a fresh set of 6 levels
-    
-    # Sort events by start time
-    sorted_events = sorted(events_for_day, key=lambda x: x['start_time'])
-    
-    # Map the first 5 unique start events to the first 5 available levels
-    level_names = ["wake", "level1", "level2", "level3", "level4"]
-    
-    for i, event in enumerate(sorted_events):
-        if i >= len(level_names):
-            # We can only map up to 5 start events. The 6th level is reserved for 'sleep'.
-            logging.warning(f"Exceeded 5 unique heating events for a day. Dropping event starting at {event['start_time'].strftime('%H:%M')}")
-            break
-            
-        level_name = level_names[i]
-        
-        # Format: [Time "HH:MM", Temperature (float), Sensitivity (int), Heat_on (true/false)]
-        day_levels[level_name] = [
-            event['start_time'].strftime("%H:%M"),
-            event['target_temp'],
-            TEMPERATURE_SENSITIVITY,
-            True # Always True for a heating start event
-        ]
-
-    # Handle the final 'sleep' event. This should be the earliest time ALL required heating
-    # has ended, plus a 15-minute buffer, set back to ECO_TEMPERATURE/OFF.
-    if sorted_events:
-        last_event = sorted_events[-1]
-        
-        # Calculate when the last heat is no longer required (end time + 15 min buffer)
-        sleep_time = last_event['end_time'] + datetime.timedelta(minutes=15)
-        
-        # Set the sleep level to the calculated time (or midnight if later)
-        day_levels["sleep"] = [
-            sleep_time.strftime("%H:%M"),
-            ECO_TEMPERATURE,
-            TEMPERATURE_SENSITIVITY,
-            False # Heat off
-        ]
-        
-    return day_levels
-
-async def calculate_schedule(neohub_name: str, zone_name: str, raw_bookings: List[Dict[str, Any]], external_temp: float) -> Dict[str, Any]:
-    """
-    Calculates the consolidated heating profile for a single zone, applying preheat,
-    temperature adjustments, and consolidation logic over a 7-day rolling window.
-    
-    Returns the final STORE_PROFILE2 'info' dictionary structure.
-    """
-    global config
-    
-    # Time setup
-    tz = pytz.timezone(CHURCHSUITE_TIMEZONE)
-    now_in_tz = datetime.datetime.now(tz)
-    
-    # The schedule must cover the next 7 days, rolling over the week boundary.
-    end_of_window = now_in_tz + datetime.timedelta(days=7)
-    
-    # 1. Initialize the final 7-day schedule (key: 'monday', 'tuesday', etc.)
-    final_schedule = _create_default_schedule()
-    
-    # A temporary structure to hold all *calculated* heating events before mapping
-    # Key: day_name (e.g., 'monday') -> List of events: [{'start_time': dt, 'end_time': dt, 'target_temp': float}]
-    daily_events: Dict[str, List[Dict[str, Any]]] = {day: [] for day in final_schedule.keys()}
-
-    # 2. Get the full config for all locations that feed this zone
-    zone_configs = []
-    for loc_name, loc_config in config["locations"].items():
-        if loc_config["neohub"] == neohub_name and zone_name in loc_config["zones"]:
-            zone_configs.append((loc_name, loc_config))
-
-    # 3. Process each raw booking
-    for booking in raw_bookings:
-        location_name = booking.get("resource") # Use the 'resource' key
-        
-        # 🔑 FIX: Use the correct keys from the ChurchSuite API response
-        start_time_str = booking.get("starts_at")
-        end_time_str = booking.get("ends_at")
-        
-        # Guard against missing time strings (though they should be present now)
-        if not start_time_str or not end_time_str:
-             logging.warning(f"Booking for {location_name} is missing start/end times. Skipping.")
-             continue
-
-        try:
-            # Find the specific config for the location that generated this booking
-            loc_config = next(c for name, c in zone_configs if name == location_name)
-        except StopIteration:
-            continue # Should not happen, but safe to skip
-
-        # Parse and localize times
-        event_start = dateutil.parser.parse(start_time_str).astimezone(tz)
-        event_end = dateutil.parser.parse(end_time_str).astimezone(tz)
-        
-        # --- 4. 7-Day Window Check ---
-        # We only care about events that START within the next 7 days.
-        if event_start < now_in_tz or event_start >= end_of_window:
-            logging.debug(f"Skipping booking {location_name} @ {event_start}: Outside 7-day rolling window.")
-            continue
-            
-        # --- 5. Pre-Heat and Temp Calculation ---
-        required_temp = DEFAULT_TEMPERATURE
-        preheat_delta = datetime.timedelta(minutes=0)
-        
-        if external_temp >= loc_config["min_external_temp"]:
-            # External temp is warm enough, no pre-heat or high temp required
-            required_temp = ECO_TEMPERATURE 
-        else:
-            # Calculate required pre-heat time
-            temp_diff = required_temp - external_temp
-            preheat_minutes = (
-                PREHEAT_TIME_MINUTES + 
-                (temp_diff * PREHEAT_ADJUSTMENT_MINUTES_PER_DEGREE * loc_config["heat_loss_factor"])
+    if not start_time_str or not end_time_str:
+        logging.error(f"Booking is missing start or end time: {booking}")
+        return None
+    # Use dateutil.parser.parse to handle the timestamp format
+    start_time = dateutil.parser.parse(start_time_str).replace(tzinfo=None)
+    end_time = dateutil.parser.parse(end_time_str).replace(tzinfo=None)
+    preheat_time = datetime.timedelta(minutes=PREHEAT_TIME_MINUTES)
+    if (
+        external_temperature is not None
+        and external_temperature < TEMPERATURE_SENSITIVITY
+        and external_temperature < min_external_temp
+    ):
+        temp_diff = TEMPERATURE_SENSITIVITY - external_temperature
+        adjustment = (
+            temp_diff * PREHEAT_ADJUSTMENT_MINUTES_PER_DEGREE
+        ) * heat_loss_factor
+        preheat_time += datetime.timedelta(minutes=adjustment)
+        logging.info(
+            f"Adjusted preheat time for {location_name} by {adjustment:.0f} minutes due to external temperature."
+        )
+        if LOGGING_LEVEL == "DEBUG":
+            logging.debug(
+                f"calculate_schedule: Adjusted preheat time for {location_name} by {adjustment:.0f} minutes.  External temp = {external_temperature}, temp_diff = {temp_diff}, heat_loss_factor={heat_loss_factor}, preheat_time={preheat_time}"
             )
-            preheat_delta = datetime.timedelta(minutes=max(0, preheat_minutes))
+    profile_data = {}
+    days = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+    for day in days:
+        profile_data[day] = {}
 
-        # Only create an event if active heating is required (above ECO)
-        if required_temp > ECO_TEMPERATURE:
-            
-            # The actual time the heating must START to achieve target temp by event_start
-            heating_start_time = event_start - preheat_delta
-            
-            day_name = heating_start_time.strftime('%A').lower()
-            
-            new_event = {
-                'start_time': heating_start_time,
-                'end_time': event_end, # Actual event end time
-                'target_temp': required_temp,
-                'location': location_name
-            }
-            
-            daily_events[day_name].append(new_event)
-            logging.debug(f"Event for {zone_name} on {day_name}: Heat start at {heating_start_time.strftime('%H:%M')} for {required_temp}°C (Booked: {event_start.strftime('%H:%M')})")
+    def add_level(
+        day_data: Dict[str, Any],
+        level_name: str,
+        event_time: datetime.datetime,
+        temperature: float,
+    ):
+        """Adds a level to the day's schedule."""
+        day_data[level_name] = [
+            event_time.strftime("%H:%M"),
+            float(temperature),  # Ensure temperature is a float
+            5,  # Set to 5
+            True,  # Set to True
+        ]
 
-    # --- 6. Consolidate and Map Events to Final Schedule ---
-    
-    for day_name, events_for_day in daily_events.items():
-        if not events_for_day:
-            continue
-            
-        # Simplistic Consolidation: Merge events that start within 30 minutes of each other.
-        consolidated_day_events: List[Dict[str, Any]] = []
-        events_for_day.sort(key=lambda x: x['start_time'])
-        
-        for event in events_for_day:
-            if not consolidated_day_events:
-                consolidated_day_events.append(event)
-                continue
-                
-            last_consolidated = consolidated_day_events[-1]
-            
-            # Check if the current event is close enough to the last one to merge or if there's overlap
-            if event['start_time'] - last_consolidated['start_time'] < datetime.timedelta(minutes=30) or \
-               event['start_time'] < last_consolidated['end_time']:
-                
-                # MERGE: Take the earliest start, latest end, and highest temp
-                last_consolidated['start_time'] = min(last_consolidated['start_time'], event['start_time'])
-                last_consolidated['end_time'] = max(last_consolidated['end_time'], event['end_time'])
-                last_consolidated['target_temp'] = max(last_consolidated['target_temp'], event['target_temp'])
-            else:
-                # Not close, start a new consolidated event
-                consolidated_day_events.append(event)
-        
-        # Map the consolidated events to the 6 fixed NeoHub levels
-        final_schedule[day_name] = _map_events_to_levels(consolidated_day_events)
+    for day in days:
+        day_schedule = profile_data[day]
+        add_level(day_schedule, "wake", start_time - preheat_time, DEFAULT_TEMPERATURE)
+        add_level(day_schedule, "level2", start_time - preheat_time, DEFAULT_TEMPERATURE)
+        add_level(day_schedule, "level3", end_time, ECO_TEMPERATURE)
+        add_level(day_schedule, "level4", end_time, ECO_TEMPERATURE)
+        add_level(day_schedule, "sleep", end_time, ECO_TEMPERATURE)
+        add_level(day_schedule, "level1", end_time, ECO_TEMPERATURE)
+    if LOGGING_LEVEL == "DEBUG":
+        logging.debug(f"calculate_schedule: Calculated schedule: {profile_data}")
+    return profile_data
 
-    return final_schedule
+async def log_existing_profile(neohub_name: str, profile_name: str) -> None:
+    """Retrieves and logs an existing profile from the Neohub for debugging."""
+    try:
+        existing_profile = await get_profile(neohub_name, profile_name)
+        if existing_profile:
+            logging.info(
+                f"Existing profile '{profile_name}' on Neohub {neohub_name}: {existing_profile}"
+            )
+        else:
+            logging.warning(
+                f"Could not retrieve existing profile '{profile_name}' from Neohub {neohub_name}."
+            )
+    except Exception as e:
+        logging.error(
+            f"Error retrieving existing profile '{profile_name}' from Neohub {neohub_name}: {e}"
+        )
 
 # Custom command to send a profile command using websockets directly
 async def send_profile_command(
@@ -897,6 +572,455 @@ async def send_profile_command(
                 logger.info("WebSocket disconnected")
             except Exception as e:
                 logger.error(f"Error during disconnect: {e}")
+    
+# for testing a static profile        
+async def test_store_static_profile(neohub_name: str) -> None:
+    """Tests storing a static profile with a hardcoded data structure."""
+    logging.info(f"Testing storing static profile on Neohub {neohub_name}")
+
+    # Static profile data in the format of the existing profile
+    static_profile_data = {
+        "info": {
+            "friday": {
+                "level1": ["09:30", 18, 5, True],
+                "level2": ["12:30", 20, 5, True],
+                "level3": ["14:00", 18, 5, True],
+                "level4": ["17:30", 21, 5, True],
+                "sleep": ["22:00", 18, 5, True],
+                "wake": ["07:30", 21, 5, True]
+            },
+            "monday": {
+                "level1": ["09:30", 18, 5, True],
+                "level2": ["12:30", 20, 5, True],
+                "level3": ["14:00", 18, 5, True],
+                "level4": ["17:30", 21, 5, True],
+                "sleep": ["22:00", 18, 5, True],
+                "wake": ["06:30", 21, 5, True]
+            },
+            "saturday": {
+                "level1": ["09:30", 18, 5, True],
+                "level2": ["12:30", 20, 5, True],
+                "level3": ["14:00", 18, 5, True],
+                "level4": ["17:30", 21, 5, True],
+                "sleep": ["22:00", 18, 5, True],
+                "wake": ["07:30", 21, 5, True]
+            },
+            "sunday": {
+                "level1": ["09:30", 18, 5, True],
+                "level2": ["12:30", 20, 5, True],
+                "level3": ["14:00", 18, 5, True],
+                "level4": ["17:30", 21, 5, True],
+                "sleep": ["22:00", 18, 5, True],
+                "wake": ["07:30", 21, 5, True]
+            },
+            "thursday": {
+                "level1": ["09:30", 18, 5, True],
+                "level2": ["12:30", 20, 5, True],
+                "level3": ["14:00", 18, 5, True],
+                "level4": ["17:30", 21, 5, True],
+                "sleep": ["22:00", 18, 5, True],
+                "wake": ["07:30", 21, 5, True]
+            },
+            "tuesday": {
+                "level1": ["09:30", 18, 5, True],
+                "level2": ["12:30", 20, 5, True],
+                "level3": ["14:00", 18, 5, True],
+                "level4": ["17:30", 21, 5, True],
+                "sleep": ["22:00", 18, 5, True],
+                "wake": ["07:30", 21, 5, True]
+            },
+            "wednesday": {
+                "level1": ["09:30", 18, 5, True],
+                "level2": ["12:30", 20, 5, True],
+                "level3": ["14:00", 18, 5, True],
+                "level4": ["17:30", 21, 5, True],
+                "sleep": ["22:00", 18, 5, True],
+                "wake": ["07:30", 21, 5, True]
+            }
+        },
+        "name": "Next Week"
+    }
+
+    # Log the static profile data for debugging
+    logging.debug(f"Static profile data: {static_profile_data}")
+
+    # Call the store_profile function with the static data
+    # command = {"STORE_PROFILE": {"name": "Next Week", "info": static_profile_data["info"]}}
+    # command_json = json.dumps(command).replace("'", "\\'")  # Convert the command to a JSON string
+    # response = await send_command(neohub_name, command)  # Pass the JSON string to send_command
+    
+    # Altervative method without using send_command
+    # Get the Neohub instance
+    # global hubs
+    # hub = hubs.get(neohub_name)
+    # if hub is None:
+    #     logging.error(f"Not connected to Neohub: {neohub_name}")
+    #     return
+
+    # try:
+    #    # Use the neohubapi library's store_profile function directly
+    #    response = await hub.store_profile(
+    #        profile_name="Static Profile", profile_data=static_profile_data
+    #    )
+    #    if response:
+    #        logging.info(f"Successfully stored static profile on Neohub {neohub_name}")
+    #    else:
+    #        logging.error(f"Failed to store static profile on Neohub {neohub_name}")
+    #
+    # except Exception as e:
+    #    logging.error(f"An unexpected error occurred: {e}")
+    #    return
+        # Construct the STORE_PROFILE command
+    command = {"STORE_PROFILE": {"name": "Static Profile", "info": static_profile_data["info"]}}
+
+    # Get Neohub configuration
+    neohub_config = config["neohubs"].get(neohub_name)
+    if not neohub_config:
+        logging.error(f"Neohub configuration not found for {neohub_name}")
+        return
+
+    # Send the command using the custom function
+    response = await send_profile_command(
+        neohub_name,
+        command,
+        neohub_config["token"],
+        neohub_config["address"],
+        neohub_config["port"],
+    )
+
+    if response:
+        logging.info(f"Successfully stored static profile on Neohub {neohub_name}")
+    else:
+        logging.error(f"Failed to store static profile on Neohub {neohub_name}")
+
+# More basic profile test function
+async def test_store_basic_profile(neohub_name: str) -> None:
+    """Tests sending a basic command to the Neohub."""
+    logger = logging.getLogger("neohub")
+    logging.info(f"Testing sending basic command on Neohub {neohub_name}")
+
+    # Get Neohub configuration from environment variables
+    neohub_config = config["neohubs"].get(neohub_name)
+    if not neohub_config:
+        logging.error(f"Neohub configuration not found for {neohub_name}")
+        return
+
+    token = neohub_config["token"]
+    host = neohub_config["address"]
+    port = neohub_config["port"]
+
+    # Get the Neohub instance
+    global hubs
+    hub = hubs.get(neohub_name)
+    if hub is None:
+        logging.error(f"Not connected to Neohub: {neohub_name}")
+        return
+    
+    # Determine Neohub firmware version (replace with actual method if available)
+    firmware_version = await hub.firmware()
+    logging.debug(f"Firmware version for Neohub {neohub_name}: {firmware_version}")
+    if firmware_version is None:
+        logging.error(f"Could not determine firmware version for Neohub {neohub_name}.  Assuming latest format.")
+        firmware_version = 2079  # Assume 2079 or later if version cannot be determined
+
+    # Construct the schedule data based on firmware version
+    if firmware_version >= 2079:
+        schedule_data = {
+            "monday": {
+                "wake": ["06:30", 21.0, 5.0, True],
+                "level1": ["09:00", 18.0, 5.0, True],
+                "level2": ["12:00", 20.0, 5.0, True],
+                "level3": ["14:00", 18.0, 5.0, True],
+                "level4": ["17:00", 22.0, 5.0, True],
+                "sleep": ["23:00", 16.0, 5.0, True]
+            },
+            "tuesday": {
+                "wake": ["07:00", 21.0, 5.0, True],
+                "level1": ["09:00", 18.0, 5.0, True],
+                "level2": ["12:00", 20.0, 5.0, True],
+                "level3": ["14:00", 18.0, 5.0, True],
+                "level4": ["17:00", 22.0, 5.0, True],
+                "sleep": ["23:00", 16.0, 5.0, True]
+            },
+            "wednesday": {
+                "wake": ["07:00", 21.0, 5.0, True],
+                "level1": ["09:00", 18.0, 5.0, True],
+                "level2": ["12:00", 20.0, 5.0, True],
+                "level3": ["14:00", 18.0, 5.0, True],
+                "level4": ["17:00", 22.0, 5.0, True],
+                "sleep": ["23:00", 16.0, 5.0, True]
+            },
+            "thursday": {
+                "wake": ["07:00", 21.0, 5.0, True],
+                "level1": ["09:00", 18.0, 5.0, True],
+                "level2": ["12:00", 20.0, 5.0, True],
+                "level3": ["14:00", 18.0, 5.0, True],
+                "level4": ["17:00", 22.0, 5.0, True],
+                "sleep": ["23:00", 16.0, 5.0, True]
+            },
+            "friday": {
+                "wake": ["07:00", 21.0, 5.0, True],
+                "level1": ["09:00", 18.0, 5.0, True],
+                "level2": ["12:00", 20.0, 5.0, True],
+                "level3": ["14:00", 18.0, 5.0, True],
+                "level4": ["17:00", 22.0, 5.0, True],
+                "sleep": ["23:00", 16.0, 5.0, True]
+            },
+            "saturday": {
+                "wake": ["07:00", 21.0, 5.0, True],
+                "level1": ["09:00", 18.0, 5.0, True],
+                "level2": ["12:00", 20.0, 5.0, True],
+                "level3": ["14:00", 18.0, 5.0, True],
+                "level4": ["17:00", 22.0, 5.0, True],
+                "sleep": ["23:00", 16.0, 5.0, True]
+            },
+            "sunday": {
+                "wake": ["07:00", 21.0, 5.0, True],
+                "level1": ["09:00", 18.0, 5.0, True],
+                "level2": ["12:00", 20.0, 5.0, True],
+                "level3": ["14:00", 18.0, 5.0, True],
+                "level4": ["17:00", 22.0, 5.0, True],
+                "sleep": ["23:00", 16.0, 5.0, True]
+            }
+        }
+    else:
+        schedule_data = {
+            "monday": {
+                "wake": ["06:30", 21],
+                "level1": ["09:00", 18],
+                "level2": ["12:00", 20],
+                "level3": ["14:00", 18],
+                "level4": ["17:00", 22],
+                "sleep": ["23:00", 16]
+            },
+            "tuesday": {
+                "wake": ["07:00", 21],
+                "level1": ["09:00", 18],
+                "level2": ["12:00", 20],
+                "level3": ["14:00", 18],
+                "level4": ["17:00", 22],
+                "sleep": ["23:00", 16]
+            },
+            "wednesday": {
+                "wake": ["07:00", 21],
+                "level1": ["09:00", 18],
+                "level2": ["12:00", 20],
+                "level3": ["14:00", 18],
+                "level4": ["17:00", 22],
+                "sleep": ["23:00", 16]
+            },
+            "thursday": {
+                "wake": ["07:00", 21],
+                "level1": ["09:00", 18],
+                "level2": ["12:00", 20],
+                "level3": ["14:00", 18],
+                "level4": ["17:00", 22],
+                "sleep": ["23:00", 16]
+            },
+            "friday": {
+                "wake": ["07:00", 21],
+                "level1": ["09:00", 18],
+                "level2": ["12:00", 20],
+                "level3": ["14:00", 18],
+                "level4": ["17:00", 22],
+                "sleep": ["23:00", 16]
+            },
+            "saturday": {
+                "wake": ["07:00", 21],
+                "level1": ["09:00", 18],
+                "level2": ["12:00", 20],
+                "level3": ["14:00", 18],
+                "level4": ["17:00", 22],
+                "sleep": ["23:00", 16]
+            },
+            "sunday": {
+                "wake": ["07:00", 21],
+                "level1": ["09:00", 18],
+                "level2": ["12:00", 20],
+                "level3": ["14:00", 18],
+                "level4": ["17:00", 22],
+                "sleep": ["23:00", 16]
+            }
+        }
+
+    # Construct the STORE_PROFILE command
+    store_profile_command = {
+        "STORE_PROFILE2":{
+            "info": schedule_data,
+            "name": "Test"
+        }
+    }
+
+    try:
+        # Use the neohubapi send_message function with a timeout (other custom versions are send_message2 and send_message3)
+        #response = await asyncio.wait_for(WebSocketClient.send_message(hub._client, store_profile_command), timeout=5)
+        response = await asyncio.wait_for(send_message3(hub._client, store_profile_command), timeout=5)
+        if response:
+            logging.info(f"Successfully stored static profile on Neohub {neohub_name}")
+        else:
+            logging.error(f"Failed to store static profile on Neohub {neohub_name}")
+
+    except asyncio.TimeoutError:
+        logging.error(f"Timeout occurred while storing static profile on Neohub {neohub_name}")
+        return
+    except Exception as e:
+        logging.error(f"An unexpected error occurred: {e}")
+        return
+
+async def send_message3(hub, message: dict | str) -> dict:
+    """Send a message to the WebSocket server and return response."""
+    if not hub._websocket or not hub.running:
+        hub._logger.error("WebSocket not connected")
+        raise ConnectionError("WebSocket not connected")
+
+    command_id = next(hub._request_counter)
+
+    # Manually construct the JSON string with escaped keys and escaped values
+    def escape_keys(data):
+        if isinstance(data, dict):
+            escaped_data = {}
+            for key, value in data.items():
+                escaped_key = json.dumps(key)[1:-1]  # Escape the key
+                escaped_data[escaped_key] = escape_values(value)  # Recursively process the value
+            return escaped_data
+        elif isinstance(data, list):
+            return [escape_keys(item) for item in data]
+        else:
+            return data
+
+    def escape_values(data):
+        if isinstance(data, str):
+            return json.dumps(data)[1:-1]  # Escape the value
+        elif isinstance(data, float) or isinstance(data, int):
+            return data
+        elif isinstance(data, bool):
+            return str(data).lower()
+        elif isinstance(data, dict):
+            return {k: escape_values(v) for k, v in data.items()}
+        elif isinstance(data, list):
+            return [escape_values(item) for item in data]
+        else:
+            return data
+
+    message_with_escaped_keys_and_values = escape_keys(message)
+
+    # Construct the inner message
+    inner_message = {
+        "token": hub._token,
+        "COMMANDS": [
+            {"COMMAND": message_with_escaped_keys_and_values, "COMMANDID": command_id}
+        ],
+    }
+    # Encode inner_message as a JSON string, then encode outer message once.
+    # This ensures booleans and quotes are proper JSON (no Python repr).
+    encoded_message = json.dumps(
+        {
+            "message_type": "hm_get_command_queue",
+            "message": json.dumps(inner_message),
+        }
+    )
+    # Manually construct the JSON string
+    encoded_message = (
+        '{"message_type": "hm_get_command_queue", "message": "'
+        + json.dumps(inner_message)
+        .replace('"', '\\\\"')  # Escape double quotes with double backslashes
+        .replace("'", '"')
+        + '"}'
+    )
+
+    hub._logger.debug("Sending: %s", encoded_message)
+
+    try:
+        future = hub._loop.create_future()
+        hub._pending_requests[command_id] = future
+        await hub._websocket.send(encoded_message)
+        return await asyncio.wait_for(future, timeout=hub._request_timeout)
+    except TimeoutError:
+        hub._logger.error(
+            "Request %s timed out after %ds", command_id, hub._request_timeout
+        )
+        if command_id in hub._pending_requests:
+            del hub._pending_requests[command_id]
+        raise
+    except Exception:
+        hub._logger.exception("Error sending message")
+        if command_id in hub._pending_requests:
+            del hub._pending_requests[command_id]
+        raise
+
+async def send_message2(hub, message: dict | str) -> dict:
+    """Send a message to the WebSocket server and return response."""
+    if not hub._websocket or not hub.running:
+        hub._logger.error("WebSocket not connected")
+        raise ConnectionError("WebSocket not connected")
+
+    command_id = next(hub._request_counter)
+    encoded_message = json.dumps(
+        {
+            "message_type": "hm_get_command_queue",
+            "message": json.dumps(
+                {
+                    "token": hub._token,
+                    "COMMANDS": [
+                        {"COMMAND": str(message), "COMMANDID": command_id}
+                    ],
+                }
+            ),
+        }
+    )
+    hub._logger.debug("Sending: %s", encoded_message)
+
+    try:
+        future = hub._loop.create_future()
+        hub._pending_requests[command_id] = future
+        await hub._websocket.send(encoded_message)
+        return await asyncio.wait_for(future, timeout=hub._request_timeout)
+    except TimeoutError:
+        hub._logger.error(
+            "Request %s timed out after %ds", command_id, hub._request_timeout
+        )
+        if command_id in hub._pending_requests:
+            del hub._pending_requests[command_id]
+        raise
+    except Exception:
+        hub._logger.exception("Error sending message")
+        if command_id in hub._pending_requests:
+            del hub._pending_requests[command_id]
+        raise
+
+async def apply_schedule_to_heating(
+    neohub_name: str, profile_name: str, schedule_data: Dict[str, Any]
+) -> None:
+    """Applies the heating schedule to the Heatmiser system by storing the profile."""
+    logging.info(f"Storing profile {profile_name} on Neohub {neohub_name}")
+    if LOGGING_LEVEL == "DEBUG":
+        logging.debug(
+            f"apply_schedule_to_heating: neohub_name={neohub_name}, profile_name={profile_name}, schedule_data={schedule_data}"
+        )
+    # Log the existing profile for comparison
+    await log_existing_profile(neohub_name, profile_name)
+    # Store the profile using the neohubapi library's store_profile2 function
+    response = await store_profile2(neohub_name, profile_name, schedule_data)
+
+    # Call the test function instead
+    # await test_store_basic_profile(neohub_name)
+
+    if response:
+         logging.info(
+             f"Successfully stored profile {profile_name} on Neohub {neohub_name}"
+         )
+    else:
+         logging.error(f"Failed to store profile {profile_name} on Neohub {neohub_name}")
+    
+    # Check if the profile was stored successfully
+    # try:
+    #    stored_profile = await get_profile(neohub_name, "Test")
+    #    if stored_profile:
+    #        logging.info(f"Successfully stored profile 'Test' on Neohub {neohub_name}")
+    #    else:
+    #        logging.error(f"Failed to store profile 'Test' on Neohub {neohub_name}")
+    # except Exception as e:
+    #    logging.error(f"Error retrieving profile 'Test' from Neohub {neohub_name}: {e}")
 
 async def check_neohub_compatibility(config: Dict[str, Any], neohub_name: str) -> bool:
     """
@@ -950,59 +1074,166 @@ async def check_neohub_compatibility(config: Dict[str, Any], neohub_name: str) -
     logging.info(f"Neohub {neohub_name} is compatible")
     return True
 
-async def update_heating_schedule():
-    """
-    Orchestrates the heating update process:
-    1. Fetches and consolidates raw bookings by (Hub, Zone).
-    2. Calculates the final heating schedule for each consolidated zone, applying preheat/temps.
-    3. Stores/Updates the NeoHub profile using the profile ID if it exists.
-    4. Activates the correct profile on the relevant zone device.
-    """
-    logging.info("Starting update_heating_schedule...")
 
-    # 1. Fetch and Consolidate Raw Data
-    # Returns: { (neohub_name, zone_name): [raw_resource_dict1, raw_resource_dict2, ...] }
-    consolidated_bookings_map = get_bookings_and_locations()
-    external_temp = await get_external_temperature()
-    
-    if not consolidated_bookings_map:
-        logging.warning("No bookings found or configuration/fetch failed. Skipping update.")
+
+async def update_heating_schedule() -> None:
+    """Updates the heating schedule based on upcoming bookings."""
+    global config
+    if config is None:
+        logging.error("Configuration not loaded.  Exiting.")
         return
-
-    # 2. Process, Store, and Activate each unique profile
-    
-    for (neohub_name, zone_name), raw_bookings in consolidated_bookings_map.items():
-        
-        profile_name = f"{zone_name} Schedule" # The new stateful profile name
-        
-        logging.info(f"Processing schedule for Zone: '{zone_name}' on Hub: '{neohub_name}'")
-
-        # a) Calculate the final schedule (This is where the complex logic will go next)
-        # Note: We pass raw_bookings, not individual ones.
-        final_schedule_data = await calculate_schedule(
-            neohub_name, 
-            zone_name, 
-            raw_bookings, 
-            external_temp
+    # Validate the configuration
+    if not validate_config(config):
+        logging.error("Invalid configuration. Exiting.")
+        return
+    # Debug log to confirm config structure
+    if LOGGING_LEVEL == "DEBUG":
+        logging.debug(f"update_heating_schedule: config['locations'] = {config.get('locations')}")
+        logging.debug(f"update_heating_schedule: config['neohubs'] = {config.get('neohubs')}")
+    # Use an environment variable specifically for the timezone.
+    #  Example: "Europe/London" or "America/New_York"
+    location_timezone_name = os.environ.get("CHURCHSUITE_TIMEZONE", "Europe/London")
+    try:
+        location_timezone = pytz.timezone(location_timezone_name)
+    except pytz.exceptions.UnknownTimeZoneError:
+        logging.error(
+            f"Timezone '{location_timezone_name}' is invalid.  Defaulting to Europe/London.  "
+            "Please set the CHURCHSUITE_TIMEZONE environment variable with a valid timezone name (e.g., 'Europe/London')."
         )
-        
-        if not final_schedule_data:
-            logging.warning(f"Calculate schedule returned empty data for {zone_name}. Skipping profile store.")
-            continue
+        location_timezone = pytz.timezone("Europe/London")
 
-        # b) Store/Update the profile (Uses GET_PROFILE to handle create/update via ID)
-        # We need to assume store_profile2 is patched to handle profile_name and profile_id
-        profile_id = await store_profile2(neohub_name, profile_name, final_schedule_data)
-        
-        if profile_id is None:
-            logging.error(f"Failed to create or update profile for zone {zone_name}. Cannot activate.")
-            continue
+    today = datetime.datetime.now(location_timezone).replace(tzinfo=None) #changed
+    current_week_start = today - datetime.timedelta(days=today.weekday())
+    current_week_end = current_week_start + datetime.timedelta(days=6)
+    next_week_start = current_week_end + datetime.timedelta(days=1)
+    next_week_end = next_week_start + datetime.timedelta(days=6)
+    if LOGGING_LEVEL == "DEBUG":
+        logging.debug(
+            f"update_heating_schedule: today={today}, current_week_start={current_week_start}, current_week_end={current_week_end}, next_week_start={next_week_start}, next_week_end={next_week_end}"
+        )
 
-        # c) Activate the profile
-        # We assume activate_profile_on_zone finds the correct NeoStat device and applies the ID.
-        await activate_profile_on_zone(neohub_name, zone_name, profile_id)
+    data = get_bookings_and_locations()
+    if data:
+        booked_resources = data.get("booked_resources", [])
+        resources = data.get("resources", [])  # Get the resources list
 
-    logging.info("Finished update_heating_schedule.")
+        # Debug log to confirm fetched data
+        if LOGGING_LEVEL == "DEBUG":
+            logging.debug(f"update_heating_schedule: booked_resources = {booked_resources}")
+            logging.debug(f"update_heating_schedule: resources = {resources}")
+        if not booked_resources:
+            logging.info("No bookings to process.")
+            return
+
+        if not resources:
+            logging.info("No resources to process.")
+            return
+
+        # Create a mapping of resource_id to resource name.
+        resource_map = {r["id"]: r["name"] for r in resources}
+        if LOGGING_LEVEL == "DEBUG":
+            logging.debug(f"update_heating_schedule: resource_map = {resource_map}")
+
+        current_week_bookings = []
+        next_week_bookings = []
+        # After categorizing bookings
+        if LOGGING_LEVEL == "DEBUG":
+            logging.debug(
+                f"update_heating_schedule: current_week_bookings = {current_week_bookings}"
+            )
+            logging.debug(
+                f"update_heating_schedule: next_week_bookings = {next_week_bookings}"
+            )
+        for booking in booked_resources:
+            start_time_str = booking.get("starts_at")
+            if start_time_str:
+                # Parse the start time, using dateutil.parser which handles more formats
+                parsed_dt = dateutil.parser.parse(start_time_str)
+
+                # If the parsed datetime is naive (no timezone info), assume UTC
+                if parsed_dt.tzinfo is None or parsed_dt.utcoffset() is None:
+                    utc_dt = parsed_dt.replace(tzinfo=pytz.utc)
+                    logging.warning(f"Booking time for {booking} was naive, assuming UTC")
+                else:
+                    utc_dt = parsed_dt.astimezone(pytz.utc)
+
+                # Convert the booking time to the location timezone.
+                local_start_dt = utc_dt.astimezone(location_timezone).replace(tzinfo=None)
+
+                if current_week_start <= local_start_dt <= current_week_end:
+                    current_week_bookings.append(booking)
+                elif next_week_start <= local_start_dt <= next_week_end:
+                    next_week_bookings.append(booking)
+            else:
+                logging.warning(f"Booking with id {booking.get('id', 'unknown')} has no 'starts_at' time.")
+
+        if LOGGING_LEVEL == "DEBUG":
+            logging.debug(
+                f"update_heating_schedule: current_week_bookings={current_week_bookings}, next_week_bookings={next_week_bookings}"
+            )
+
+        # Iterate through locations defined in config.json
+        for location_name, location_config in config["locations"].items():
+            neohub_name = location_config["neohub"]
+            resource_ids = [resource_id for resource_id, name in resource_map.items() if name == location_name]
+
+            # Process current week bookings
+            for booked_resource in current_week_bookings:
+                if booked_resource["resource_id"] in resource_ids:
+                    if LOGGING_LEVEL == "DEBUG":
+                        logging.debug(f"update_heating_schedule: Processing current week booking for location_name = {location_name}")
+                    if not await check_neohub_compatibility(config, neohub_name):
+                        logging.error(
+                            f"Neohub {neohub_name} is not compatible with the required schedule format.  Skipping."
+                        )
+                        continue
+                    external_temperature = get_external_temperature()
+                    schedule_data = calculate_schedule(booked_resource, config, external_temperature, resource_map)
+                    if LOGGING_LEVEL == "DEBUG":
+                        logging.debug(f"update_heating_schedule: schedule_data = {schedule_data}")
+                    if schedule_data:
+                        await apply_schedule_to_heating(
+                            neohub_name, "Current Week", schedule_data
+                        )
+
+            # Process next week bookings
+            for booked_resource in next_week_bookings:
+                if booked_resource["resource_id"] in resource_ids:
+                    if LOGGING_LEVEL == "DEBUG":
+                        logging.debug(f"update_heating_schedule: Processing next week booking for location_name = {location_name}")
+                    if not await check_neohub_compatibility(config, neohub_name):
+                        logging.error(
+                            f"Neohub {neohub_name} is not compatible with the required schedule format.  Skipping."
+                        )
+                        continue
+                    external_temperature = get_external_temperature()
+                    schedule_data = calculate_schedule(booked_resource, config, external_temperature, resource_map)
+                    if schedule_data:
+                        await apply_schedule_to_heating(
+                            neohub_name, "Next Week", schedule_data
+                        )
+
+        for neohub_name in set(config["neohubs"].keys()):
+            command = {"RUN_PROFILE": "Current Week"}
+            response = await send_command(neohub_name, command)
+            if response:
+                logging.info(
+                    f"Successfully set profile 'Current Week' as active on Neohub {neohub_name}."
+                )
+                if LOGGING_LEVEL == "DEBUG":
+                    logging.debug(
+                        f"update_heating_schedule:  Sent RUN_PROFILE for Current Week to {neohub_name}"
+                    )
+            else:
+                logging.error(
+                    f"Failed to set profile 'Current Week' as active on Neohub {neohub_name}."
+                )
+    else:
+        logging.info("No data received from ChurchSuite.")
+
+
+
+
 
 def main():
     """Main application function."""
@@ -1030,13 +1261,9 @@ def main():
         logging.debug(f"Loaded config: {json.dumps(config, indent=2)}")
 
     for neohub_name, neohub_config in config["neohubs"].items():
-        # CRITICAL FIX: Use asyncio.run to execute the async connect function
-        if not asyncio.run(connect_to_neohub(neohub_name, neohub_config)): 
+        if not connect_to_neohub(neohub_name, neohub_config):
             logging.error(f"Failed to connect to Neohub: {neohub_name}. Exiting.")
-            # Do NOT exit yet, as main_church might be down, but church_hall might be up
-            # or vice-versa, allowing the working hub to be scheduled.
-            # However, for a production system, it's safer to exit if a critical hub fails.
-            pass # Allow script to continue with available hubs
+            exit()
     for neohub_name in config["neohubs"]:
         zones = asyncio.run(get_zones(neohub_name))
         if zones:
@@ -1063,6 +1290,8 @@ def main():
         logging.info("Closing Neohub connections...")
 #       close_connections()
         logging.info("Exiting...")
+
+
 
 if __name__ == "__main__":
     main()
