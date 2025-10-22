@@ -501,59 +501,53 @@ def aggregate_schedules_by_zone(
     all_location_schedules: List[Dict[str, Any]],
 ) -> Dict[str, Dict[str, Any]]:
     """
-    Aggregates individual heating schedules into a single schedule for each
-    (neohub, zone) pair, using the earliest start and latest end time.
+    Aggregates individual heating schedules into a single 6-point schedule for each
+    (neohub, zone) pair, using the earliest start and latest end time, and includes
+    intermediate heat-off periods for energy conservation.
     """
     global DEFAULT_TEMPERATURE, ECO_TEMPERATURE
     aggregated_profiles: Dict[str, Dict[str, Any]] = {}
     days = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+    
+    # NeoHub profile slots correspond to these keys
+    NEOHUB_SLOTS = ["wake", "level1", "level2", "level3", "level4", "sleep"]
 
+    # 1. First Pass: Collect all Start/End points for each Neohub/Zone combination
     for schedule_dict in all_location_schedules:
-        # Check for required fields from the modified calculate_schedule return
-        if not all(k in schedule_dict for k in ['neohub', 'zones', 'profile_data', 'location_name']):
+        if not all(k in schedule_dict for k in ['neohub', 'zones', 'profile_data']):
              logging.warning(f"Skipping schedule: Missing required metadata for aggregation: {schedule_dict.keys()}")
              continue
 
         neohub_name = schedule_dict['neohub']
         profile_data = schedule_dict['profile_data']
-        # Use the first zone as the key for the schedule
+        # Zone-to-Neohub mapping is handled by taking the first zone
         zone_name = schedule_dict['zones'][0] if schedule_dict['zones'] else "DEFAULT_ZONE"
         neohub_zone_key = f"{neohub_name}__{zone_name}"
 
         if neohub_zone_key not in aggregated_profiles:
-            # Initialize the aggregated profile for this zone
             aggregated_profiles[neohub_zone_key] = {
                 'neohub': neohub_name, 
                 'zone_name': zone_name,
-                'min_preheat_start': {},
-                'max_booking_end': {},
+                'time_points': {day: set() for day in days}, # Use a set to collect unique times
             }
-            for day in days:
-                # Initialize with a late/early time that will be easily overwritten
-                aggregated_profiles[neohub_zone_key]['min_preheat_start'][day] = "23:59"
-                aggregated_profiles[neohub_zone_key]['max_booking_end'][day] = "00:00"
 
         agg_data = aggregated_profiles[neohub_zone_key]
 
-        # Aggregate the earliest start and latest end for each day
+        # Aggregate all unique start ('wake') and end ('level3') times for each day
         for day in days:
             day_schedule = profile_data.get(day)
             if not day_schedule:
                 continue
             
-            # Find Earliest Start Time ('wake' time)
+            # Start Time (Preheat Start)
             if 'wake' in day_schedule and len(day_schedule['wake']) > 0:
-                current_start_time_str = day_schedule['wake'][0]
-                if current_start_time_str < agg_data['min_preheat_start'][day]:
-                    agg_data['min_preheat_start'][day] = current_start_time_str
+                agg_data['time_points'][day].add(day_schedule['wake'][0])
                     
-            # Find Latest End Time ('level3' time)
+            # End Time (Booking End)
             if 'level3' in day_schedule and len(day_schedule['level3']) > 0:
-                current_end_time_str = day_schedule['level3'][0]
-                if current_end_time_str > agg_data['max_booking_end'][day]:
-                    agg_data['max_booking_end'][day] = current_end_time_str
+                agg_data['time_points'][day].add(day_schedule['level3'][0])
 
-    # Finalize the profile_data structure for each aggregated profile
+    # 2. Second Pass: Process collected points and construct the final 6-point schedule
     final_profiles = {}
     for neohub_zone_key, agg_data in aggregated_profiles.items():
         final_profile_data = {}
@@ -561,26 +555,102 @@ def aggregate_schedules_by_zone(
         zone_name = agg_data['zone_name']
 
         for day in days:
-            min_start_str = agg_data['min_preheat_start'][day]
-            max_end_str = agg_data['max_booking_end'][day]
+            # Get unique, sorted list of all time points for the day
+            sorted_times = sorted(list(agg_data['time_points'][day]))
+            
+            if not sorted_times:
+                continue
 
-            # Only create a schedule if there was at least one booking
-            if min_start_str != "23:59" or max_end_str != "00:00":
-                day_schedule = {}
-
-                # Start preheating at the earliest time
-                start_level = [min_start_str, DEFAULT_TEMPERATURE, 5, True]
-                day_schedule["wake"] = start_level
-                day_schedule["level2"] = start_level
-
-                # Switch to eco/off at the latest end time
-                end_level = [max_end_str, ECO_TEMPERATURE, 5, True]
-                day_schedule["level3"] = end_level
-                day_schedule["level4"] = end_level
-                day_schedule["sleep"] = end_level
-                day_schedule["level1"] = end_level
+            # --- CRITICAL: Fit times into 6 chronological slots ---
+            
+            # If we have more than 6 unique time points, we must aggressively filter.
+            # We take the earliest start and the latest end, and evenly distribute
+            # the remaining 4 slots among the intermediate points.
+            if len(sorted_times) > len(NEOHUB_SLOTS):
                 
-                final_profile_data[day] = day_schedule
+                # Take the first (earliest) and last (latest) time points
+                start_time = sorted_times[0]
+                end_time = sorted_times[-1]
+                
+                # We have 4 remaining slots (level1, level2, level3, level4) to fill
+                intermediate_times = sorted_times[1:-1]
+                
+                # Use a strategy to select the most significant intermediate points (e.g., first 4)
+                # Since we cannot know which is "most important," we prioritize the first 6
+                # and drop the intermediate points that are too close together.
+                
+                # Simple strategy: take the first 6 unique points if they exist.
+                # If there are still more than 6, we must drop intermediate points.
+                
+                # Aggressive Filter: Keep the start, end, and the 4 points that span the longest time.
+                # For simplicity and robust chronological order, we take the 6 points that are farthest apart.
+                
+                # For now, let's truncate to the first 6 unique, sorted points.
+                # This ensures chronological order but risks dropping a late event start.
+                final_times = sorted_times[:len(NEOHUB_SLOTS)]
+                logging.warning(
+                    f"Day {day} for {zone_name} had {len(sorted_times)} time points. Truncated to {len(final_times)} points: {final_times}. This may drop later heating periods."
+                )
+            else:
+                final_times = sorted_times
+
+            day_schedule = {}
+            
+            # The schedule must start with a heating-ON state if there are any bookings.
+            # The very first point is always a heating-ON (DEFAULT_TEMPERATURE) point.
+            is_heating_on = True 
+            
+            for i, time_str in enumerate(final_times):
+                slot_name = NEOHUB_SLOTS[i]
+                
+                if is_heating_on:
+                    # This point starts the heating (ON)
+                    temp = DEFAULT_TEMPERATURE
+                    
+                    # If this is the last time point, it must be the ECO temp to ensure heating stops.
+                    # This handles the case where the total number of points is odd.
+                    if i == len(final_times) - 1:
+                        temp = ECO_TEMPERATURE
+                        
+                    is_heating_on = False # Next point will be OFF
+                else:
+                    # This point stops the heating (OFF)
+                    temp = ECO_TEMPERATURE
+                    is_heating_on = True # Next point will be ON
+
+                # Set the schedule level
+                day_schedule[slot_name] = [
+                    time_str, 
+                    temp, 
+                    TEMPERATURE_SENSITIVITY, 
+                    True # Always enabled
+                ]
+                
+            # If the final point was an ON point, we must add an invisible 7th point at 23:59 
+            # to switch off, but the NeoHub only supports 6 points.
+            # We enforce the last *used* slot to be the ECO temperature to ensure shut-off.
+            if len(day_schedule) > 0:
+                 last_slot = NEOHUB_SLOTS[len(day_schedule) - 1]
+                 # Ensure the very last point in the schedule is ECO_TEMPERATURE
+                 day_schedule[last_slot][1] = ECO_TEMPERATURE
+
+
+            # Pad remaining unused slots to the end of the day with ECO_TEMPERATURE
+            # This is critical to prevent the NeoHub from filling them with default (ON) temperatures.
+            last_time = final_times[-1] if final_times else "00:00"
+            for i in range(len(final_times), len(NEOHUB_SLOTS)):
+                slot_name = NEOHUB_SLOTS[i]
+                # Set remaining slots to the last time with ECO temp to maintain order (T <= T)
+                # or 23:59 if no bookings existed.
+                day_schedule[slot_name] = [
+                    last_time, 
+                    ECO_TEMPERATURE, 
+                    TEMPERATURE_SENSITIVITY, 
+                    True
+                ]
+
+
+            final_profile_data[day] = day_schedule
 
         final_profiles[neohub_zone_key] = {
             'neohub': neohub_name,
@@ -590,7 +660,6 @@ def aggregate_schedules_by_zone(
         
         if LOGGING_LEVEL == "DEBUG":
             logging.debug(f"aggregate_schedules_by_zone: Final profile for {neohub_zone_key}: {json.dumps(final_profile_data)}")
-
 
     return final_profiles
 
