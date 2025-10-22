@@ -410,6 +410,90 @@ async def log_existing_profile(neohub_name: str, profile_name: str) -> None:
             f"Failed to fetch profile '{profile_name}' on {neohub_name}. Response: {response}"
         )
 
+async def apply_schedule_to_heating(
+    neohub_name: str, profile_name: str, schedule_data: Dict[str, Any]
+) -> None:
+    """Applies the heating schedule to the Heatmiser system by storing the profile."""
+    logging.info(f"Storing profile {profile_name} on Neohub {neohub_name}")
+    if LOGGING_LEVEL == "DEBUG":
+        logging.debug(
+            f"apply_schedule_to_heating: neohub_name={neohub_name}, profile_name={profile_name}, schedule_data={schedule_data}"
+        )
+    # Log the existing profile for comparison
+    await log_existing_profile(neohub_name, profile_name)
+    # Store the profile using the neohubapi library's store_profile2 function
+    response = await store_profile2(neohub_name, profile_name, schedule_data)
+
+    if response:
+         logging.info(
+             f"Successfully stored profile {profile_name} on Neohub {neohub_name}"
+         )
+    else:
+         logging.error(f"Failed to store profile {profile_name} on Neohub {neohub_name}")
+    
+    # Check if the profile was stored successfully
+    # try:
+    #    stored_profile = await get_profile(neohub_name, "Test")
+    #    if stored_profile:
+    #        logging.info(f"Successfully stored profile 'Test' on Neohub {neohub_name}")
+    #    else:
+    #        logging.error(f"Failed to store profile 'Test' on Neohub {neohub_name}")
+    # except Exception as e:
+    #    logging.error(f"Error retrieving profile 'Test' from Neohub {neohub_name}: {e}")
+
+async def check_neohub_compatibility(config: Dict[str, Any], neohub_name: str) -> bool:
+    """
+    Checks if the Neohub is compatible with the required schedule format (7-day, 6 events).
+    Returns True if compatible, False otherwise. Uses neohubapi and send_command for logging.
+    """
+    if LOGGING_LEVEL == "DEBUG":
+        logging.debug(
+            f"check_neohub_compatibility: Checking compatibility for {neohub_name}"
+        )
+
+    # Ensure the Neohub is connected
+    if LOGGING_LEVEL == "DEBUG":
+        logging.debug(f"check_neohub_compatibility: config['neohubs'] = {config['neohubs']}")
+    neohub_config = config["neohubs"].get(neohub_name)
+    if not neohub_config:
+        logging.error(f"Configuration for Neohub {neohub_name} not found.")
+        return False
+
+    if neohub_name not in hubs:
+        logging.info(f"Connecting to Neohub {neohub_name}...")
+        if not connect_to_neohub(neohub_name, neohub_config):
+            logging.error(f"Failed to connect to Neohub {neohub_name}.")
+            return False
+
+    # Get system data to check ALT_TIMER_FORMAT and HEATING_LEVELS
+    try:
+        system_data = await send_command(neohub_name, {"GET_SYSTEM": 0})
+        if system_data is None:
+            logging.error(f"Failed to retrieve system data from Neohub {neohub_name}.")
+            return False
+    except Exception as e:
+        logging.error(f"Error getting system data from Neohub {neohub_name}: {e}")
+        return False
+
+    # Check if ALT_TIMER_FORMAT is 4 (7-day mode)
+    if not hasattr(system_data, 'ALT_TIMER_FORMAT') or system_data.ALT_TIMER_FORMAT != 4:
+        logging.error(f"Neohub {neohub_name} is not configured for a 7-day schedule.")
+        return False
+    if LOGGING_LEVEL == "DEBUG":
+        logging.debug(f"check_neohub_compatibility: Neohub {neohub_name} ALT_TIMER_FORMAT is configured for 7-day schedule.")
+
+    # Check if HEATING_LEVELS is 6 (6 comfort levels)
+    if not hasattr(system_data, 'HEATING_LEVELS') or system_data.HEATING_LEVELS != 6:
+        logging.error(f"Neohub {neohub_name} does not support 6 comfort levels.")
+        return False
+
+    if LOGGING_LEVEL == "DEBUG":
+        logging.debug(f"check_neohub_compatibility: Neohub {neohub_name} supports 6 comfort levels.")
+
+    logging.info(f"Neohub {neohub_name} is compatible")
+    return True
+
+
 # --- NEW HELPER FUNCTION: AGGREGATION ---
 def aggregate_schedules_by_zone(
     all_location_schedules: List[Dict[str, Any]],
@@ -661,91 +745,6 @@ def calculate_schedule(
         "zones": zones,
         "profile_data": profile_data,
     }
-
-async def apply_schedule_to_heating(
-    neohub_name: str, profile_name: str, schedule_data: Dict[str, Any]
-) -> None:
-    """Applies the heating schedule to the Heatmiser system by storing the profile."""
-    logging.info(f"Storing profile {profile_name} on Neohub {neohub_name}")
-    if LOGGING_LEVEL == "DEBUG":
-        logging.debug(
-            f"apply_schedule_to_heating: neohub_name={neohub_name}, profile_name={profile_name}, schedule_data={schedule_data}"
-        )
-    # Log the existing profile for comparison
-    await log_existing_profile(neohub_name, profile_name)
-    # Store the profile using the neohubapi library's store_profile2 function
-    response = await store_profile2(neohub_name, profile_name, schedule_data)
-
-    if response:
-         logging.info(
-             f"Successfully stored profile {profile_name} on Neohub {neohub_name}"
-         )
-    else:
-         logging.error(f"Failed to store profile {profile_name} on Neohub {neohub_name}")
-    
-    # Check if the profile was stored successfully
-    # try:
-    #    stored_profile = await get_profile(neohub_name, "Test")
-    #    if stored_profile:
-    #        logging.info(f"Successfully stored profile 'Test' on Neohub {neohub_name}")
-    #    else:
-    #        logging.error(f"Failed to store profile 'Test' on Neohub {neohub_name}")
-    # except Exception as e:
-    #    logging.error(f"Error retrieving profile 'Test' from Neohub {neohub_name}: {e}")
-
-async def check_neohub_compatibility(config: Dict[str, Any], neohub_name: str) -> bool:
-    """
-    Checks if the Neohub is compatible with the required schedule format (7-day, 6 events).
-    Returns True if compatible, False otherwise. Uses neohubapi and send_command for logging.
-    """
-    if LOGGING_LEVEL == "DEBUG":
-        logging.debug(
-            f"check_neohub_compatibility: Checking compatibility for {neohub_name}"
-        )
-
-    # Ensure the Neohub is connected
-    if LOGGING_LEVEL == "DEBUG":
-        logging.debug(f"check_neohub_compatibility: config['neohubs'] = {config['neohubs']}")
-    neohub_config = config["neohubs"].get(neohub_name)
-    if not neohub_config:
-        logging.error(f"Configuration for Neohub {neohub_name} not found.")
-        return False
-
-    if neohub_name not in hubs:
-        logging.info(f"Connecting to Neohub {neohub_name}...")
-        if not connect_to_neohub(neohub_name, neohub_config):
-            logging.error(f"Failed to connect to Neohub {neohub_name}.")
-            return False
-
-    # Get system data to check ALT_TIMER_FORMAT and HEATING_LEVELS
-    try:
-        system_data = await send_command(neohub_name, {"GET_SYSTEM": 0})
-        if system_data is None:
-            logging.error(f"Failed to retrieve system data from Neohub {neohub_name}.")
-            return False
-    except Exception as e:
-        logging.error(f"Error getting system data from Neohub {neohub_name}: {e}")
-        return False
-
-    # Check if ALT_TIMER_FORMAT is 4 (7-day mode)
-    if not hasattr(system_data, 'ALT_TIMER_FORMAT') or system_data.ALT_TIMER_FORMAT != 4:
-        logging.error(f"Neohub {neohub_name} is not configured for a 7-day schedule.")
-        return False
-    if LOGGING_LEVEL == "DEBUG":
-        logging.debug(f"check_neohub_compatibility: Neohub {neohub_name} ALT_TIMER_FORMAT is configured for 7-day schedule.")
-
-    # Check if HEATING_LEVELS is 6 (6 comfort levels)
-    if not hasattr(system_data, 'HEATING_LEVELS') or system_data.HEATING_LEVELS != 6:
-        logging.error(f"Neohub {neohub_name} does not support 6 comfort levels.")
-        return False
-
-    if LOGGING_LEVEL == "DEBUG":
-        logging.debug(f"check_neohub_compatibility: Neohub {neohub_name} supports 6 comfort levels.")
-
-    logging.info(f"Neohub {neohub_name} is compatible")
-    return True
-
-
 
 # --- MODIFIED FUNCTION (Using the collected schedules for aggregation and application) ---
 async def update_heating_schedule() -> None:
