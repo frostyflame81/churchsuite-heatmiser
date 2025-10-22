@@ -377,8 +377,6 @@ def get_json_data(url: str) -> Optional[Dict[str, Any]]:
         logging.error(f"Error fetching JSON data from {url}: {e}")
         return None
 
-
-
 def get_bookings_and_locations() -> Optional[Dict[str, Any]]:
     """Fetches bookings and locations data from ChurchSuite."""
     if LOGGING_LEVEL == "DEBUG":
@@ -396,18 +394,22 @@ async def log_existing_profile(neohub_name: str, profile_name: str) -> None:
 
     logging.debug(f"Attempting to fetch existing profile '{profile_name}' on Neohub {neohub_name} for comparison...")
     
-    # Use GET_PROFILE to retrieve the schedule data for the named profile
+    # Use GET_PROFILE to retrieve the schedule data for the named profile (validated command)
     command = {"GET_PROFILE": profile_name}
     response = await send_command(neohub_name, command)
     
-    if response and response.get("status") == "success" and "data" in response:
-        # Log the received data cleanly
+    # BUG FIX: Use attribute access (response.status) or safe attribute access (getattr/hasattr)
+    # Check if response exists, if its status attribute is 'success', and if it has a data attribute
+    if response and getattr(response, "status", None) == "success" and hasattr(response, "data"):
+        # Log the received data cleanly. response.data is assumed to be a dictionary or list.
         logging.debug(
-            f"Existing Profile Data for '{profile_name}' on {neohub_name}:\n{json.dumps(response['data'], indent=4)}"
+            f"Existing Profile Data for '{profile_name}' on {neohub_name}:\n{json.dumps(response.data, indent=4)}"
         )
     else:
+        # Safely log the status if available, otherwise 'N/A'
+        status = getattr(response, "status", "N/A")
         logging.debug(
-            f"Failed to fetch profile '{profile_name}' on {neohub_name}. Response: {response}"
+            f"Failed to fetch profile '{profile_name}' on {neohub_name}. Response Status: {status}"
         )
 
 async def apply_schedule_to_heating(
