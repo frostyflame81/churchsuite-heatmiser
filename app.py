@@ -1072,11 +1072,16 @@ async def update_heating_schedule() -> None:
             external_temperature, 
             config
         )
+        # CRITICAL FIX: Add a debug log here to check if data was created
+        logging.debug(f"DEBUG: create_aggregated_schedule returned Current Week: {aggregated_current_schedules}")
+        
         aggregated_next_schedules = create_aggregated_schedule(
             next_week_bookings, 
             external_temperature, 
             config
         )
+        # CRITICAL FIX: Add a debug log here to check if data was created
+        logging.debug(f"DEBUG: create_aggregated_schedule returned Next Week: {aggregated_next_schedules}")
 
         # 6. APPLY AGGREGATED SCHEDULES using the now-fixed helper function
         # This calls the reinstated apply_aggregated_schedules function from Step 1.
