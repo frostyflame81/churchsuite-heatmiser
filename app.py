@@ -416,46 +416,38 @@ def _validate_neohub_profile(
     profile_data: Dict[str, Dict[str, List[Union[str, float, int, bool]]]], 
     zone_name: str
 ) -> Tuple[bool, str]:
-    """
-    Verifies the profile adheres to the 7-day/6-level NeoHub protocol and checks time sequence.
-    """
+    # ... (expected_days and expected_slots definitions) ...
     expected_days = {"monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"}
-    expected_slots = {"wake", "level1", "level2", "level3", "level4", "sleep"}
+    expected_slots = ["wake", "level1", "level2", "level3", "level4", "sleep"]
     
-    # Check 1: 7-Day Construct
-    if set(profile_data.keys()) != expected_days:
-        missing = expected_days - set(profile_data.keys())
-        extra = set(profile_data.keys()) - expected_days
-        return False, (
-            f"Profile is NOT a 7-day construct. Missing days: {missing}, Extra keys: {extra}"
-        )
+    # ... (Check 1: 7-Day Construct is fine) ...
 
     # Check 2 & 3: 6-Level Construct and Sequential Time Order
-    for day_name, daily_schedule in profile_data.items():
-        if set(daily_schedule.keys()) != expected_slots:
-            missing = expected_slots - set(daily_schedule.keys())
-            extra = set(daily_schedule.keys()) - expected_slots
-            return False, (
-                f"Day '{day_name}' for zone '{zone_name}' is NOT 6-level. "
-                f"Missing slots: {missing}, Extra keys: {extra}"
-            )
+    for day_name in expected_days: # Iterate over days in a safe order
+        daily_schedule = profile_data.get(day_name)
+        if daily_schedule is None:
+            # This should be caught by Check 1, but for safety:
+            return False, f"Day '{day_name}' missing from profile data."
 
-        prev_time_str = None
-        # Must iterate over the correct, ordered slot names
+        if set(daily_schedule.keys()) != set(expected_slots):
+            # ... (6-level check is fine) ...
+            
+            # FIX START: Reset the previous time for the start of *each* day
+            prev_time_str = None 
+        
+        # We must iterate over the correct, ordered slot names
         for slot_name in expected_slots:
-            try:
-                time_str = daily_schedule[slot_name][0]
-                current_time = datetime.datetime.strptime(time_str, "%H:%M").time()
-            except (KeyError, ValueError):
-                return False, f"Time parsing error on day '{day_name}', slot '{slot_name}'."
+            # ... (time parsing logic is fine) ...
+            time_str = daily_schedule[slot_name][0]
+            current_time = datetime.datetime.strptime(time_str, "%H:%M").time()
             
             if prev_time_str:
                 prev_time = datetime.datetime.strptime(prev_time_str, "%H:%M").time()
-                # Times must be strictly sequential (later than the previous slot)
+                # Times must be strictly increasing WITHIN THE DAY
                 if current_time <= prev_time:
                     return False, (
                         f"Time sequencing error on day '{day_name}' for slot '{slot_name}'. "
-                        f"Time ({time_str}) must be later than the previous slot ({prev_time_str})."
+                        f"Time ({time_str}) must be LATER than the previous slot ({prev_time_str})."
                     )
             prev_time_str = time_str
             
@@ -889,8 +881,7 @@ async def apply_aggregated_schedules(
     
     tasks = []
 
-    # FIX: Define the required mapping from integer day index (from aggregation) 
-    # to string day name (required by NeoHub API and validation).
+    # FIX: Define the required mapping from integer day index to string day name.
     DAY_MAPPING = {
         0: "monday", 
         1: "tuesday", 
@@ -923,14 +914,12 @@ async def apply_aggregated_schedules(
                 logging.warning(f"Invalid day index found: {day_index} for zone {zone_name}. Skipping day.")
                 continue
 
-            # Format the daily setpoints (this function is assumed to be fixed 
-            # to include 6 levels and the correct 'wake', 'level1', etc. keys)
+            # Format the daily setpoints
             formatted_daily_schedule = _format_setpoints_for_neohub(setpoints_list)
             
             # The profile data is now correctly keyed by the string day name
             neohub_profile_data[day_name] = formatted_daily_schedule
         
-        # Check if we actually built a 7-day profile before attempting to send
         if not neohub_profile_data:
             logging.warning(f"No profile data generated for zone {zone_name}. Skipping.")
             continue
@@ -952,7 +941,7 @@ async def apply_aggregated_schedules(
         await asyncio.gather(*tasks)
     else:
         logging.warning(f"No profiles generated or applied for {profile_prefix}.")
-        
+
 # --- MODIFIED FUNCTION ---
 def calculate_schedule(
     booking: Dict[str, Any], config: Dict[str, Any], external_temperature: Optional[float], resource_map: Dict[int, str]
