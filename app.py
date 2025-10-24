@@ -45,6 +45,7 @@ ScheduleSegment = Union[float, str] # Can be a temperature (float) or a command 
 ScheduleEntry = Dict[str, Union[datetime.time, ScheduleSegment]]
 
 # Neohub Configuration from Environment Variables
+NEOHUB_SLOTS = ["wake", "level1", "level2", "level3", "level4", "sleep"]
 NEOHUBS = {}
 neohub_count = 1
 while True:
@@ -373,88 +374,127 @@ def create_aggregated_schedule(
     logging.info(f"AGGREGATION END: Successfully generated schedules for {len(zone_schedule)} NeoHub zones.")
     return zone_schedule
 
-def _format_setpoints_for_neohub(setpoints: List[Dict[str, Union[str, float]]]) -> Dict[str, List[Union[str, float, int, bool]]]:
+def _format_setpoints_for_neohub(
+    daily_setpoints: List[Dict[str, Union[str, float]]]
+) -> Dict[str, List[Union[str, float, int, bool]]]:
     """
-    Converts a list of setpoint dicts (time, temp) into the Neohub's required
-    profile dictionary format (e.g., {'wake': [time, temp, sensitivity, true]}).
+    Takes the aggregated setpoints, pads them to exactly 6 levels, and formats them using the 
+    correct NeoHub keys (wake, level1-level4, sleep) to resolve the empty profile issue.
     """
-    formatted_schedule = {}
     
-    # NeoHub uses specific keys for schedule steps (up to 6 setpoints/day)
-    step_keys = ["wake", "level1", "level2", "level3", "level4", "level5", "sleep"]
+    # 1. Prepare setpoints (Max 6)
+    setpoints_to_use = daily_setpoints[:len(NEOHUB_SLOTS)] # Ensure max 6 are used
     
-    # Ensure we don't exceed the number of supported steps
-    safe_setpoints = setpoints[:len(step_keys)]
+    # 2. Robust Padding: If less than 6, fill the remaining slots. (CRITICAL FIX)
+    if setpoints_to_use:
+        # Use the last valid setpoint (the final ECO time/temp) for padding.
+        last_valid_sp = setpoints_to_use[-1] 
+    else:
+        # Failsafe: Default to 00:00 @ ECO_TEMPERATURE if list is empty.
+        last_valid_sp = {"time": "00:00", "temp": ECO_TEMPERATURE}
 
-    for i, sp in enumerate(safe_setpoints):
-        key = step_keys[i]
-        time_str = sp["time"]
-        temp_float = sp["temp"]
+    # Pad until 6 setpoints are available. This guarantees the correct payload structure.
+    while len(setpoints_to_use) < len(NEOHUB_SLOTS):
+        setpoints_to_use.append(last_valid_sp)
+
+    # 3. Format and map to NEOHUB_SLOTS
+    neohub_schedule_dict = {}
+    for i, sp in enumerate(setpoints_to_use):
+        slot_name = NEOHUB_SLOTS[i]
         
-        # The NeoHub schedule format requires four items: 
-        # [time, temperature, sensitivity, enabled (true)]
-        formatted_schedule[key] = [
-            time_str, 
-            temp_float, 
-            TEMPERATURE_SENSITIVITY, # Uses the global config variable
-            True # Always enabled
+        # NeoHub format: [time, temperature (1 decimal), sensitivity, enabled (true)]
+        neohub_schedule_dict[slot_name] = [
+            sp["time"],
+            float(f'{sp["temp"]:.1f}'),          # Ensure temperature is float, 1 decimal place
+            TEMPERATURE_SENSITIVITY,     
+            True                         
         ]
         
-    return formatted_schedule
+    return neohub_schedule_dict
 
-# REPLACE THE OLD apply_single_zone_profile with this updated version
-async def apply_single_zone_profile(
-    neohub_name: str, 
-    zone_name: str, 
-    daily_schedule: Dict[int, List[Dict[str, Union[str, float]]]],
-    profile_prefix: str # ADDED THIS PARAMETER
-) -> None:
+def _validate_neohub_profile(
+    profile_data: Dict[str, Dict[str, List[Union[str, float, int, bool]]]], 
+    zone_name: str
+) -> Tuple[bool, str]:
     """
-    Applies the full 7-day schedule to a single zone on a specific Neohub.
-    This function implements the fix for days with no bookings.
+    Verifies the profile adheres to the 7-day/6-level NeoHub protocol and checks time sequence.
     """
-    DAY_MAP = {
-        0: "monday", 1: "tuesday", 2: "wednesday", 3: "thursday",
-        4: "friday", 5: "saturday", 6: "sunday"
-    }
+    expected_days = {"monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"}
+    expected_slots = {"wake", "level1", "level2", "level3", "level4", "sleep"}
     
-    # The final payload structure for NeoHub's STORE_PROFILE2 command
-    neohub_profile_data: Dict[str, Dict[str, List[Union[str, float, int, bool]]]] = {}
+    # Check 1: 7-Day Construct
+    if set(profile_data.keys()) != expected_days:
+        missing = expected_days - set(profile_data.keys())
+        extra = set(profile_data.keys()) - expected_days
+        return False, (
+            f"Profile is NOT a 7-day construct. Missing days: {missing}, Extra keys: {extra}"
+        )
 
-    for day_of_week in range(7):
-        # ... (Rest of the logic remains the same, including the ECO setpoint fix) ...
-        # ... (We will skip the full block here for brevity, assume the inner logic is the same) ...
-        day_key = DAY_MAP[day_of_week]
-        setpoints = daily_schedule.get(day_of_week, [])
-        
-        if not setpoints:
-            default_eco_setpoint = [{"time": "00:00", "temp": ECO_TEMPERATURE}]
-            logging.info(f"Day {day_key} for zone {zone_name} has no bookings. Applying 00:00 ECO schedule.")
-            setpoints_to_format = default_eco_setpoint
-        else:
-            setpoints_to_format = setpoints
-        
-        neohub_profile_data[day_key] = _format_setpoints_for_neohub(setpoints_to_format)
+    # Check 2 & 3: 6-Level Construct and Sequential Time Order
+    for day_name, daily_schedule in profile_data.items():
+        if set(daily_schedule.keys()) != expected_slots:
+            missing = expected_slots - set(daily_schedule.keys())
+            extra = set(daily_schedule.keys()) - expected_slots
+            return False, (
+                f"Day '{day_name}' for zone '{zone_name}' is NOT 6-level. "
+                f"Missing slots: {missing}, Extra keys: {extra}"
+            )
 
-    # 1. POST (Store) the calculated profile
-    profile_name = f"{profile_prefix}: {zone_name}" 
-    await store_profile2(neohub_name, profile_name, neohub_profile_data)
-    
-    # 2. RUN (Activate) the profile IF it is the Current Week
-    if profile_prefix == "Current Week":
-        if neohub_name in hubs:
-            hub = hubs[neohub_name]
-            command = {"RUN_PROFILE": profile_name}
-            
-            # CRITICAL FIX: Use the hub's method (e.g., send_command) to execute the NeoHub command
+        prev_time_str = None
+        # Must iterate over the correct, ordered slot names
+        for slot_name in expected_slots:
             try:
-                # Assuming the NeoHub object has a send_command method or similar
-                await hub.send_command(command) 
-                logging.info(f"Successfully sent RUN_PROFILE command to Neohub {neohub_name} for profile '{profile_name}'.")
-            except Exception as e:
-                logging.error(f"Failed to send RUN_PROFILE command to {neohub_name}: {e}")
-        else:
-            logging.error(f"Cannot run profile: Neohub '{neohub_name}' not found in connected hubs.")
+                time_str = daily_schedule[slot_name][0]
+                current_time = datetime.datetime.strptime(time_str, "%H:%M").time()
+            except (KeyError, ValueError):
+                return False, f"Time parsing error on day '{day_name}', slot '{slot_name}'."
+            
+            if prev_time_str:
+                prev_time = datetime.datetime.strptime(prev_time_str, "%H:%M").time()
+                # Times must be strictly sequential (later than the previous slot)
+                if current_time <= prev_time:
+                    return False, (
+                        f"Time sequencing error on day '{day_name}' for slot '{slot_name}'. "
+                        f"Time ({time_str}) must be later than the previous slot ({prev_time_str})."
+                    )
+            prev_time_str = time_str
+            
+    return True, "Profile is compliant."
+
+async def apply_single_zone_profile(
+    neohub_object: NeoHub, 
+    zone_name: str, 
+    profile_data: Dict[str, Dict[str, List[Union[str, float, int, bool]]]], 
+    profile_prefix: str
+) -> bool:
+    """
+    Applies a validated, aggregated weekly profile to a single NeoHub zone by calling 
+    the local store_profile2 function.
+    """
+    
+    # --- FINAL COMPLIANCE CHECK (The required step before sending) ---
+    is_compliant, reason = _validate_neohub_profile(profile_data, zone_name)
+    if not is_compliant:
+        logging.error(
+            f"PROFILE COMPLIANCE FAILED for Zone '{zone_name}' ({profile_prefix}): {reason}. "
+            f"Profile was NOT sent to NeoHub."
+        )
+        # This output provides the nice "why the profile was not compliant" message
+        return False
+
+    profile_name = f"{profile_prefix}: {zone_name}"
+    logging.info(f"Storing validated profile '{profile_name}' on Neohub {neohub_object.hub_name}")
+
+    try:
+        # CRITICAL FIX: Calling your custom function defined in app.py
+        # We assume store_profile2 handles building the final raw command (with AUTH KEY/wrap) 
+        # and calling _send_raw_profile_command internally.
+        await store_profile2(neohub_object, zone_name, profile_name, profile_data)
+        logging.info(f"Successfully sent custom profile command for '{zone_name}'.")
+        return True
+    except Exception as e:
+        logging.error(f"Failed to execute custom store_profile2 command for '{zone_name}': {e}", exc_info=True)
+        return False
 
 async def send_command(neohub_name: str, command: Dict[str, Any]) -> Optional[Any]:
     """
