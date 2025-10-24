@@ -772,7 +772,6 @@ async def check_neohub_compatibility(config: Dict[str, Any], neohub_name: str) -
     logging.info(f"Neohub {neohub_name} is compatible")
     return True
 
-# --- NEW HELPER FUNCTION: AGGREGATION ---
 async def apply_aggregated_schedules(
     aggregated_schedules: Dict[str, Dict[int, List[Dict[str, Union[str, float]]]]], 
     profile_prefix: str, 
@@ -784,41 +783,43 @@ async def apply_aggregated_schedules(
     # 1. Reverse map: Find which NeoHub owns each Zone
     zone_to_neohub_map = {}
     
-    # CRITICAL FIX: Create a mapping of NeoHub Host (Address) to its user-defined Name
-    neohub_host_to_name = {
-        # The key is the host/IP (e.g., "10.10.200.14")
-        hub_config["host"]: hub_name 
-        # The value is the name (e.g., "main_church")
-        for hub_name, hub_config in config["neohubs"].items()
-    }
-
-    # Now iterate through locations to build the zone map using the NeoHub NAME
-    for loc_config in config.get("locations", {}).values():
-        neohub_host = loc_config.get("neohub") # Gets the IP/Host (e.g., "10.10.200.14")
-        
-        # Look up the user-defined name using the host/IP
-        neohub_name = neohub_host_to_name.get(neohub_host) # Gets the Name (e.g., "main_church")
-
+    # CRITICAL FIX: The config['locations'][...]['neohub'] value is ALREADY the NeoHub Name.
+    # We do not need a complex host lookup.
+    for loc_name, loc_config in config.get("locations", {}).items():
+        # neohub_name is derived directly from the config value
+        neohub_name = loc_config.get("neohub") 
         zone_names = loc_config.get("zones", [])
+        
         if neohub_name:
             for zone in zone_names:
-                # Store the user-defined NeoHub NAME (the key in the global 'hubs' dictionary)
+                # Store the user-defined NeoHub NAME (which is the key in the global 'hubs' dictionary)
                 zone_to_neohub_map[zone] = neohub_name
-        else:
-            logging.warning(f"NeoHub host '{neohub_host}' from config['locations'] not found in config['neohubs']. Skipping zones for this location.")
 
+    logging.debug(f"apply_aggregated_schedules: Zone to NeoHub Name Map: {zone_to_neohub_map}")
+
+    # 2. Apply the schedule for each Zone (This subsequent loop remains correct)
     tasks = []
     for zone_name, daily_schedule in aggregated_schedules.items():
         neohub_name = zone_to_neohub_map.get(zone_name)
         
-        if neohub_name and neohub_name in hubs:
+        if not neohub_name:
+            logging.warning(f"Zone '{zone_name}' found in schedule but not mapped to a known NeoHub Name. Skipping.")
+            continue
+            
+        # This check is now correctly comparing the NAME against the keys in the 'hubs' dict.
+        if neohub_name in hubs:
             tasks.append(
-                # This calls the next function in the chain
+                # Calls the function that performs STORE_PROFILE2 and RUN_PROFILE
                 apply_single_zone_profile(neohub_name, zone_name, daily_schedule, profile_prefix) 
             )
+        else:
+            logging.error(f"Cannot apply schedule for zone '{zone_name}': Neohub '{neohub_name}' not in connected hubs. Connected hubs: {list(hubs.keys())}. Did connection fail?")
 
     if tasks:
+        logging.info(f"Applying {len(tasks)} zone profiles for {profile_prefix}.")
         await asyncio.gather(*tasks)
+    else:
+        logging.warning(f"No profiles generated or applied for {profile_prefix}. Check zone mapping or hub connection status.")
 
 # --- MODIFIED FUNCTION ---
 def calculate_schedule(
