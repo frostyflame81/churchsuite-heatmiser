@@ -137,17 +137,15 @@ def _get_location_config(location_name: str, config: Dict[str, Any]) -> Optional
         logging.warning(f"Configuration not found for location: {location_name}. Using defaults.")
         return None
 
-def build_neohub_zone_map(config: Dict[str, Any]) -> Dict[str, Tuple[str, str]]:
+def build_zone_to_neohub_map(config: Dict[str, Any]) -> Dict[str, str]:
     """
-    Builds a comprehensive, flattened map from NeoHub Zone Name to its 
-    controlling NeoHub and its associated ChurchSuite Location(s).
+    Builds a definitive map from NeoHub Zone Name to its controlling NeoHub Name.
     
     Returns:
         A dictionary mapping:
-        Zone Name (str) -> (NeoHub Name (str), Parent Location Name (str))
-        Note: If a zone is controlled by multiple locations, it maps to the first one found.
+        NeoHub Zone Name (str) -> NeoHub Name (str)
     """
-    zone_map: Dict[str, Tuple[str, str]] = {}
+    zone_to_neohub: Dict[str, str] = {}
     
     locations_config = config.get("locations", {})
     
@@ -160,20 +158,19 @@ def build_neohub_zone_map(config: Dict[str, Any]) -> Dict[str, Tuple[str, str]]:
             continue
             
         for zone_name in zone_names:
-            if zone_name not in zone_map:
-                # The map key is the zone name (from the aggregated schedule)
-                # The value is the NeoHub name and the ChurchSuite Location name
-                zone_map[zone_name] = (neohub_name, location_name)
-            else:
-                # This handles zones shared by multiple ChurchSuite locations
-                existing_neohub, existing_location = zone_map[zone_name]
-                logging.debug(
-                    f"Zone '{zone_name}' is shared. Already mapped to NeoHub '{existing_neohub}' (Location: '{existing_location}'). "
-                    f"Ignoring redundant mapping from '{location_name}'."
+            if zone_name in zone_to_neohub and zone_to_neohub[zone_name] != neohub_name:
+                # This is a critical warning: A single zone must not be controlled by two different NeoHubs.
+                # If this happens, only the first mapping is kept to prevent ambiguous control.
+                logging.error(
+                    f"CRITICAL CONFIG ERROR: Zone '{zone_name}' is mapped to two different NeoHubs: "
+                    f"'{zone_to_neohub[zone_name]}' (from previous location) and '{neohub_name}' (from '{location_name}'). "
+                    f"Keeping the existing mapping."
                 )
+            elif zone_name not in zone_to_neohub:
+                zone_to_neohub[zone_name] = neohub_name
 
-    logging.info(f"Configuration map built for {len(zone_map)} unique NeoHub Zones.")
-    return zone_map
+    logging.info(f"Configuration map built for {len(zone_to_neohub)} unique NeoHub Zones.")
+    return zone_to_neohub
 
 def _calculate_location_preheat_minutes(
     location_name: str, 
@@ -843,53 +840,45 @@ async def apply_aggregated_schedules(
     aggregated_schedules: Dict[str, Dict[int, List[Dict[str, Union[str, float]]]]], 
     profile_prefix: str, 
     config: Dict[str, Any],
-    neohub_zone_map: Dict[str, Tuple[str, str]] # Accepts the new map
+    zone_to_neohub_map: Dict[str, str] # Accepts the new map
 ) -> None:
     """
     Orchestrates the application of the aggregated schedules to the correct Neohubs/Zones 
-    using the pre-built NeoHub/Zone map.
+    using the pre-built Zone-to-NeoHub map.
     """
     
     tasks = []
     
-    # Loop over the aggregated schedules. The key is the NeoHub Zone Name (e.g., 'Main Church')
+    # Loop over the aggregated schedules. The key is the NeoHub Zone Name.
     for zone_name, daily_schedule in aggregated_schedules.items(): 
         
-        # CRITICAL FIX: Look up the configuration using the Zone Name key against the map.
-        map_entry = neohub_zone_map.get(zone_name)
-        
-        if not map_entry:
-            logging.error(
-                f"Schedule found for Zone '{zone_name}', but no matching NeoHub configuration was found in the map. "
-                f"The schedule aggregation step may have produced an invalid zone name. Skipping."
-            )
-            continue
-            
-        # Unpack the required NeoHub Name and the associated Location Name (for logging/reference)
-        neohub_name, parent_location_name = map_entry 
+        # CRITICAL FIX: Look up the NeoHub Name using the Zone Name key against the map.
+        neohub_name = zone_to_neohub_map.get(zone_name)
         
         if not neohub_name:
-            logging.error(f"Configuration for Zone '{zone_name}' is incomplete (missing neohub in map). Skipping.")
+            logging.error(
+                f"Schedule found for Zone '{zone_name}', but no corresponding NeoHub mapping was found. Skipping."
+            )
             continue
-
-        # Check if the NeoHub is actually connected (assuming 'hubs' is a global dict of connected hubs)
-        # NOTE: You must ensure 'hubs' is accessible in this function's scope.
+            
+        # NOTE: You must ensure 'hubs' (your dictionary of connected NeoHub objects) 
+        # is accessible in this function's scope.
         if neohub_name in hubs: 
-            logging.info(f"Adding task to apply schedule for Zone '{zone_name}' (Parent Loc: '{parent_location_name}') on Hub '{neohub_name}'.")
+            logging.info(f"Adding task to apply schedule for Zone '{zone_name}' on Hub '{neohub_name}'.")
             
             # Add a task to apply the schedule to the specific physical zone
+            # NOTE: You need to implement or ensure 'apply_single_zone_profile' is defined
             tasks.append(
-                apply_single_zone_profile(neohub_name, zone_name, daily_schedule, profile_prefix) 
+                apply_single_zone_profile(hubs[neohub_name], zone_name, daily_schedule, profile_prefix) 
             )
         else:
-            logging.error(f"Cannot apply schedule for zone '{zone_name}': Neohub '{neohub_name}' not in connected hubs. Connected hubs: {list(hubs.keys())}. Did connection fail?")
+            logging.error(f"Cannot apply schedule for zone '{zone_name}': Neohub '{neohub_name}' not in connected hubs. Did connection fail?")
 
     if tasks:
         logging.info(f"Applying {len(tasks)} zone profiles for {profile_prefix}.")
         await asyncio.gather(*tasks)
     else:
-        # This warning is now correctly issued only if the aggregated_schedules was empty OR no zone in it was configured.
-        logging.warning(f"No profiles generated or applied for {profile_prefix}.")
+        logging.warning(f"No profiles generated or applied for {profile_prefix}. This may be expected if all bookings were for unmapped locations.")
 
 # --- MODIFIED FUNCTION ---
 def calculate_schedule(
@@ -1012,7 +1001,7 @@ async def update_heating_schedule() -> None:
         logging.debug(f"Loaded config: {json.dumps(config, indent=2)}")
 
     # NEW: Build the centralized configuration map (Place this after config validation)
-    neohub_zone_map = build_neohub_zone_map(config)
+    zone_to_neohub_map = build_zone_to_neohub_map(config)
     
     # 2. Timezone and Week Calculation
     location_timezone_name = os.environ.get("CHURCHSUITE_TIMEZONE", "Europe/London")
@@ -1150,10 +1139,10 @@ async def update_heating_schedule() -> None:
 
         # 7. APPLY AGGREGATED SCHEDULES
         await apply_aggregated_schedules(
-            aggregated_current_schedules, "Current Week", config
+            aggregated_current_schedules, "Current Week", config, zone_to_neohub_map # Pass the new map
         )
         await apply_aggregated_schedules(
-            aggregated_next_schedules, "Next Week", config
+            aggregated_next_schedules, "Next Week", config, zone_to_neohub_map # Pass the new map
         )
 
     else:
