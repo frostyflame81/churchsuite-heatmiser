@@ -21,6 +21,7 @@ _command_id_counter = itertools.count(start=100)
 OPENWEATHERMAP_API_KEY = os.environ.get("OPENWEATHERMAP_API_KEY")
 OPENWEATHERMAP_CITY = os.environ.get("OPENWEATHERMAP_CITY")
 CHURCHSUITE_URL = os.environ.get("CHURCHSUITE_URL")
+TIMEZONE = os.environ.get("CHURCHSUITE_TIMEZONE", "Europe/London")
 PREHEAT_TIME_MINUTES = int(os.environ.get("PREHEAT_TIME_MINUTES", 30))
 DEFAULT_TEMPERATURE = float(os.environ.get("DEFAULT_TEMPERATURE", 19))
 ECO_TEMPERATURE = float(os.environ.get("ECO_TEMPERATURE", 12))
@@ -30,6 +31,18 @@ PREHEAT_ADJUSTMENT_MINUTES_PER_DEGREE = float(
 )
 CONFIG_FILE = os.environ.get("CONFIG_FILE", "config/config.json")
 LOGGING_LEVEL = os.environ.get("LOGGING_LEVEL", "INFO").upper()  # Get logging level from env
+# Set up logging
+numeric_level = getattr(logging, LOGGING_LEVEL, logging.INFO)
+logging.basicConfig(
+    level=numeric_level,
+    format='%(levelname)s:%(name)s:%(message)s'
+)
+# Suppress noisy logs from websockets
+logging.getLogger("websockets").setLevel(logging.INFO)
+
+# Type definitions
+ScheduleSegment = Union[float, str] # Can be a temperature (float) or a command (str like 'sleep')
+ScheduleEntry = Dict[str, Union[datetime.time, ScheduleSegment]]
 
 # Neohub Configuration from Environment Variables
 NEOHUBS = {}
@@ -58,7 +71,6 @@ neohub_connections = {}
 config = None
 hubs = {}  # Dictionary to store NeoHub instances
 
-
 def load_config(config_file: str) -> Optional[Dict[str, Any]]:
     """Loads configuration data from a JSON file."""
     try:
@@ -78,7 +90,6 @@ def load_config(config_file: str) -> Optional[Dict[str, Any]]:
     except Exception as e:
         logging.error(f"An unexpected error occurred: {e}")
         return None
-
 
 def connect_to_neohub(neohub_name: str, neohub_config: Dict[str, Any]) -> bool:
     """Connects to a Neohub using neohubapi."""
@@ -106,6 +117,197 @@ def validate_config(config: Dict[str, Any]) -> bool:
         logging.error("No locations found in configuration.")
         return False
     return True
+
+def _get_location_config(location_name: str, config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """
+    Safely retrieves the configuration for a specific location from the 'locations' 
+    section of the main config.
+
+    Args:
+        location_name: The name of the location (e.g., 'Main Church - Chancel').
+        config: The main application configuration dictionary.
+        
+    Returns:
+        The location configuration dictionary, or None if not found.
+    """
+    try:
+        return config["locations"][location_name]
+    except KeyError:
+        # NOTE: Do not raise an error here; log a warning and return None to allow default behavior.
+        logging.warning(f"Configuration not found for location: {location_name}. Using defaults.")
+        return None
+    
+def _calculate_location_preheat_minutes(
+    location_name: str, 
+    current_external_temp: Optional[float], 
+    config: Dict[str, Any]
+) -> int:
+    """
+    Calculates the required pre-heat time in minutes for a single ChurchSuite location,
+    dynamically adjusting based on external temperature and location-specific config.
+    
+    This calculates the *requirement* that a heating zone must meet.
+
+    Args:
+        location_name: The name of the ChurchSuite location.
+        current_external_temp: The current external temperature in Celsius, or None if unavailable.
+        config: The main application configuration dictionary.
+
+    Returns:
+        The dynamically calculated pre-heat time in minutes (integer) for this location.
+    """
+    base_preheat = PREHEAT_TIME_MINUTES
+    
+    location_config = _get_location_config(location_name, config)
+    if not location_config:
+        return base_preheat
+
+    # Get specific configuration values for this location, using defaults if keys are missing
+    heat_loss_factor = location_config.get("heat_loss_factor", 1.0)
+    min_external_temp = location_config.get("min_external_temp", 5) 
+
+    if current_external_temp is None:
+        logging.warning(f"External temperature is unknown. Using base preheat time ({base_preheat} min).")
+        return base_preheat
+
+    # Calculate how far below the location's minimum external temperature the current temp is.
+    # The max(0.0, ...) ensures preheat adjustment is only added when it's colder than the threshold.
+    temp_difference = max(0.0, min_external_temp - current_external_temp)
+
+    # Calculate adjustment: temp_difference * adjustment_per_degree * heat_loss_factor
+    preheat_adjustment = temp_difference * PREHEAT_ADJUSTMENT_MINUTES_PER_DEGREE * heat_loss_factor
+
+    total_preheat_minutes = int(round(base_preheat + preheat_adjustment))
+
+    logging.debug(
+        f"Pre-heat for {location_name}: ExtTemp={current_external_temp:.1f}C, "
+        f"Diff={temp_difference:.1f}C, Total Preheat: {total_preheat_minutes} min."
+    )
+    
+    # Ensure preheat time is non-negative.
+    return max(0, total_preheat_minutes)
+
+def create_aggregated_schedule(
+    bookings: List[Dict[str, Any]], 
+    current_external_temp: Optional[float], 
+    config: Dict[str, Any]
+) -> Dict[str, Dict[int, List[Dict[str, Union[str, float]]]]]:
+    """
+    Processes ChurchSuite bookings to create a single, aggregated heating schedule 
+    for each **NeoHub Zone**. This schedule applies the maximum pre-heat time 
+    required by any booked location within that zone.
+
+    Args:
+        bookings: List of booking dictionaries from ChurchSuite.
+        current_external_temp: The current external temperature in Celsius.
+        config: The main application configuration dictionary.
+
+    Returns:
+        A dictionary mapping **zone_name** -> {day_of_week (0-6) -> list of setpoints}.
+        Setpoints are dicts like: {"time": "HH:MM", "temp": 19.0}
+    """
+    # Final schedule structure: { zone_name: { day_of_week: [setpoints] } }
+    zone_schedule: Dict[str, Dict[int, List[Dict[str, Union[str, float]]]]] = {}
+
+    for booking in bookings:
+        location_name = booking.get("resource")
+        if not location_name:
+            continue
+        
+        # 1. Get location config
+        location_config = _get_location_config(location_name, config)
+        if not location_config:
+            logging.warning(f"Skipping booking: No config found for location {location_name}.")
+            continue
+
+        # 2. Calculate the specific preheat required for THIS location/booking
+        required_preheat_minutes = _calculate_location_preheat_minutes(
+            location_name, 
+            current_external_temp, 
+            config
+        )
+
+        # 3. Determine all zones associated with this location
+        zone_names = location_config.get("zones", [])
+        if not zone_names:
+            logging.warning(f"Location {location_name} has no 'zones' configured. Skipping.")
+            continue
+            
+        try:
+            # 4. Parse times (convert to local timezone for day/time calculation)
+            start_dt_utc = dateutil.parser.parse(booking["start_time_utc"])
+            end_dt_utc = dateutil.parser.parse(booking["end_time_utc"])
+            
+            local_tz = pytz.timezone(TIMEZONE)
+            start_dt_local = start_dt_utc.astimezone(local_tz)
+            end_dt_local = end_dt_utc.astimezone(local_tz)
+
+            day_of_week = start_dt_local.weekday() # Monday=0, Sunday=6
+            
+            # The location configuration gives the target temperature, or use default
+            target_temp = location_config.get("default_temp", DEFAULT_TEMPERATURE)
+
+            # --- Iterate through all zones linked to this location ---
+            for zone_name in zone_names:
+                # Initialize schedule structure for the zone if it doesn't exist
+                if zone_name not in zone_schedule:
+                    zone_schedule[zone_name] = {i: [] for i in range(7)}
+
+                # Calculate the preheat start time for THIS event, using THIS location's requirement
+                preheat_start_dt_local = start_dt_local - datetime.timedelta(minutes=required_preheat_minutes)
+                
+                # Format times as "HH:MM"
+                preheat_time_str = preheat_start_dt_local.strftime("%H:%M")
+                end_time_str = end_dt_local.strftime("%H:%M")
+                
+                # Add the pre-heat setpoint (Set to target temp at preheat start time)
+                # This setpoint is added to the zone's schedule. Post-processing handles conflicts.
+                zone_schedule[zone_name][day_of_week].append({
+                    "time": preheat_time_str, 
+                    "temp": target_temp
+                })
+                
+                # Add the eco setpoint (Set to ECO temp at event end time)
+                zone_schedule[zone_name][day_of_week].append({
+                    "time": end_time_str, 
+                    "temp": ECO_TEMPERATURE
+                })
+
+        except (KeyError, ValueError, TypeError) as e:
+            logging.error(f"Error processing booking for {location_name}: {e}. Booking data: {booking}", exc_info=True)
+            continue
+            
+    # --- Post-processing: Sort and Merge (Ensures Max Pre-heat and Max Temp are applied) ---
+    for zone, daily_schedule in zone_schedule.items():
+        for day, setpoints in daily_schedule.items():
+            
+            if not setpoints:
+                continue
+
+            # 1. Sort setpoints by time
+            setpoints.sort(key=lambda x: x["time"])
+
+            # 2. Filter out duplicate times, prioritizing the **highest** temperature.
+            unique_setpoints = {} # { "HH:MM": max_temp }
+
+            for sp in setpoints:
+                time_str = sp["time"]
+                temp = sp["temp"]
+                
+                # If two setpoints clash at the exact same time, choose the higher temperature.
+                if time_str not in unique_setpoints or temp > unique_setpoints[time_str]:
+                    unique_setpoints[time_str] = temp
+
+            # Convert back to list of dicts and sort again
+            final_setpoints = [{"time": t, "temp": temp} for t, temp in unique_setpoints.items()]
+            final_setpoints.sort(key=lambda x: x["time"]) 
+            
+            zone_schedule[zone][day] = final_setpoints
+
+            if final_setpoints:
+                logging.debug(f"Aggregated Schedule for ZONE '{zone}' Day {day}: {final_setpoints}")
+    
+    return zone_schedule
 
 async def send_command(neohub_name: str, command: Dict[str, Any]) -> Optional[Any]:
     """
