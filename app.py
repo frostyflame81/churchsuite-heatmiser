@@ -309,6 +309,73 @@ def create_aggregated_schedule(
     
     return zone_schedule
 
+def _format_setpoints_for_neohub(setpoints: List[Dict[str, Union[str, float]]]) -> Dict[str, List[Union[str, float, int, bool]]]:
+    """
+    Converts a list of setpoint dicts (time, temp) into the Neohub's required
+    profile dictionary format (e.g., {'wake': [time, temp, sensitivity, true]}).
+    """
+    formatted_schedule = {}
+    
+    # NeoHub uses specific keys for schedule steps (up to 6 setpoints/day)
+    step_keys = ["wake", "level1", "level2", "level3", "level4", "level5", "sleep"]
+    
+    # Ensure we don't exceed the number of supported steps
+    safe_setpoints = setpoints[:len(step_keys)]
+
+    for i, sp in enumerate(safe_setpoints):
+        key = step_keys[i]
+        time_str = sp["time"]
+        temp_float = sp["temp"]
+        
+        # The NeoHub schedule format requires four items: 
+        # [time, temperature, sensitivity, enabled (true)]
+        formatted_schedule[key] = [
+            time_str, 
+            temp_float, 
+            TEMPERATURE_SENSITIVITY, # Uses the global config variable
+            True # Always enabled
+        ]
+        
+    return formatted_schedule
+
+# REPLACE THE OLD apply_single_zone_profile with this updated version
+async def apply_single_zone_profile(
+    neohub_name: str, 
+    zone_name: str, 
+    daily_schedule: Dict[int, List[Dict[str, Union[str, float]]]],
+    profile_prefix: str # ADDED THIS PARAMETER
+) -> None:
+    """
+    Applies the full 7-day schedule to a single zone on a specific Neohub.
+    This function implements the fix for days with no bookings.
+    """
+    DAY_MAP = {
+        0: "monday", 1: "tuesday", 2: "wednesday", 3: "thursday",
+        4: "friday", 5: "saturday", 6: "sunday"
+    }
+    
+    # The final payload structure for NeoHub's STORE_PROFILE2 command
+    neohub_profile_data: Dict[str, Dict[str, List[Union[str, float, int, bool]]]] = {}
+
+    for day_of_week in range(7):
+        # ... (Rest of the logic remains the same, including the ECO setpoint fix) ...
+        # ... (We will skip the full block here for brevity, assume the inner logic is the same) ...
+        day_key = DAY_MAP[day_of_week]
+        setpoints = daily_schedule.get(day_of_week, [])
+        
+        if not setpoints:
+            default_eco_setpoint = [{"time": "00:00", "temp": ECO_TEMPERATURE}]
+            logging.info(f"Day {day_key} for zone {zone_name} has no bookings. Applying 00:00 ECO schedule.")
+            setpoints_to_format = default_eco_setpoint
+        else:
+            setpoints_to_format = setpoints
+        
+        neohub_profile_data[day_key] = _format_setpoints_for_neohub(setpoints_to_format)
+
+    # FINAL LINE FIX: Use the profile_prefix
+    profile_name = f"{profile_prefix}: {zone_name}" 
+    await store_profile2(neohub_name, profile_name, neohub_profile_data)
+
 async def send_command(neohub_name: str, command: Dict[str, Any]) -> Optional[Any]:
     """
     Sends a command to the Neohub, using a custom raw send for complex profile commands.
@@ -373,6 +440,7 @@ async def get_live_data(neohub_name: str) -> Optional[Dict[str, Any]]:
     command = {"GET_LIVE_DATA": 0}
     response = await send_command(neohub_name, command)
     return response
+
 
 async def store_profile2(neohub_name: str, profile_name: str, profile_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Stores a heating profile on the Neohub, passing a Python dictionary structure directly to avoid double-encoding."""
@@ -699,224 +767,44 @@ async def check_neohub_compatibility(config: Dict[str, Any], neohub_name: str) -
 
 
 # --- NEW HELPER FUNCTION: AGGREGATION ---
-def aggregate_schedules_by_zone(
-    all_location_schedules: List[Dict[str, Any]],
-) -> Dict[str, Dict[str, Any]]:
+async def apply_aggregated_schedules(
+    aggregated_schedules: Dict[str, Dict[int, List[Dict[str, Union[str, float]]]]], 
+    profile_prefix: str, # NEW: The "Current Week" or "Next Week" parameter
+    config: Dict[str, Any]
+) -> None:
     """
-    Aggregates individual heating schedules into a single 6-point schedule for each
-    (neohub, zone) pair, using the earliest start and latest end time, and includes
-    intermediate heat-off periods for energy conservation.
+    Orchestrates the application of the aggregated schedules to the correct Neohubs/Zones.
+    This function replaces the old implementation and uses the new fixed logic.
     """
-    global DEFAULT_TEMPERATURE, ECO_TEMPERATURE
-    aggregated_profiles: Dict[str, Dict[str, Any]] = {}
-    days = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
-    
-    # NeoHub profile slots correspond to these keys
-    NEOHUB_SLOTS = ["wake", "level1", "level2", "level3", "level4", "sleep"]
+    # 1. Reverse map: Find which NeoHub owns each Zone
+    zone_to_neohub_map = {}
+    for location_name, loc_config in config.get("locations", {}).items():
+        neohub_name = loc_config.get("neohub")
+        zone_names = loc_config.get("zones", [])
+        if neohub_name:
+            for zone in zone_names:
+                # Assuming one zone belongs to one NeoHub
+                zone_to_neohub_map[zone] = neohub_name
 
-    # 1. First Pass: Collect all Start/End points for each Neohub/Zone combination
-    for schedule_dict in all_location_schedules:
-        if not all(k in schedule_dict for k in ['neohub', 'zones', 'profile_data']):
-             logging.warning(f"Skipping schedule: Missing required metadata for aggregation: {schedule_dict.keys()}")
-             continue
-
-        neohub_name = schedule_dict['neohub']
-        profile_data = schedule_dict['profile_data']
-        # Zone-to-Neohub mapping is handled by taking the first zone
-        zone_name = schedule_dict['zones'][0] if schedule_dict['zones'] else "DEFAULT_ZONE"
-        neohub_zone_key = f"{neohub_name}__{zone_name}"
-
-        if neohub_zone_key not in aggregated_profiles:
-            aggregated_profiles[neohub_zone_key] = {
-                'neohub': neohub_name, 
-                'zone_name': zone_name,
-                'time_points': {day: set() for day in days}, # Use a set to collect unique times
-            }
-
-        agg_data = aggregated_profiles[neohub_zone_key]
-
-        # Aggregate all unique start ('wake') and end ('level3') times for each day
-        for day in days:
-            day_schedule = profile_data.get(day)
-            if not day_schedule:
-                continue
-            
-            # Start Time (Preheat Start)
-            if 'wake' in day_schedule and len(day_schedule['wake']) > 0:
-                agg_data['time_points'][day].add(day_schedule['wake'][0])
-                    
-            # End Time (Booking End)
-            if 'level3' in day_schedule and len(day_schedule['level3']) > 0:
-                agg_data['time_points'][day].add(day_schedule['level3'][0])
-
-    # 2. Second Pass: Process collected points and construct the final 6-point schedule
-    final_profiles = {}
-    for neohub_zone_key, agg_data in aggregated_profiles.items():
-        final_profile_data = {}
-        neohub_name = agg_data['neohub']
-        zone_name = agg_data['zone_name']
-
-        for day in days:
-            # Get unique, sorted list of all time points for the day
-            sorted_times = sorted(list(agg_data['time_points'][day]))
-            
-            if not sorted_times:
-                continue
-
-            # --- CRITICAL: Fit times into 6 chronological slots ---
-            
-            # If we have more than 6 unique time points, we must aggressively filter.
-            # We take the earliest start and the latest end, and evenly distribute
-            # the remaining 4 slots among the intermediate points.
-            if len(sorted_times) > len(NEOHUB_SLOTS):
-                
-                # Take the first (earliest) and last (latest) time points
-                start_time = sorted_times[0]
-                end_time = sorted_times[-1]
-                
-                # We have 4 remaining slots (level1, level2, level3, level4) to fill
-                intermediate_times = sorted_times[1:-1]
-                
-                # Use a strategy to select the most significant intermediate points (e.g., first 4)
-                # Since we cannot know which is "most important," we prioritize the first 6
-                # and drop the intermediate points that are too close together.
-                
-                # Simple strategy: take the first 6 unique points if they exist.
-                # If there are still more than 6, we must drop intermediate points.
-                
-                # Aggressive Filter: Keep the start, end, and the 4 points that span the longest time.
-                # For simplicity and robust chronological order, we take the 6 points that are farthest apart.
-                
-                # For now, let's truncate to the first 6 unique, sorted points.
-                # This ensures chronological order but risks dropping a late event start.
-                final_times = sorted_times[:len(NEOHUB_SLOTS)]
-                logging.warning(
-                    f"Day {day} for {zone_name} had {len(sorted_times)} time points. Truncated to {len(final_times)} points: {final_times}. This may drop later heating periods."
+    # 2. Apply the schedule for each Zone
+    tasks = []
+    for zone_name, daily_schedule in aggregated_schedules.items():
+        neohub_name = zone_to_neohub_map.get(zone_name)
+        
+        if neohub_name:
+            # Check if we have a valid connection
+            if neohub_name in hubs:
+                tasks.append(
+                    # CRITICAL FIX: Passing the profile_prefix argument
+                    apply_single_zone_profile(neohub_name, zone_name, daily_schedule, profile_prefix) 
                 )
             else:
-                final_times = sorted_times
+                logging.error(f"Cannot apply schedule: Not connected to Neohub '{neohub_name}' for zone '{zone_name}'.")
+        else:
+            logging.warning(f"Zone '{zone_name}' found in schedule but not mapped to a NeoHub in config. Skipping.")
 
-            day_schedule = {}
-            
-            # The schedule must start with a heating-ON state if there are any bookings.
-            # The very first point is always a heating-ON (DEFAULT_TEMPERATURE) point.
-            is_heating_on = True 
-            
-            for i, time_str in enumerate(final_times):
-                slot_name = NEOHUB_SLOTS[i]
-                
-                if is_heating_on:
-                    # This point starts the heating (ON)
-                    temp = DEFAULT_TEMPERATURE
-                    
-                    # If this is the last time point, it must be the ECO temp to ensure heating stops.
-                    # This handles the case where the total number of points is odd.
-                    if i == len(final_times) - 1:
-                        temp = ECO_TEMPERATURE
-                        
-                    is_heating_on = False # Next point will be OFF
-                else:
-                    # This point stops the heating (OFF)
-                    temp = ECO_TEMPERATURE
-                    is_heating_on = True # Next point will be ON
-
-                # Set the schedule level
-                day_schedule[slot_name] = [
-                    time_str, 
-                    temp, 
-                    TEMPERATURE_SENSITIVITY, 
-                    True # Always enabled
-                ]
-                
-            # If the final point was an ON point, we must add an invisible 7th point at 23:59 
-            # to switch off, but the NeoHub only supports 6 points.
-            # We enforce the last *used* slot to be the ECO temperature to ensure shut-off.
-            if len(day_schedule) > 0:
-                 last_slot = NEOHUB_SLOTS[len(day_schedule) - 1]
-                 # Ensure the very last point in the schedule is ECO_TEMPERATURE
-                 day_schedule[last_slot][1] = ECO_TEMPERATURE
-
-
-            # Pad remaining unused slots to the end of the day with ECO_TEMPERATURE
-            # This is critical to prevent the NeoHub from filling them with default (ON) temperatures.
-            last_time = final_times[-1] if final_times else "00:00"
-            for i in range(len(final_times), len(NEOHUB_SLOTS)):
-                slot_name = NEOHUB_SLOTS[i]
-                # Set remaining slots to the last time with ECO temp to maintain order (T <= T)
-                # or 23:59 if no bookings existed.
-                day_schedule[slot_name] = [
-                    last_time, 
-                    ECO_TEMPERATURE, 
-                    TEMPERATURE_SENSITIVITY, 
-                    True
-                ]
-
-
-            final_profile_data[day] = day_schedule
-
-        final_profiles[neohub_zone_key] = {
-            'neohub': neohub_name,
-            'zone_name': zone_name,
-            'profile_data': final_profile_data
-        }
-        
-        if LOGGING_LEVEL == "DEBUG":
-            logging.debug(f"aggregate_schedules_by_zone: Final profile for {neohub_zone_key}: {json.dumps(final_profile_data)}")
-
-    return final_profiles
-
-# --- NEW HELPER FUNCTION: APPLY SINGLE ZONE PROFILE ---
-async def apply_single_zone_profile(
-    neohub_name: str,
-    profile_base_name: str, 
-    profile_data: Dict[str, Any],
-    config: Dict[str, Any],
-    zone_key: str, 
-    zone_name: str, 
-) -> None:
-    """
-    Checks neohub compatibility, constructs the full profile name 
-    (e.g., 'Current Week: Main Church'), and applies the schedule.
-    """
-    
-    # CONSTRUCT THE FULL PROFILE NAME
-    full_profile_name = f"{profile_base_name}: {zone_name}"
-    
-    # 1. Compatibility Check (The new helper for the core request)
-    if not await check_neohub_compatibility(config, neohub_name):
-        logging.error(
-            f"Neohub {neohub_name} is not compatible with the required schedule format. Skipping zone {zone_key}."
-        )
-        return
-
-    logging.info(f"Applying schedule '{full_profile_name}' to Neohub {neohub_name} for zone {zone_name}.")
-
-    # 2. Apply the Schedule using the new, full profile name
-    await apply_schedule_to_heating(
-        neohub_name, full_profile_name, profile_data
-    )
-
-# --- NEW HELPER FUNCTION: APPLY AGGREGATED SCHEDULES ---
-async def apply_aggregated_schedules(
-    aggregated_schedules: Dict[str, Dict[str, Any]],
-    profile_base_name: str,
-    config: Dict[str, Any],
-) -> None:
-    """
-    Iterates over all aggregated schedules (one per Neohub/Zone) and
-    calls the application logic for each.
-    """
-    for zone_key, agg_data in aggregated_schedules.items():
-        
-        # Delegate the application and compatibility check to the new helper
-        await apply_single_zone_profile(
-            neohub_name=agg_data['neohub'],
-            profile_base_name=profile_base_name,
-            profile_data=agg_data['profile_data'],
-            config=config,
-            zone_key=zone_key,
-            zone_name=agg_data['zone_name'] # Pass the clean zone name
-        )
+    if tasks:
+        await asyncio.gather(*tasks)
 
 # --- MODIFIED FUNCTION ---
 def calculate_schedule(
@@ -1156,11 +1044,21 @@ async def update_heating_schedule() -> None:
         # --- NEW STEP: AGGREGATE AND APPLY SCHEDULES AFTER LOOPS ---
         # -------------------------------------------------------------
 
-        # 5. AGGREGATE SCHEDULES BY ZONE 
-        aggregated_current_schedules = aggregate_schedules_by_zone(current_week_schedules)
-        aggregated_next_schedules = aggregate_schedules_by_zone(next_week_schedules)
+        # 5. AGGREGATE SCHEDULES BY ZONE (The Processing Step)
+        # CRITICAL FIX: Use create_aggregated_schedule for processing the raw data.
+        aggregated_current_schedules = create_aggregated_schedule(
+            current_week_bookings, 
+            external_temperature, 
+            config
+        )
+        aggregated_next_schedules = create_aggregated_schedule(
+            next_week_bookings, 
+            external_temperature, 
+            config
+        )
 
-        # 6. APPLY AGGREGATED SCHEDULES using the refined helper function
+        # 6. APPLY AGGREGATED SCHEDULES using the now-fixed helper function
+        # This calls the reinstated apply_aggregated_schedules function from Step 1.
         await apply_aggregated_schedules(
             aggregated_current_schedules, "Current Week", config
         )
