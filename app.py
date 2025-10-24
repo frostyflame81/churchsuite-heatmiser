@@ -441,7 +441,6 @@ async def get_zones(neohub_name: str) -> Optional[List[str]]:
         return zones
     return None
 
-
 async def set_temperature(neohub_name: str, zone_name: str, temperature: float) -> Optional[Dict[str, Any]]:
     """Sets the temperature for a specified zone using neohubapi."""
     logging.info(f"Setting temperature for zone {zone_name} on Neohub {neohub_name} to {temperature}")
@@ -449,14 +448,12 @@ async def set_temperature(neohub_name: str, zone_name: str, temperature: float) 
     response = await send_command(neohub_name, command)
     return response #modified
 
-
 async def get_live_data(neohub_name: str) -> Optional[Dict[str, Any]]:
     """Gets the live data using neohubapi."""
     logging.info(f"Getting live data from Neohub: {neohub_name}")
     command = {"GET_LIVE_DATA": 0}
     response = await send_command(neohub_name, command)
     return response
-
 
 async def store_profile2(neohub_name: str, profile_name: str, profile_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Stores a heating profile on the Neohub, passing a Python dictionary structure directly to avoid double-encoding."""
@@ -480,7 +477,6 @@ async def store_profile2(neohub_name: str, profile_name: str, profile_data: Dict
     # for the WebSocket transport, avoiding the double-encoding issue.
     response = await send_command(neohub_name, inner_payload)
     return response
-
 
 async def _send_raw_profile_command(hub: NeoHub, command: Dict[str, Any]) -> Optional[Any]:
     """
@@ -584,7 +580,6 @@ async def get_profile(neohub_name: str, profile_name: str) -> Optional[Dict[str,
     response = await send_command(neohub_name, command)
     return response
 
-
 async def get_neohub_firmware_version(neohub_name: str) -> Optional[int]:
     """Gets the firmware version of the Neohub."""
     logger = logging.getLogger("neohub")
@@ -627,8 +622,6 @@ async def get_neohub_firmware_version(neohub_name: str) -> Optional[int]:
         logger.error(f"An unexpected error occurred: {e}")
         return None
 
-
-
 def get_external_temperature() -> Optional[float]:
     """Gets the current external temperature."""
     try:
@@ -648,8 +641,6 @@ def get_external_temperature() -> Optional[float]:
     except KeyError:
         logging.error("Unexpected response format from OpenWeatherMap")
         return None
-
-
 
 def get_json_data(url: str) -> Optional[Dict[str, Any]]:
     """Fetches JSON data from a given URL."""
@@ -781,7 +772,6 @@ async def check_neohub_compatibility(config: Dict[str, Any], neohub_name: str) -
     logging.info(f"Neohub {neohub_name} is compatible")
     return True
 
-
 # --- NEW HELPER FUNCTION: AGGREGATION ---
 async def apply_aggregated_schedules(
     aggregated_schedules: Dict[str, Dict[int, List[Dict[str, Union[str, float]]]]], 
@@ -791,13 +781,31 @@ async def apply_aggregated_schedules(
     """
     Orchestrates the application of the aggregated schedules to the correct Neohubs/Zones.
     """
+    # 1. Reverse map: Find which NeoHub owns each Zone
     zone_to_neohub_map = {}
+    
+    # CRITICAL FIX: Create a mapping of NeoHub Host (Address) to its user-defined Name
+    neohub_host_to_name = {
+        # The key is the host/IP (e.g., "10.10.200.14")
+        hub_config["host"]: hub_name 
+        # The value is the name (e.g., "main_church")
+        for hub_name, hub_config in config["neohubs"].items()
+    }
+
+    # Now iterate through locations to build the zone map using the NeoHub NAME
     for loc_config in config.get("locations", {}).values():
-        neohub_name = loc_config.get("neohub")
+        neohub_host = loc_config.get("neohub") # Gets the IP/Host (e.g., "10.10.200.14")
+        
+        # Look up the user-defined name using the host/IP
+        neohub_name = neohub_host_to_name.get(neohub_host) # Gets the Name (e.g., "main_church")
+
         zone_names = loc_config.get("zones", [])
         if neohub_name:
             for zone in zone_names:
+                # Store the user-defined NeoHub NAME (the key in the global 'hubs' dictionary)
                 zone_to_neohub_map[zone] = neohub_name
+        else:
+            logging.warning(f"NeoHub host '{neohub_host}' from config['locations'] not found in config['neohubs']. Skipping zones for this location.")
 
     tasks = []
     for zone_name, daily_schedule in aggregated_schedules.items():
@@ -1130,8 +1138,6 @@ def main():
         logging.info("Closing Neohub connections...")
 #       close_connections()
         logging.info("Exiting...")
-
-
 
 if __name__ == "__main__":
     main()
