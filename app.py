@@ -880,46 +880,79 @@ async def apply_aggregated_schedules(
     aggregated_schedules: Dict[str, Dict[int, List[Dict[str, Union[str, float]]]]], 
     profile_prefix: str, 
     config: Dict[str, Any],
-    zone_to_neohub_map: Dict[str, str] # Accepts the new map
+    zone_to_neohub_map: Dict[str, str]
 ) -> None:
     """
-    Orchestrates the application of the aggregated schedules to the correct Neohubs/Zones 
-    using the pre-built Zone-to-NeoHub map.
+    Takes aggregated weekly setpoints, formats them for the NeoHub, validates them,
+    and applies them to the corresponding NeoHub zones.
     """
     
     tasks = []
-    
-    # Loop over the aggregated schedules. The key is the NeoHub Zone Name.
-    for zone_name, daily_schedule in aggregated_schedules.items(): 
+
+    # FIX: Define the required mapping from integer day index (from aggregation) 
+    # to string day name (required by NeoHub API and validation).
+    DAY_MAPPING = {
+        0: "monday", 
+        1: "tuesday", 
+        2: "wednesday", 
+        3: "thursday",
+        4: "friday", 
+        5: "saturday", 
+        6: "sunday"
+    }
+
+    for zone_name, daily_schedules in aggregated_schedules.items(): 
         
-        # CRITICAL FIX: Look up the NeoHub Name using the Zone Name key against the map.
         neohub_name = zone_to_neohub_map.get(zone_name)
-        
-        if not neohub_name:
-            logging.error(
-                f"Schedule found for Zone '{zone_name}', but no corresponding NeoHub mapping was found. Skipping."
-            )
+        # Assuming 'hubs' is a globally available dictionary mapping neohub names to connected NeoHub objects
+        neohub_object = hubs.get(neohub_name) 
+
+        if not neohub_object:
+            logging.error(f"Cannot apply schedule for zone '{zone_name}': Neohub '{neohub_name}' not connected or mapped. Skipping.")
             continue
             
-        # NOTE: You must ensure 'hubs' (your dictionary of connected NeoHub objects) 
-        # is accessible in this function's scope.
-        if neohub_name in hubs: 
-            logging.info(f"Adding task to apply schedule for Zone '{zone_name}' on Hub '{neohub_name}'.")
+        neohub_profile_data = {}
+        
+        # daily_schedules.items() yields (day_index: int, setpoints_list: list)
+        for day_index, setpoints_list in daily_schedules.items():
             
-            # Add a task to apply the schedule to the specific physical zone
-            # NOTE: You need to implement or ensure 'apply_single_zone_profile' is defined
-            tasks.append(
-                apply_single_zone_profile(hubs[neohub_name], zone_name, daily_schedule, profile_prefix) 
+            # CRITICAL FIX APPLIED HERE: Convert the integer index to the required string name
+            day_name = DAY_MAPPING.get(day_index)
+            
+            if not day_name:
+                logging.warning(f"Invalid day index found: {day_index} for zone {zone_name}. Skipping day.")
+                continue
+
+            # Format the daily setpoints (this function is assumed to be fixed 
+            # to include 6 levels and the correct 'wake', 'level1', etc. keys)
+            formatted_daily_schedule = _format_setpoints_for_neohub(setpoints_list)
+            
+            # The profile data is now correctly keyed by the string day name
+            neohub_profile_data[day_name] = formatted_daily_schedule
+        
+        # Check if we actually built a 7-day profile before attempting to send
+        if not neohub_profile_data:
+            logging.warning(f"No profile data generated for zone {zone_name}. Skipping.")
+            continue
+
+        logging.debug(f"NEOHUB PAYLOAD READY for Zone '{zone_name}'.")
+        
+        # Add a task to apply the profile (this calls the function with the validation check)
+        tasks.append(
+            apply_single_zone_profile(
+                neohub_object, 
+                zone_name, 
+                neohub_profile_data, 
+                profile_prefix
             )
-        else:
-            logging.error(f"Cannot apply schedule for zone '{zone_name}': Neohub '{neohub_name}' not in connected hubs. Did connection fail?")
+        )
 
     if tasks:
         logging.info(f"Applying {len(tasks)} zone profiles for {profile_prefix}.")
         await asyncio.gather(*tasks)
     else:
-        logging.warning(f"No profiles generated or applied for {profile_prefix}. This may be expected if all bookings were for unmapped locations.")
-
+        logging.warning(f"No profiles generated or applied for {profile_prefix}.")
+        
 # --- MODIFIED FUNCTION ---
 def calculate_schedule(
     booking: Dict[str, Any], config: Dict[str, Any], external_temperature: Optional[float], resource_map: Dict[int, str]
