@@ -780,40 +780,40 @@ async def apply_aggregated_schedules(
     """
     Orchestrates the application of the aggregated schedules to the correct Neohubs/Zones.
     """
-    # 1. Map Location Name (the schedule key) to its NeoHub Name and list of Zones
-    location_info_map = {}
     
-    for loc_name, loc_config in config.get("locations", {}).items():
-        neohub_name = loc_config.get("neohub") 
-        zone_names = loc_config.get("zones", []) # This is a list of NeoHub Zone Names
-
-        if neohub_name and zone_names:
-            # CRITICAL FIX: Map the Location Name (e.g., "Church Hall - Main Hall") 
-            # to a tuple containing the (NeoHub Name, List of Zone Names).
-            location_info_map[loc_name] = (neohub_name, zone_names)
-
-    logging.debug(f"apply_aggregated_schedules: Location Info Map Keys: {list(location_info_map.keys())}")
-
-    # 2. Apply the schedule for each Zone associated with the Location
     tasks = []
+    locations_config = config.get("locations", {})
     
-    # Loop over the schedules (Keys are Location Names from ChurchSuite bookings)
+    # Debug log for visibility of the target keys
+    logging.debug(f"apply_aggregated_schedules: ChurchSuite Location Keys in Config: {list(locations_config.keys())}")
+    
+    # Loop over the aggregated schedules. The key is the ChurchSuite Location Name (e.g., 'Main Church - Chancel')
     for location_name, daily_schedule in aggregated_schedules.items(): 
         
-        # Get the NeoHub Name and the associated Zone Names for this booking location
-        map_entry = location_info_map.get(location_name)
+        # Look up the configuration for this specific ChurchSuite Location Name
+        location_config = locations_config.get(location_name)
         
-        if not map_entry:
-            logging.warning(f"Schedule for location '{location_name}' found, but not mapped in config['locations']. Skipping.")
+        if not location_config:
+            logging.warning(f"Schedule found for location '{location_name}', but no matching config entry was found in config['locations']. Skipping.")
             continue
             
-        neohub_name, zone_names_for_location = map_entry
+        # Extract the NeoHub Name (e.g., 'main_church') and its associated Zones
+        neohub_name = location_config.get("neohub")
+        zone_names = location_config.get("zones", [])
         
-        # For each physical NeoHub Zone associated with this booking location, apply the schedule
-        for zone_name in zone_names_for_location:
+        if not neohub_name or not zone_names:
+            logging.error(f"Configuration for location '{location_name}' is incomplete (missing neohub or zones). Skipping.")
+            continue
+
+        # CRITICAL LOGIC: For multi-zone locations, the *same schedule* must be applied to *each zone*.
+        # For the example: 'Main Church - Chancel' schedule is applied to 'Main Church' zone AND 'Raphael Room corridor and toilets' zone.
+        for zone_name in zone_names:
             
+            # This check uses the NeoHub Name (e.g., 'main_church') which is the key in the global 'hubs' dict.
             if neohub_name in hubs:
-                # The single zone schedule application must be called for each physical zone
+                logging.info(f"Adding task to apply schedule for Location '{location_name}' to Zone '{zone_name}' on Hub '{neohub_name}'.")
+                
+                # Add a task for each physical zone to receive the profile
                 tasks.append(
                     apply_single_zone_profile(neohub_name, zone_name, daily_schedule, profile_prefix) 
                 )
@@ -824,7 +824,8 @@ async def apply_aggregated_schedules(
         logging.info(f"Applying {len(tasks)} zone profiles for {profile_prefix}.")
         await asyncio.gather(*tasks)
     else:
-        logging.warning(f"No profiles generated or applied for {profile_prefix}. Check aggregated schedules and location mapping.")
+        # The warning is now correctly indicating that the aggregated_schedules were empty
+        logging.warning(f"No profiles generated or applied for {profile_prefix}. This means the aggregated_schedules dictionary was empty or no locations matched.")
         
 # --- MODIFIED FUNCTION ---
 def calculate_schedule(
