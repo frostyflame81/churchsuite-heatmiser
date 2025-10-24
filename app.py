@@ -372,9 +372,25 @@ async def apply_single_zone_profile(
         
         neohub_profile_data[day_key] = _format_setpoints_for_neohub(setpoints_to_format)
 
-    # FINAL LINE FIX: Use the profile_prefix
+    # 1. POST (Store) the calculated profile
     profile_name = f"{profile_prefix}: {zone_name}" 
     await store_profile2(neohub_name, profile_name, neohub_profile_data)
+    
+    # 2. RUN (Activate) the profile IF it is the Current Week
+    if profile_prefix == "Current Week":
+        if neohub_name in hubs:
+            hub = hubs[neohub_name]
+            command = {"RUN_PROFILE": profile_name}
+            
+            # CRITICAL FIX: Use the hub's method (e.g., send_command) to execute the NeoHub command
+            try:
+                # Assuming the NeoHub object has a send_command method or similar
+                await hub.send_command(command) 
+                logging.info(f"Successfully sent RUN_PROFILE command to Neohub {neohub_name} for profile '{profile_name}'.")
+            except Exception as e:
+                logging.error(f"Failed to send RUN_PROFILE command to {neohub_name}: {e}")
+        else:
+            logging.error(f"Cannot run profile: Neohub '{neohub_name}' not found in connected hubs.")
 
 async def send_command(neohub_name: str, command: Dict[str, Any]) -> Optional[Any]:
     """
@@ -769,39 +785,29 @@ async def check_neohub_compatibility(config: Dict[str, Any], neohub_name: str) -
 # --- NEW HELPER FUNCTION: AGGREGATION ---
 async def apply_aggregated_schedules(
     aggregated_schedules: Dict[str, Dict[int, List[Dict[str, Union[str, float]]]]], 
-    profile_prefix: str, # NEW: The "Current Week" or "Next Week" parameter
+    profile_prefix: str, 
     config: Dict[str, Any]
 ) -> None:
     """
     Orchestrates the application of the aggregated schedules to the correct Neohubs/Zones.
-    This function replaces the old implementation and uses the new fixed logic.
     """
-    # 1. Reverse map: Find which NeoHub owns each Zone
     zone_to_neohub_map = {}
-    for location_name, loc_config in config.get("locations", {}).items():
+    for loc_config in config.get("locations", {}).values():
         neohub_name = loc_config.get("neohub")
         zone_names = loc_config.get("zones", [])
         if neohub_name:
             for zone in zone_names:
-                # Assuming one zone belongs to one NeoHub
                 zone_to_neohub_map[zone] = neohub_name
 
-    # 2. Apply the schedule for each Zone
     tasks = []
     for zone_name, daily_schedule in aggregated_schedules.items():
         neohub_name = zone_to_neohub_map.get(zone_name)
         
-        if neohub_name:
-            # Check if we have a valid connection
-            if neohub_name in hubs:
-                tasks.append(
-                    # CRITICAL FIX: Passing the profile_prefix argument
-                    apply_single_zone_profile(neohub_name, zone_name, daily_schedule, profile_prefix) 
-                )
-            else:
-                logging.error(f"Cannot apply schedule: Not connected to Neohub '{neohub_name}' for zone '{zone_name}'.")
-        else:
-            logging.warning(f"Zone '{zone_name}' found in schedule but not mapped to a NeoHub in config. Skipping.")
+        if neohub_name and neohub_name in hubs:
+            tasks.append(
+                # This calls the next function in the chain
+                apply_single_zone_profile(neohub_name, zone_name, daily_schedule, profile_prefix) 
+            )
 
     if tasks:
         await asyncio.gather(*tasks)
@@ -1066,22 +1072,6 @@ async def update_heating_schedule() -> None:
             aggregated_next_schedules, "Next Week", config
         )
 
-        # 7. Run Profile Command (This loop remains for the final RUN_PROFILE trigger)
-        for neohub_name in set(config["neohubs"].keys()):
-            command = {"RUN_PROFILE": "Current Week"} # Note: This will need revision later
-            response = await send_command(neohub_name, command)
-            if response:
-                logging.info(
-                    f"Successfully sent RUN_PROFILE command to Neohub {neohub_name}."
-                )
-                if LOGGING_LEVEL == "DEBUG":
-                    logging.debug(
-                        f"update_heating_schedule:  Sent RUN_PROFILE for Current Week to {neohub_name}"
-                    )
-            else:
-                logging.error(
-                    f"Failed to send RUN_PROFILE command to Neohub {neohub_name}."
-                )
     else:
         logging.info("No data received from ChurchSuite.")
 
