@@ -496,7 +496,7 @@ async def apply_single_zone_profile(
         return False
 
     profile_name = f"{profile_prefix}: {zone_name}"
-    logging.info(f"Storing validated profile '{profile_name}' on Neohub {neohub_object.hub_name}")
+    logging.info(f"Storing validated profile '{profile_name}' on Neohub {neohub_object._host}")
 
     try:
         # CRITICAL FIX: Calling your custom function defined in app.py
