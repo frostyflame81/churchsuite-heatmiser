@@ -416,30 +416,51 @@ def _validate_neohub_profile(
     profile_data: Dict[str, Dict[str, List[Union[str, float, int, bool]]]], 
     zone_name: str
 ) -> Tuple[bool, str]:
-    # ... (expected_days and expected_slots definitions) ...
+    """
+    Verifies the profile adheres to the 7-day/6-level NeoHub protocol and checks time sequence.
+    """
     expected_days = {"monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"}
     expected_slots = ["wake", "level1", "level2", "level3", "level4", "sleep"]
     
-    # ... (Check 1: 7-Day Construct is fine) ...
+    # Check 1: 7-Day Construct
+    # If this fails, the profile is using wrong keys (like integers 0-6).
+    if set(profile_data.keys()) != expected_days:
+        missing = expected_days - set(profile_data.keys())
+        extra = set(profile_data.keys()) - expected_days
+        return False, (
+            f"Profile is NOT a 7-day construct. Missing days: {missing}, Extra keys: {extra}. "
+            f"Expected string keys ('monday', etc.) but likely found integer keys (0-6)."
+        )
 
     # Check 2 & 3: 6-Level Construct and Sequential Time Order
-    for day_name in expected_days: # Iterate over days in a safe order
+    for day_name in sorted(list(expected_days)):
         daily_schedule = profile_data.get(day_name)
-        if daily_schedule is None:
-            # This should be caught by Check 1, but for safety:
-            return False, f"Day '{day_name}' missing from profile data."
-
-        if set(daily_schedule.keys()) != set(expected_slots):
-            # ... (6-level check is fine) ...
-            
-            # FIX START: Reset the previous time for the start of *each* day
-            prev_time_str = None 
         
-        # We must iterate over the correct, ordered slot names
+        # --- CRITICAL SAFETY CHECK ---
+        # If the day mapping in the calling function is wrong, this prevents a crash.
+        if daily_schedule is None:
+             # This should be unreachable if Check 1 passed, but ensures safety.
+            return False, f"Internal Error: Day '{day_name}' missing from profile data structure."
+
+        # Check 2: 6-Level Construct
+        if set(daily_schedule.keys()) != set(expected_slots):
+            missing = set(expected_slots) - set(daily_schedule.keys())
+            extra = set(daily_schedule.keys()) - set(expected_slots)
+            return False, (
+                f"Day '{day_name}' for zone '{zone_name}' is NOT 6-level. "
+                f"Missing slots: {missing}, Extra keys: {extra}"
+            )
+
+        # FIX: Reset the previous time for the start of *each* day
+        prev_time_str = None 
+        
+        # Check 3: Sequential Time Order
         for slot_name in expected_slots:
-            # ... (time parsing logic is fine) ...
-            time_str = daily_schedule[slot_name][0]
-            current_time = datetime.datetime.strptime(time_str, "%H:%M").time()
+            try:
+                time_str = daily_schedule[slot_name][0]
+                current_time = datetime.datetime.strptime(time_str, "%H:%M").time()
+            except (KeyError, ValueError, IndexError) as e:
+                return False, f"Data structure error on day '{day_name}', slot '{slot_name}': {e}"
             
             if prev_time_str:
                 prev_time = datetime.datetime.strptime(prev_time_str, "%H:%M").time()
