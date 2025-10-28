@@ -464,8 +464,8 @@ def _validate_neohub_profile(
             
             if prev_time_str:
                 prev_time = datetime.datetime.strptime(prev_time_str, "%H:%M").time()
-                # Times must be strictly increasing WITHIN THE DAY
-                if current_time <= prev_time:
+                # Times must be strictly increasing WITHIN THE DAY but can be the same time
+                if current_time < prev_time:
                     return False, (
                         f"Time sequencing error on day '{day_name}' for slot '{slot_name}'. "
                         f"Time ({time_str}) must be LATER than the previous slot ({prev_time_str})."
