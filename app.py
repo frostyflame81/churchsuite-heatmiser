@@ -30,6 +30,8 @@ PREHEAT_ADJUSTMENT_MINUTES_PER_DEGREE = float(
     os.environ.get("PREHEAT_ADJUSTMENT_MINUTES_PER_DEGREE", 5)
 )
 CONFIG_FILE = os.environ.get("CONFIG_FILE", "config/config.json")
+MIN_FIRMWARE_VERSION = 2079
+REQUIRED_HEATING_LEVELS = 6
 LOGGING_LEVEL = os.environ.get("LOGGING_LEVEL", "INFO").upper()  # Get logging level from env
 # Set up logging
 numeric_level = getattr(logging, LOGGING_LEVEL, logging.INFO)
@@ -474,6 +476,57 @@ def _validate_neohub_profile(
             
     return True, "Profile is compliant."
 
+async def check_neohub_compatibility(neohub_object: NeoHub, neohub_host: str) -> bool:
+    """
+    Checks the NeoHub connection, firmware version (>= 2079), and ensures 
+    it is configured for 6-stage heating profiles.
+    """
+    logging.info(f"Checking compatibility for Neohub {neohub_host}...")
+    
+    try:
+        # Assuming neohub_object.get_system() handles the GET_SYSTEM command
+        system_info: Optional[Dict[str, Any]] = await neohub_object.get_system() 
+        
+        if system_info is None:
+            logging.error(f"Compatibility check FAILED for {neohub_host}: Failed to retrieve system information (GET_SYSTEM).")
+            return False
+
+        # --- Check 1: Heating Levels (Must be 6 for a 6-stage profile) ---
+        current_levels = system_info.get('HEATING_LEVELS')
+        if current_levels != REQUIRED_HEATING_LEVELS:
+            logging.error(
+                f"Compatibility check FAILED for {neohub_host}: "
+                f"Hub is not configured for a {REQUIRED_HEATING_LEVELS}-stage profile. "
+                f"Current HEATING_LEVELS: {current_levels}. Expected: {REQUIRED_HEATING_LEVELS}."
+            )
+            return False
+
+        # --- Check 2: Firmware Version (Must be >= 2079) ---
+        try:
+            # HUB_VERSION is the firmware number
+            current_firmware = int(system_info.get('HUB_VERSION', 0)) 
+        except (ValueError, TypeError):
+            # Fallback if the version key is missing or not an integer
+            current_firmware = 0
+            
+        if current_firmware < MIN_FIRMWARE_VERSION:
+            logging.error(
+                f"Compatibility check FAILED for {neohub_host}: "
+                f"Firmware version ({current_firmware}) is too old. "
+                f"Minimum required for STORE_PROFILE2: {MIN_FIRMWARE_VERSION}."
+            )
+            return False
+            
+    except NeoHubConnectionError as e:
+        logging.error(f"Compatibility check FAILED for {neohub_host} due to connection error: {e}")
+        return False
+    except Exception as e:
+        logging.error(f"Compatibility check FAILED for {neohub_host} due to unexpected error: {e}")
+        return False
+
+    logging.info(f"Compatibility check PASSED for {neohub_host}. System is compatible with 7-day/6-stage profiles.")
+    return True
+
 async def apply_single_zone_profile(
     neohub_object: NeoHub, 
     zone_name: str, 
@@ -482,26 +535,30 @@ async def apply_single_zone_profile(
 ) -> bool:
     """
     Applies a validated, aggregated weekly profile to a single NeoHub zone by calling 
-    the local store_profile2 function.
+    the local store_profile2 function. Now includes NeoHub compatibility checks.
     """
     
-    # --- FINAL COMPLIANCE CHECK (The required step before sending) ---
+    neohub_host = neohub_object._host
+    profile_name = f"{profile_prefix}: {zone_name}"
+
+    # 1. --- NEOHUB COMPATIBILITY CHECK (New First Step) ---
+    if not await check_neohub_compatibility(neohub_object, neohub_host):
+        logging.error(f"Skipping profile application for {zone_name}. Neohub {neohub_host} failed firmware/configuration checks.")
+        return False
+
+    # 2. --- PROFILE COMPLIANCE CHECK (Existing) ---
     is_compliant, reason = _validate_neohub_profile(profile_data, zone_name)
     if not is_compliant:
         logging.error(
             f"PROFILE COMPLIANCE FAILED for Zone '{zone_name}' ({profile_prefix}): {reason}. "
             f"Profile was NOT sent to NeoHub."
         )
-        # This output provides the nice "why the profile was not compliant" message
         return False
 
-    profile_name = f"{profile_prefix}: {zone_name}"
-    logging.info(f"Storing validated profile '{profile_name}' on Neohub {neohub_object._host}")
+    logging.info(f"Storing validated profile '{profile_name}' on Neohub {neohub_host}")
 
     try:
-        # CRITICAL FIX: Calling your custom function defined in app.py
-        # We assume store_profile2 handles building the final raw command (with AUTH KEY/wrap) 
-        # and calling _send_raw_profile_command internally.
+        # This call maintains the necessary 3 arguments (neohub_object, profile_name, profile_data)
         await store_profile2(neohub_object, profile_name, profile_data)
         logging.info(f"Successfully sent custom profile command for '{zone_name}'.")
         return True
