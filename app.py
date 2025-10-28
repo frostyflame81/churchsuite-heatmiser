@@ -502,7 +502,7 @@ async def apply_single_zone_profile(
         # CRITICAL FIX: Calling your custom function defined in app.py
         # We assume store_profile2 handles building the final raw command (with AUTH KEY/wrap) 
         # and calling _send_raw_profile_command internally.
-        await store_profile2(neohub_object, zone_name, profile_name, profile_data)
+        await store_profile2(neohub_object, profile_name, profile_data)
         logging.info(f"Successfully sent custom profile command for '{zone_name}'.")
         return True
     except Exception as e:
