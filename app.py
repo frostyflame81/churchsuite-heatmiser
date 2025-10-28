@@ -478,42 +478,40 @@ def _validate_neohub_profile(
 
 async def check_neohub_compatibility(neohub_object: NeoHub, neohub_host: str) -> bool:
     """
-    Checks the NeoHub connection, firmware version (>= 2079), and ensures 
-    it is configured for 6-stage heating profiles.
+    Checks the NeoHub connection, firmware version (>= 2079, based on HUB_VERSION), 
+    and ensures it is configured for 6-stage heating profiles (HEATING_LEVELS = 6).
     """
     logging.info(f"Checking compatibility for Neohub {neohub_host}...")
     
     try:
-        # Assuming neohub_object.get_system() handles the GET_SYSTEM command
+        # CORRECT WAY to send GET_SYSTEM command via high-level method
         system_info: Optional[Dict[str, Any]] = await neohub_object.get_system() 
         
         if system_info is None:
             logging.error(f"Compatibility check FAILED for {neohub_host}: Failed to retrieve system information (GET_SYSTEM).")
             return False
 
-        # --- Check 1: Heating Levels (Must be 6 for a 6-stage profile) ---
+        # --- Check 1: Heating Levels ---
         current_levels = system_info.get('HEATING_LEVELS')
         if current_levels != REQUIRED_HEATING_LEVELS:
             logging.error(
                 f"Compatibility check FAILED for {neohub_host}: "
-                f"Hub is not configured for a {REQUIRED_HEATING_LEVELS}-stage profile. "
-                f"Current HEATING_LEVELS: {current_levels}. Expected: {REQUIRED_HEATING_LEVELS}."
+                f"Hub is not configured for a {REQUIRED_HEATING_LEVELS}-stage profile (HEATING_LEVELS). "
+                f"Current: {current_levels}. Expected: {REQUIRED_HEATING_LEVELS}."
             )
             return False
 
-        # --- Check 2: Firmware Version (Must be >= 2079) ---
+        # --- Check 2: Firmware Version ---
         try:
-            # HUB_VERSION is the firmware number
             current_firmware = int(system_info.get('HUB_VERSION', 0)) 
         except (ValueError, TypeError):
-            # Fallback if the version key is missing or not an integer
             current_firmware = 0
             
         if current_firmware < MIN_FIRMWARE_VERSION:
             logging.error(
                 f"Compatibility check FAILED for {neohub_host}: "
                 f"Firmware version ({current_firmware}) is too old. "
-                f"Minimum required for STORE_PROFILE2: {MIN_FIRMWARE_VERSION}."
+                f"Minimum required ({MIN_FIRMWARE_VERSION}) to support this profile type."
             )
             return False
             
@@ -521,10 +519,10 @@ async def check_neohub_compatibility(neohub_object: NeoHub, neohub_host: str) ->
         logging.error(f"Compatibility check FAILED for {neohub_host} due to connection error: {e}")
         return False
     except Exception as e:
-        logging.error(f"Compatibility check FAILED for {neohub_host} due to unexpected error: {e}")
+        logging.error(f"Compatibility check FAILED for {neohub_host} due to unexpected error: {e}", exc_info=True)
         return False
 
-    logging.info(f"Compatibility check PASSED for {neohub_host}. System is compatible with 7-day/6-stage profiles.")
+    logging.info(f"Compatibility check PASSED for {neohub_host}.")
     return True
 
 async def apply_single_zone_profile(
