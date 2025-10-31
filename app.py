@@ -897,22 +897,29 @@ async def check_neohub_compatibility(neohub_object: NeoHub, neohub_name: str) ->
     """
     Checks the NeoHub connection, firmware version, and 6-stage profile configuration 
     using the custom send_command utility, passing neohub_name (string key) as required.
-    
-    NOTE: This signature assumes the calling function (apply_single_zone_profile) 
-    now passes the NeoHub name string key (e.g., "main_church") as the second argument.
     """
     logging.info(f"Checking compatibility for Neohub {neohub_name} using custom send_command...")
 
     try:
-        # CORRECT CALL: Use neohub_name directly as the string key
         command = {"GET_SYSTEM": {}}
+        # We expect a Dict, but the client library is returning a SimpleNamespace object
         system_info: Optional[Dict[str, Any]] = await send_command(neohub_name, command) 
         
         if system_info is None:
             logging.error(f"Compatibility check FAILED for {neohub_name}: Did not receive a valid response from GET_SYSTEM or hub not found.")
             return False
 
-        # --- Check 1: Heating Levels (Profile compatibility) ---
+        # --- CRITICAL FIX for AttributeError: 'types.SimpleNamespace' object has no attribute 'get' ---
+        # Convert SimpleNamespace object back to a dictionary so .get() can be used.
+        if not isinstance(system_info, dict):
+            try:
+                system_info = vars(system_info) 
+            except TypeError:
+                logging.error(f"Compatibility check FAILED for {neohub_name}: system_info is an unexpected object type and cannot be converted to a dictionary.")
+                return False
+        # ------------------------------------------------------------------------------------------
+
+        # --- Check 1: Heating Levels ---
         current_levels = system_info.get('HEATING_LEVELS')
         if current_levels != REQUIRED_HEATING_LEVELS:
             logging.error(
@@ -922,7 +929,7 @@ async def check_neohub_compatibility(neohub_object: NeoHub, neohub_name: str) ->
             )
             return False
 
-        # --- Check 2: Firmware Version (API compatibility) ---
+        # --- Check 2: Firmware Version ---
         try:
             current_firmware = int(system_info.get('HUB_VERSION', 0)) 
         except (ValueError, TypeError):
@@ -940,7 +947,6 @@ async def check_neohub_compatibility(neohub_object: NeoHub, neohub_name: str) ->
         logging.error(f"Compatibility check FAILED for {neohub_name} due to connection error: {e}")
         return False
     except Exception as e:
-        # Catch unexpected errors, including any exceptions thrown by your custom send_command
         logging.error(f"Compatibility check FAILED for {neohub_name} due to unexpected error: {e}", exc_info=True)
         return False
 
