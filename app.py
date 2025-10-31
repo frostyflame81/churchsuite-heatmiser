@@ -476,26 +476,28 @@ def _validate_neohub_profile(
             
     return True, "Profile is compliant."
 
-async def check_neohub_compatibility(neohub_object: NeoHub, neohub_host: str) -> bool:
+async def check_neohub_compatibility(neohub_object: NeoHub, neohub_name: str) -> bool:
     """
-    Checks the NeoHub connection, firmware version (>= 2079, based on HUB_VERSION), 
-    and ensures it is configured for 6-stage heating profiles (HEATING_LEVELS = 6).
+    Checks the NeoHub connection, firmware version, and 6-stage profile configuration 
+    using the custom send_command utility, passing neohub_name (string key) as required.
     """
-    logging.info(f"Checking compatibility for Neohub {neohub_host}...")
-    
+    logging.info(f"Checking compatibility for Neohub {neohub_name} using custom send_command...")
+
     try:
-        # CORRECT WAY to send GET_SYSTEM command via high-level method
-        system_info: Optional[Dict[str, Any]] = await neohub_object.get_system() 
+        # Pass neohub_name (the string key) as the first argument to your custom send_command
+        command = {"GET_SYSTEM": {}}
+        system_info: Optional[Dict[str, Any]] = await send_command(neohub_name, command) 
         
         if system_info is None:
-            logging.error(f"Compatibility check FAILED for {neohub_host}: Failed to retrieve system information (GET_SYSTEM).")
+            # Error comes from your send_command (e.g., "Not connected to Neohub")
+            logging.error(f"Compatibility check FAILED for {neohub_name}: Did not receive a valid response from GET_SYSTEM or hub not found.")
             return False
 
         # --- Check 1: Heating Levels ---
         current_levels = system_info.get('HEATING_LEVELS')
         if current_levels != REQUIRED_HEATING_LEVELS:
             logging.error(
-                f"Compatibility check FAILED for {neohub_host}: "
+                f"Compatibility check FAILED for {neohub_name}: "
                 f"Hub is not configured for a {REQUIRED_HEATING_LEVELS}-stage profile (HEATING_LEVELS). "
                 f"Current: {current_levels}. Expected: {REQUIRED_HEATING_LEVELS}."
             )
@@ -509,24 +511,25 @@ async def check_neohub_compatibility(neohub_object: NeoHub, neohub_host: str) ->
             
         if current_firmware < MIN_FIRMWARE_VERSION:
             logging.error(
-                f"Compatibility check FAILED for {neohub_host}: "
+                f"Compatibility check FAILED for {neohub_name}: "
                 f"Firmware version ({current_firmware}) is too old. "
-                f"Minimum required ({MIN_FIRMWARE_VERSION}) to support this profile type."
+                f"Minimum required ({MIN_FIRMWARE_VERSION}) for this profile type."
             )
             return False
             
     except NeoHubConnectionError as e:
-        logging.error(f"Compatibility check FAILED for {neohub_host} due to connection error: {e}")
+        logging.error(f"Compatibility check FAILED for {neohub_name} due to connection error: {e}")
         return False
     except Exception as e:
-        logging.error(f"Compatibility check FAILED for {neohub_host} due to unexpected error: {e}", exc_info=True)
+        logging.error(f"Compatibility check FAILED for {neohub_name} due to unexpected error: {e}", exc_info=True)
         return False
 
-    logging.info(f"Compatibility check PASSED for {neohub_host}.")
+    logging.info(f"Compatibility check PASSED for {neohub_name}.")
     return True
 
 async def apply_single_zone_profile(
-    neohub_object: NeoHub, 
+    neohub_object: NeoHub,
+    neohub_name: str, 
     zone_name: str, 
     profile_data: Dict[str, Dict[str, List[Union[str, float, int, bool]]]], 
     profile_prefix: str
@@ -535,13 +538,10 @@ async def apply_single_zone_profile(
     Applies a validated, aggregated weekly profile to a single NeoHub zone by calling 
     the local store_profile2 function. Now includes NeoHub compatibility checks.
     """
-    
-    neohub_host = neohub_object._host
-    profile_name = f"{profile_prefix}: {zone_name}"
 
     # 1. --- NEOHUB COMPATIBILITY CHECK (New First Step) ---
-    if not await check_neohub_compatibility(neohub_object, neohub_host):
-        logging.error(f"Skipping profile application for {zone_name}. Neohub {neohub_host} failed firmware/configuration checks.")
+    if not await check_neohub_compatibility(neohub_object, neohub_name):
+        logging.error(f"Skipping profile application for {zone_name}. Neohub {neohub_name} failed firmware/configuration checks.")
         return False
 
     # 2. --- PROFILE COMPLIANCE CHECK (Existing) ---
@@ -553,7 +553,8 @@ async def apply_single_zone_profile(
         )
         return False
 
-    logging.info(f"Storing validated profile '{profile_name}' on Neohub {neohub_host}")
+    profile_name = f"{profile_prefix}_{zone_name}"
+    logging.info(f"Storing validated profile '{profile_name}' on Neohub {neohub_name}")
 
     try:
         # This call maintains the necessary 3 arguments (neohub_object, profile_name, profile_data)
@@ -980,7 +981,7 @@ async def apply_aggregated_schedules(
             logging.error(f"Cannot apply schedule for zone '{zone_name}': Neohub '{neohub_name}' not connected or mapped. Skipping.")
             continue
             
-        neohub_profile_data = {}
+        profile_data = {}
         
         # daily_schedules.items() yields (day_index: int, setpoints_list: list)
         for day_index, setpoints_list in daily_schedules.items():
@@ -996,9 +997,9 @@ async def apply_aggregated_schedules(
             formatted_daily_schedule = _format_setpoints_for_neohub(setpoints_list)
             
             # The profile data is now correctly keyed by the string day name
-            neohub_profile_data[day_name] = formatted_daily_schedule
+            profile_data[day_name] = formatted_daily_schedule
         
-        if not neohub_profile_data:
+        if not profile_data:
             logging.warning(f"No profile data generated for zone {zone_name}. Skipping.")
             continue
 
@@ -1007,9 +1008,10 @@ async def apply_aggregated_schedules(
         # Add a task to apply the profile (this calls the function with the validation check)
         tasks.append(
             apply_single_zone_profile(
-                neohub_object, 
+                neohub_object,
+                neohub_name, 
                 zone_name, 
-                neohub_profile_data, 
+                profile_data, 
                 profile_prefix
             )
         )
