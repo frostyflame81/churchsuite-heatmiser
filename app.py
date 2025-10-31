@@ -892,35 +892,36 @@ async def apply_schedule_to_heating(
     # except Exception as e:
     #    logging.error(f"Error retrieving profile 'Test' from Neohub {neohub_name}: {e}")
 
-async def check_neohub_compatibility(neohub_object: NeoHub, neohub_host: str) -> bool:
+async def check_neohub_compatibility(neohub_object: NeoHub, neohub_name: str) -> bool:
     """
     Checks the NeoHub connection, firmware version, and 6-stage profile configuration 
-    using the explicit send_command method for GET_SYSTEM.
-    """
-    logging.info(f"Checking compatibility for Neohub {neohub_host} using send_command...")
+    using the custom send_command utility, passing neohub_name (string key) as required.
     
+    NOTE: This signature assumes the calling function (apply_single_zone_profile) 
+    now passes the NeoHub name string key (e.g., "main_church") as the second argument.
+    """
+    logging.info(f"Checking compatibility for Neohub {neohub_name} using custom send_command...")
+
     try:
-        # Step 1: Execute the raw GET_SYSTEM command
+        # CORRECT CALL: Use neohub_name directly as the string key
         command = {"GET_SYSTEM": {}}
-        # send_command should return the raw JSON response as a Python dictionary
-        system_info: Optional[Dict[str, Any]] = await neohub_object.send_command(command) 
+        system_info: Optional[Dict[str, Any]] = await send_command(neohub_name, command) 
         
         if system_info is None:
-            logging.error(f"Compatibility check FAILED for {neohub_host}: Did not receive a valid response from GET_SYSTEM.")
+            logging.error(f"Compatibility check FAILED for {neohub_name}: Did not receive a valid response from GET_SYSTEM or hub not found.")
             return False
 
-        # --- Check 1: Heating Levels (Must be 6) ---
-        # The key names HUB_VERSION and HEATING_LEVELS are typically at the top level of the response.
+        # --- Check 1: Heating Levels (Profile compatibility) ---
         current_levels = system_info.get('HEATING_LEVELS')
         if current_levels != REQUIRED_HEATING_LEVELS:
             logging.error(
-                f"Compatibility check FAILED for {neohub_host}: "
-                f"Hub is not configured for a {REQUIRED_HEATING_LEVELS}-stage profile. "
-                f"Current HEATING_LEVELS: {current_levels}. Expected: {REQUIRED_HEATING_LEVELS}."
+                f"Compatibility check FAILED for {neohub_name}: "
+                f"Hub is not configured for a {REQUIRED_HEATING_LEVELS}-stage profile (HEATING_LEVELS). "
+                f"Current: {current_levels}. Expected: {REQUIRED_HEATING_LEVELS}."
             )
             return False
 
-        # --- Check 2: Firmware Version (Must be >= 2079) ---
+        # --- Check 2: Firmware Version (API compatibility) ---
         try:
             current_firmware = int(system_info.get('HUB_VERSION', 0)) 
         except (ValueError, TypeError):
@@ -928,20 +929,21 @@ async def check_neohub_compatibility(neohub_object: NeoHub, neohub_host: str) ->
             
         if current_firmware < MIN_FIRMWARE_VERSION:
             logging.error(
-                f"Compatibility check FAILED for {neohub_host}: "
+                f"Compatibility check FAILED for {neohub_name}: "
                 f"Firmware version ({current_firmware}) is too old. "
                 f"Minimum required ({MIN_FIRMWARE_VERSION}) for this profile type."
             )
             return False
             
     except NeoHubConnectionError as e:
-        logging.error(f"Compatibility check FAILED for {neohub_host} due to connection error: {e}")
+        logging.error(f"Compatibility check FAILED for {neohub_name} due to connection error: {e}")
         return False
     except Exception as e:
-        logging.error(f"Compatibility check FAILED for {neohub_host} due to unexpected error: {e}", exc_info=True)
+        # Catch unexpected errors, including any exceptions thrown by your custom send_command
+        logging.error(f"Compatibility check FAILED for {neohub_name} due to unexpected error: {e}", exc_info=True)
         return False
 
-    logging.info(f"Compatibility check PASSED for {neohub_host}.")
+    logging.info(f"Compatibility check PASSED for {neohub_name}.")
     return True
 
 async def apply_aggregated_schedules(
