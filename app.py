@@ -892,56 +892,56 @@ async def apply_schedule_to_heating(
     # except Exception as e:
     #    logging.error(f"Error retrieving profile 'Test' from Neohub {neohub_name}: {e}")
 
-async def check_neohub_compatibility(config: Dict[str, Any], neohub_name: str) -> bool:
+async def check_neohub_compatibility(neohub_object: NeoHub, neohub_host: str) -> bool:
     """
-    Checks if the Neohub is compatible with the required schedule format (7-day, 6 events).
-    Returns True if compatible, False otherwise. Uses neohubapi and send_command for logging.
+    Checks the NeoHub connection, firmware version, and 6-stage profile configuration 
+    using the explicit send_command method for GET_SYSTEM.
     """
-    if LOGGING_LEVEL == "DEBUG":
-        logging.debug(
-            f"check_neohub_compatibility: Checking compatibility for {neohub_name}"
-        )
-
-    # Ensure the Neohub is connected
-    if LOGGING_LEVEL == "DEBUG":
-        logging.debug(f"check_neohub_compatibility: config['neohubs'] = {config['neohubs']}")
-    neohub_config = config["neohubs"].get(neohub_name)
-    if not neohub_config:
-        logging.error(f"Configuration for Neohub {neohub_name} not found.")
-        return False
-
-    if neohub_name not in hubs:
-        logging.info(f"Connecting to Neohub {neohub_name}...")
-        if not connect_to_neohub(neohub_name, neohub_config):
-            logging.error(f"Failed to connect to Neohub {neohub_name}.")
-            return False
-
-    # Get system data to check ALT_TIMER_FORMAT and HEATING_LEVELS
+    logging.info(f"Checking compatibility for Neohub {neohub_host} using send_command...")
+    
     try:
-        system_data = await send_command(neohub_name, {"GET_SYSTEM": 0})
-        if system_data is None:
-            logging.error(f"Failed to retrieve system data from Neohub {neohub_name}.")
+        # Step 1: Execute the raw GET_SYSTEM command
+        command = {"GET_SYSTEM": {}}
+        # send_command should return the raw JSON response as a Python dictionary
+        system_info: Optional[Dict[str, Any]] = await neohub_object.send_command(command) 
+        
+        if system_info is None:
+            logging.error(f"Compatibility check FAILED for {neohub_host}: Did not receive a valid response from GET_SYSTEM.")
             return False
+
+        # --- Check 1: Heating Levels (Must be 6) ---
+        # The key names HUB_VERSION and HEATING_LEVELS are typically at the top level of the response.
+        current_levels = system_info.get('HEATING_LEVELS')
+        if current_levels != REQUIRED_HEATING_LEVELS:
+            logging.error(
+                f"Compatibility check FAILED for {neohub_host}: "
+                f"Hub is not configured for a {REQUIRED_HEATING_LEVELS}-stage profile. "
+                f"Current HEATING_LEVELS: {current_levels}. Expected: {REQUIRED_HEATING_LEVELS}."
+            )
+            return False
+
+        # --- Check 2: Firmware Version (Must be >= 2079) ---
+        try:
+            current_firmware = int(system_info.get('HUB_VERSION', 0)) 
+        except (ValueError, TypeError):
+            current_firmware = 0
+            
+        if current_firmware < MIN_FIRMWARE_VERSION:
+            logging.error(
+                f"Compatibility check FAILED for {neohub_host}: "
+                f"Firmware version ({current_firmware}) is too old. "
+                f"Minimum required ({MIN_FIRMWARE_VERSION}) for this profile type."
+            )
+            return False
+            
+    except NeoHubConnectionError as e:
+        logging.error(f"Compatibility check FAILED for {neohub_host} due to connection error: {e}")
+        return False
     except Exception as e:
-        logging.error(f"Error getting system data from Neohub {neohub_name}: {e}")
+        logging.error(f"Compatibility check FAILED for {neohub_host} due to unexpected error: {e}", exc_info=True)
         return False
 
-    # Check if ALT_TIMER_FORMAT is 4 (7-day mode)
-    if not hasattr(system_data, 'ALT_TIMER_FORMAT') or system_data.ALT_TIMER_FORMAT != 4:
-        logging.error(f"Neohub {neohub_name} is not configured for a 7-day schedule.")
-        return False
-    if LOGGING_LEVEL == "DEBUG":
-        logging.debug(f"check_neohub_compatibility: Neohub {neohub_name} ALT_TIMER_FORMAT is configured for 7-day schedule.")
-
-    # Check if HEATING_LEVELS is 6 (6 comfort levels)
-    if not hasattr(system_data, 'HEATING_LEVELS') or system_data.HEATING_LEVELS != 6:
-        logging.error(f"Neohub {neohub_name} does not support 6 comfort levels.")
-        return False
-
-    if LOGGING_LEVEL == "DEBUG":
-        logging.debug(f"check_neohub_compatibility: Neohub {neohub_name} supports 6 comfort levels.")
-
-    logging.info(f"Neohub {neohub_name} is compatible")
+    logging.info(f"Compatibility check PASSED for {neohub_host}.")
     return True
 
 async def apply_aggregated_schedules(
