@@ -660,6 +660,20 @@ async def _send_raw_profile_command(hub: NeoHub, command: Dict[str, Any]) -> Opt
     """
     global _command_id_counter
     
+# --- FIX: Ensure the connection is ACTIVE before proceeding ---
+    if not hub.running:
+        logging.info(f"Connection inactive for {hub._host}. Attempting to re-establish connection before raw send.")
+        try:
+            # hub.start() will check if connected and re-establish the WebSocket if necessary.
+            if not await hub.start():
+                 logging.error(f"Failed to re-establish connection to {hub._host} for raw send.")
+                 return None
+            logging.info(f"Connection re-established for {hub._host}.")
+        except Exception as e:
+            logging.error(f"Error re-establishing connection to {hub._host}: {e}")
+            return None
+    # -----------------------------------------------------------
+
     hub_token = getattr(hub, '_token', None)
     hub_client = getattr(hub, '_client', None)
     
