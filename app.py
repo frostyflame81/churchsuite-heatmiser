@@ -572,20 +572,15 @@ async def send_command(neohub_name: str, command: Dict[str, Any]) -> Optional[An
     global hubs
     hub = hubs.get(neohub_name)
     
-    # --- PROBE 1: Entry Point (SC = send_command) ---
-    logging.debug(f"PROBE 1 (SC): Entering send_command for {neohub_name}. Hub Running: {hub.running if hub else 'N/A'}")
+    # --- PROBE 1 (SC): Entry Point ---
+    logging.debug(f"PROBE 1 (SC): Entering send_command for {neohub_name}.")
 
     if hub is None:
         logging.error(f"Not connected to Neohub: {neohub_name}")
         return None
-
-    # This check is critical: is the library's internal 'running' flag True?
-    # Based on the error, the hub.running flag is likely False here.
-    if not hub.running:
-        logging.error(f"PROBE 2 (SC): Connection check FAILED in send_command. Hub.running is False.")
-        # We MUST return None here if the original code didn't force a reconnect.
-        # This is the line that produces the 'Not connected' error in your previous logs.
-        return None 
+    
+    # NOTE: Removed the 'if not hub.running' check to fix the AttributeError.
+    # The fix is now solely contained within _send_raw_profile_command.
 
     # --- START FIX: Custom raw send for complex commands ---
     is_profile_command = False
@@ -596,14 +591,14 @@ async def send_command(neohub_name: str, command: Dict[str, Any]) -> Optional[An
                 break
             
     if is_profile_command:
-        # --- PROBE 3: Before Delegation ---
+        # --- PROBE 3 (SC): Before Delegation ---
         logging.debug(f"PROBE 3 (SC): Delegating to _send_raw_profile_command for {neohub_name}.")
         # Bypass the broken hub._send() for profile commands
         response = await _send_raw_profile_command(hub, command)
         return response
     # --- END FIX ---
     
-    # Normal command handling (for simple commands like GET_ZONES)
+    # Normal command handling (for simple commands like GET_ZONES, GET_SYSTEM)
     try:
         response = await hub._send(command)
         return response
@@ -669,31 +664,30 @@ async def store_profile2(neohub_name: str, profile_name: str, profile_data: Dict
 async def _send_raw_profile_command(hub: NeoHub, command: Dict[str, Any]) -> Optional[Any]:
     """
     Manually constructs, sends, and waits for the response for the STORE_PROFILE2 
-    command. Includes an aggressive reconnection check (hub.start()) to ensure 
-    the WebSocket is active, especially after a command like GET_SYSTEM causes a 
-    connection closure.
+    command. The reconnection logic is now based on blindly calling hub.start(), 
+    which should reconnect if the connection was previously closed.
     """
     global _command_id_counter
     
-    # --- PROBE A: Entry Point (RAW = _send_raw_profile_command) ---
-    logging.debug(f"PROBE A (RAW): Entering _send_raw_profile_command. Hub Running (Initial): {hub.running}")
+    # --- PROBE A (RAW): Entering _send_raw_profile_command. ---
+    logging.debug(f"PROBE A (RAW): Entering _send_raw_profile_command. Forcing connection check via hub.start().")
 
-    # --- CRITICAL FIX & PROBE: Re-establish connection if necessary ---
-    if not hub.running:
-        logging.info(f"PROBE B (RAW): Reconnection required for {hub._host}. Attempting hub.start().")
-        try:
-            # hub.start() attempts connection and sets hub.running = True on success.
-            if not await hub.start():
-                 logging.error(f"PROBE C (RAW): FAILED to re-establish connection to {hub._host} for raw send.")
-                 return None
-            logging.info(f"PROBE D (RAW): Connection successfully re-established for {hub._host}.")
-        except Exception as e:
-            logging.error(f"PROBE E (RAW): Error during hub.start() for {hub._host}: {e}")
-            return None
+    # --- CRITICAL FIX: AGGRESSIVE RECONNECT ---
+    # We can't check hub.running, so we attempt to start/reconnect unconditionally.
+    # This should succeed if the connection was closed by GET_SYSTEM.
+    try:
+        logging.info(f"PROBE B (RAW): Attempting aggressive reconnection for raw send via hub.start().")
+        # hub.start() is idempotent and will re-establish the WebSocket if necessary.
+        if not await hub.start():
+             logging.error(f"PROBE C (RAW): FAILED to re-establish connection to {hub._host} for raw send.")
+             return None
+        logging.info(f"PROBE D (RAW): Connection successfully re-established.")
+    except Exception as e:
+        logging.error(f"PROBE E (RAW): Error during hub.start() for {hub._host}: {e}")
+        return None
     
     # --- PROBE F: Final Check before payload construction ---
-    logging.debug(f"PROBE F (RAW): Proceeding with raw send. Hub Running (Final Check): {hub.running}")
-    
+    logging.debug(f"PROBE F (RAW): Proceeding with raw send on active connection.")
     # -----------------------------------------------------------
 
     # IMPORTANT: Retrieve token and client *after* potential hub.start(), 
