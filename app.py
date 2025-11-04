@@ -478,37 +478,39 @@ def _validate_neohub_profile(
 
 async def get_profile_id_by_name(neohub_object: NeoHub, neohub_name: str, profile_name: str) -> Optional[int]:
     """
-    Retrieves the numerical profile ID for a given profile name from the NeoHub.
-    This assumes a custom implementation of get_profiles or a low-level call to GET_PROFILES2.
+    Retrieves the numerical profile ID for a given profile name from the NeoHub 
+    by searching through the GET_PROFILES response.
     """
     logging.info(f"Attempting to retrieve all profiles from {neohub_name}...")
     
     try:
-        # Assuming neohub_object.get_profiles() or a wrapper exists and returns a structure
-        # like: {'PROFILE_ID_1': {'name': 'Name 1', ...}, 'PROFILE_ID_2': {'name': 'Name 2', ...}}
-        # If your neohubapi library does not have get_profiles, replace this with your custom retrieval logic.
+        # Assuming neohub_object.get_profiles() executes a GET_PROFILES command
+        # and returns the parsed dictionary: {'Profile Name': {'PROFILE_ID': X, ...}, ...}
         all_profiles = await neohub_object.get_profiles() 
         
-        # Check if the response structure contains the profiles list/dict
         if not isinstance(all_profiles, dict):
-             logging.warning(f"NeoHub returned unexpected profile format for {neohub_name}: {all_profiles}")
+             logging.warning(f"NeoHub returned unexpected profile format for {neohub_name}. Expected a dict.")
              return None
 
-        for profile_id_str, profile_data in all_profiles.items():
-            # The profile ID in the response might be a string (e.g., "1", "2")
-            if isinstance(profile_data, dict) and profile_data.get("name") == profile_name:
-                try:
-                    # Return the integer ID
-                    return int(profile_id_str)
-                except ValueError:
-                    logging.error(f"Failed to parse profile ID as integer: {profile_id_str}")
-                    return None
+        # --- FIX: Iterate through profile names (keys) and check for PROFILE_ID in the data (values) ---
+        for name, data in all_profiles.items():
+            if name == profile_name:
+                profile_id = data.get("PROFILE_ID")
+                
+                if profile_id is not None:
+                    try:
+                        # Ensure the ID is returned as an integer for the STORE_PROFILE2 command
+                        return int(profile_id)
+                    except ValueError:
+                        logging.error(f"Found profile name '{profile_name}', but its ID ('{profile_id}') could not be parsed as an integer.")
+                        return None
+        # --------------------------------------------------------------------------------------------------
 
-        logging.info(f"Profile '{profile_name}' not found on {neohub_name}.")
+        logging.warning(f"Profile '{profile_name}' not found on {neohub_name} after retrieving all profiles.")
         return None
 
     except Exception as e:
-        logging.error(f"Failed to retrieve profiles from {neohub_name}: {e}", exc_info=True)
+        logging.error(f"Failed to retrieve profiles from {neohub_name} via GET_PROFILES: {e}", exc_info=True)
         return None
 
 async def check_neohub_compatibility(neohub_object: NeoHub, neohub_name: str) -> bool:
