@@ -558,7 +558,7 @@ async def apply_single_zone_profile(
 
     try:
         # This call maintains the necessary 3 arguments (neohub_object, profile_name, profile_data)
-        await store_profile2(neohub_object, profile_name, profile_data)
+        await store_profile2(neohub_name, profile_name, profile_data)
         logging.info(f"Successfully sent custom profile command for '{zone_name}'.")
         return True
     except Exception as e:
