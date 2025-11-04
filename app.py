@@ -571,9 +571,21 @@ async def send_command(neohub_name: str, command: Dict[str, Any]) -> Optional[An
     """
     global hubs
     hub = hubs.get(neohub_name)
+    
+    # --- PROBE 1: Entry Point (SC = send_command) ---
+    logging.debug(f"PROBE 1 (SC): Entering send_command for {neohub_name}. Hub Running: {hub.running if hub else 'N/A'}")
+
     if hub is None:
         logging.error(f"Not connected to Neohub: {neohub_name}")
         return None
+
+    # This check is critical: is the library's internal 'running' flag True?
+    # Based on the error, the hub.running flag is likely False here.
+    if not hub.running:
+        logging.error(f"PROBE 2 (SC): Connection check FAILED in send_command. Hub.running is False.")
+        # We MUST return None here if the original code didn't force a reconnect.
+        # This is the line that produces the 'Not connected' error in your previous logs.
+        return None 
 
     # --- START FIX: Custom raw send for complex commands ---
     is_profile_command = False
@@ -584,8 +596,11 @@ async def send_command(neohub_name: str, command: Dict[str, Any]) -> Optional[An
                 break
             
     if is_profile_command:
+        # --- PROBE 3: Before Delegation ---
+        logging.debug(f"PROBE 3 (SC): Delegating to _send_raw_profile_command for {neohub_name}.")
         # Bypass the broken hub._send() for profile commands
-        return await _send_raw_profile_command(hub, command)
+        response = await _send_raw_profile_command(hub, command)
+        return response
     # --- END FIX ---
     
     # Normal command handling (for simple commands like GET_ZONES)
@@ -660,18 +675,25 @@ async def _send_raw_profile_command(hub: NeoHub, command: Dict[str, Any]) -> Opt
     """
     global _command_id_counter
     
-    # --- CRITICAL FIX: Re-establish connection if necessary ---
+    # --- PROBE A: Entry Point (RAW = _send_raw_profile_command) ---
+    logging.debug(f"PROBE A (RAW): Entering _send_raw_profile_command. Hub Running (Initial): {hub.running}")
+
+    # --- CRITICAL FIX & PROBE: Re-establish connection if necessary ---
     if not hub.running:
-        logging.info(f"Connection inactive for {hub._host}. Attempting to re-establish connection for raw send.")
+        logging.info(f"PROBE B (RAW): Reconnection required for {hub._host}. Attempting hub.start().")
         try:
             # hub.start() attempts connection and sets hub.running = True on success.
             if not await hub.start():
-                 logging.error(f"Failed to re-establish connection to {hub._host} for raw send.")
+                 logging.error(f"PROBE C (RAW): FAILED to re-establish connection to {hub._host} for raw send.")
                  return None
-            logging.info(f"Connection re-established for {hub._host}.")
+            logging.info(f"PROBE D (RAW): Connection successfully re-established for {hub._host}.")
         except Exception as e:
-            logging.error(f"Error re-establishing connection to {hub._host}: {e}")
+            logging.error(f"PROBE E (RAW): Error during hub.start() for {hub._host}: {e}")
             return None
+    
+    # --- PROBE F: Final Check before payload construction ---
+    logging.debug(f"PROBE F (RAW): Proceeding with raw send. Hub Running (Final Check): {hub.running}")
+    
     # -----------------------------------------------------------
 
     # IMPORTANT: Retrieve token and client *after* potential hub.start(), 
@@ -683,7 +705,7 @@ async def _send_raw_profile_command(hub: NeoHub, command: Dict[str, Any]) -> Opt
         logging.error("Could not access private token or client (_token or _client) for raw send after check.")
         return None
 
-    try:  # <--- START OF CORRECTED TRY BLOCK
+    try: 
         # 0. Preparation
         command_to_send = command
         
