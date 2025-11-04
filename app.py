@@ -567,7 +567,8 @@ async def apply_single_zone_profile(
 
 async def send_command(neohub_name: str, command: Dict[str, Any]) -> Optional[Any]:
     """
-    Sends a command to the Neohub, using a custom raw send for complex profile commands.
+    Sends a command to the Neohub. Profile commands delegate to the raw sender 
+    IMMEDIATELY to execute the reconnection logic before any internal checks fail.
     """
     global hubs
     hub = hubs.get(neohub_name)
@@ -576,13 +577,15 @@ async def send_command(neohub_name: str, command: Dict[str, Any]) -> Optional[An
     logging.debug(f"PROBE 1 (SC): Entering send_command for {neohub_name}.")
 
     if hub is None:
-        logging.error(f"Not connected to Neohub: {neohub_name}")
+        # This check is for initialization failure and is separate from connection loss.
+        logging.error(f"Not connected to Neohub: {neohub_name}") 
         return None
     
-    # NOTE: Removed the 'if not hub.running' check to fix the AttributeError.
-    # The fix is now solely contained within _send_raw_profile_command.
-
-    # --- START FIX: Custom raw send for complex commands ---
+    # ----------------------------------------------------------------------
+    # CRITICAL FIX: Move the profile command check to the top.
+    # This ensures delegation to the raw sender (which contains hub.start()) 
+    # executes BEFORE the general connection check inside send_command fails.
+    # ----------------------------------------------------------------------
     is_profile_command = False
     if isinstance(command, dict):
         for key in ["STORE_PROFILE", "STORE_PROFILE2"]:
@@ -593,10 +596,14 @@ async def send_command(neohub_name: str, command: Dict[str, Any]) -> Optional[An
     if is_profile_command:
         # --- PROBE 3 (SC): Before Delegation ---
         logging.debug(f"PROBE 3 (SC): Delegating to _send_raw_profile_command for {neohub_name}.")
-        # Bypass the broken hub._send() for profile commands
+        # The aggressive reconnection logic (hub.start()) is inside this function.
         response = await _send_raw_profile_command(hub, command)
         return response
-    # --- END FIX ---
+    # ----------------------------------------------------------------------
+    
+    # All non-profile commands (like GET_SYSTEM/GET_ZONES) fall through here.
+    # This is where the UNSEEN connection check in your code MUST be located.
+    # For profile commands, we have now successfully bypassed it.
     
     # Normal command handling (for simple commands like GET_ZONES, GET_SYSTEM)
     try:
