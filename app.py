@@ -476,78 +476,64 @@ def _validate_neohub_profile(
             
     return True, "Profile is compliant."
 
-async def _get_profiles_data_raw(neohub_object: NeoHub) -> Optional[Dict[str, Any]]:
-    """
-    Sends the raw GET_PROFILES command and attempts to parse the response.
-    """
-    # Assuming 'send_command' is an existing utility that uses _send_raw_profile_command
-    # and handles command ID creation/response
-    try:
-        # The NeoHub command is {'GET_PROFILES': 0}
-        response = await send_command(neohub_object, {'GET_PROFILES': 0})
-        
-        if not response or response.get("status") != "Success":
-            logging.error(f"GET_PROFILES command failed or returned non-success status: {response}")
-            return None
-
-        # The actual profile data is usually returned under a specific key, 
-        # or the response is the dictionary of profiles itself.
-        # Since we don't have the full library code, we'll assume the success response 
-        # is the profiles dictionary itself, or requires one more level of parsing.
-        
-        # In many neohub wrapper implementations, the full profile data is nested. 
-        # Let's assume the library's successful return value is what we need to parse.
-        # The most reliable way is often to look for the payload key.
-        
-        # **Note**: If your 'send_command' returns the raw message, you might need 
-        # to explicitly look for the 'response' key and parse the JSON string within it.
-        # For simplicity, we'll assume the library gives you the parsed profiles dictionary 
-        # upon success, but we'll include a string check just in case.
-        
-        if isinstance(response, dict):
-            # If the library returns the fully parsed dictionary of profiles
-            if all(isinstance(v, dict) and 'PROFILE_ID' in v for v in response.values()):
-                 return response
-            
-            # If the library nests the profiles under a key like 'PROFILES'
-            return response.get('PROFILES') or response.get('PROFILES2') 
-            
-        logging.error(f"GET_PROFILES response was not a dictionary: {type(response)}")
-        return None
-        
-    except Exception as e:
-        logging.error(f"Error during raw GET_PROFILES command execution: {e}", exc_info=True)
-        return None
-
 async def get_profile_id_by_name(neohub_object: NeoHub, neohub_name: str, profile_name: str) -> Optional[int]:
     """
     Retrieves the numerical profile ID for a given profile name from the NeoHub.
-    (Updated to ensure robust dictionary parsing.)
+    Includes logic to reconnect the hub if the connection is closed.
     """
-    logging.info(f"Attempting to retrieve all profiles from {neohub_name} using raw GET_PROFILES...")
+    logging.info(f"Attempting to retrieve all profiles from {neohub_name}...")
     
-    # *** CHANGE: Use the new raw getter helper ***
-    all_profiles = await _get_profiles_data_raw(neohub_object)
-    
-    if not isinstance(all_profiles, dict):
-         # This warning message matches the one in your log, indicating the point of failure.
-         logging.warning(f"NeoHub returned unexpected profile format for {neohub_name}. Expected a dict.")
-         return None
+    try:
+        # **CRITICAL FIX 1: Ensure the hub connection is active**
+        # The log showed 'Not connected to Neohub', we must attempt to reconnect.
+        # Assuming your NeoHub object has an 'is_running' or similar property and a 'start()' method.
+        # The NeoHub object's 'start()' is designed to re-establish the connection.
+        if not getattr(neohub_object, 'is_running', True): # Default to True if property is missing
+            logging.info(f"NeoHub {neohub_name} connection is down. Attempting to start/reconnect.")
+            if not await neohub_object.start(): 
+                logging.error(f"Failed to connect/start NeoHub {neohub_name} for profile retrieval.")
+                return None
+        
+        # Use the high-level library method for GET_PROFILES
+        all_profiles_raw = await neohub_object.get_profiles() 
+        
+        all_profiles = None
+        
+        # **CRITICAL FIX 2: Handle the possibility of a raw string response (your suggestion)**
+        if isinstance(all_profiles_raw, str):
+            try:
+                # This accounts for the library potentially returning a JSON string that wasn't auto-parsed
+                all_profiles = json.loads(all_profiles_raw)
+            except json.JSONDecodeError:
+                logging.error(f"Failed to parse profiles response as JSON string: {all_profiles_raw[:50]}...")
+                return None
+        elif isinstance(all_profiles_raw, dict):
+             # The expected successful path from a high-level library call
+             all_profiles = all_profiles_raw
+        
+        if not isinstance(all_profiles, dict):
+             logging.warning(f"NeoHub returned unexpected profile format for {neohub_name}. Expected a dict after parsing.")
+             return None
 
-    # --- SUCCESSFUL PARSING LOGIC REMAINS THE SAME ---
-    for name, data in all_profiles.items():
-        if name == profile_name:
-            profile_id = data.get("PROFILE_ID")
-            
-            if profile_id is not None:
-                try:
-                    return int(profile_id)
-                except ValueError:
-                    logging.error(f"Found profile name '{profile_name}', but its ID ('{profile_id}') could not be parsed as an integer.")
-                    return None
+        # --- PROFILE ID EXTRACTION LOGIC ---
+        # The structure is: {'Profile Name': {'PROFILE_ID': X, ...}, ...}
+        for name, data in all_profiles.items():
+            if name == profile_name:
+                profile_id = data.get("PROFILE_ID")
+                
+                if profile_id is not None:
+                    try:
+                        return int(profile_id)
+                    except ValueError:
+                        logging.error(f"Found profile name '{profile_name}', but its ID ('{profile_id}') could not be parsed as an integer.")
+                        return None
 
-    logging.warning(f"Profile '{profile_name}' not found on {neohub_name} after retrieving all profiles.")
-    return None
+        logging.warning(f"Profile '{profile_name}' not found on {neohub_name} after retrieving all profiles.")
+        return None
+
+    except Exception as e:
+        logging.error(f"Failed to retrieve profiles from {neohub_name}: {e}", exc_info=True)
+        return None
 
 async def check_neohub_compatibility(neohub_object: NeoHub, neohub_name: str) -> bool:
     """
