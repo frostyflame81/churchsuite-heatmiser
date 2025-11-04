@@ -476,6 +476,41 @@ def _validate_neohub_profile(
             
     return True, "Profile is compliant."
 
+async def get_profile_id_by_name(neohub_object: NeoHub, neohub_name: str, profile_name: str) -> Optional[int]:
+    """
+    Retrieves the numerical profile ID for a given profile name from the NeoHub.
+    This assumes a custom implementation of get_profiles or a low-level call to GET_PROFILES2.
+    """
+    logging.info(f"Attempting to retrieve all profiles from {neohub_name}...")
+    
+    try:
+        # Assuming neohub_object.get_profiles() or a wrapper exists and returns a structure
+        # like: {'PROFILE_ID_1': {'name': 'Name 1', ...}, 'PROFILE_ID_2': {'name': 'Name 2', ...}}
+        # If your neohubapi library does not have get_profiles, replace this with your custom retrieval logic.
+        all_profiles = await neohub_object.get_profiles() 
+        
+        # Check if the response structure contains the profiles list/dict
+        if not isinstance(all_profiles, dict):
+             logging.warning(f"NeoHub returned unexpected profile format for {neohub_name}: {all_profiles}")
+             return None
+
+        for profile_id_str, profile_data in all_profiles.items():
+            # The profile ID in the response might be a string (e.g., "1", "2")
+            if isinstance(profile_data, dict) and profile_data.get("name") == profile_name:
+                try:
+                    # Return the integer ID
+                    return int(profile_id_str)
+                except ValueError:
+                    logging.error(f"Failed to parse profile ID as integer: {profile_id_str}")
+                    return None
+
+        logging.info(f"Profile '{profile_name}' not found on {neohub_name}.")
+        return None
+
+    except Exception as e:
+        logging.error(f"Failed to retrieve profiles from {neohub_name}: {e}", exc_info=True)
+        return None
+
 async def check_neohub_compatibility(neohub_object: NeoHub, neohub_name: str) -> bool:
     """
     Checks the NeoHub connection, firmware version, and 6-stage profile configuration 
@@ -527,6 +562,22 @@ async def check_neohub_compatibility(neohub_object: NeoHub, neohub_name: str) ->
     logging.info(f"Compatibility check PASSED for {neohub_name}.")
     return True
 
+async def _post_profile_command(neohub_name: str, profile_name: str, profile_data: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
+    """Posts the profile and returns success status and any error reason."""
+    
+    # We maintain the necessary 3 arguments (neohub_name, profile_name, profile_data)
+    result = await store_profile2(neohub_name, profile_name, profile_data)
+    
+    # store_profile2 should return a success dict or an error dict from _send_raw_profile_command
+    if result and result.get("status") == "Success":
+        return True, None
+    elif result and result.get("neohub_error"):
+        error_msg = result["neohub_error"]
+        return False, error_msg
+    
+    # Handle other errors (timeout, format error)
+    return False, "Unknown or non-hub-specific error during profile posting."
+
 async def apply_single_zone_profile(
     neohub_object: NeoHub,
     neohub_name: str, 
@@ -535,11 +586,11 @@ async def apply_single_zone_profile(
     profile_prefix: str
 ) -> bool:
     """
-    Applies a validated, aggregated weekly profile to a single NeoHub zone by calling 
-    the local store_profile2 function. Now includes NeoHub compatibility checks.
+    Applies a validated, aggregated weekly profile to a single NeoHub zone.
+    Now includes a retry mechanism for existing profiles using the Profile ID.
     """
-
-    # 1. --- NEOHUB COMPATIBILITY CHECK (New First Step) ---
+    
+    # 1. --- NEOHUB COMPATIBILITY CHECK (Existing) ---
     if not await check_neohub_compatibility(neohub_object, neohub_name):
         logging.error(f"Skipping profile application for {zone_name}. Neohub {neohub_name} failed firmware/configuration checks.")
         return False
@@ -547,23 +598,61 @@ async def apply_single_zone_profile(
     # 2. --- PROFILE COMPLIANCE CHECK (Existing) ---
     is_compliant, reason = _validate_neohub_profile(profile_data, zone_name)
     if not is_compliant:
-        logging.error(
-            f"PROFILE COMPLIANCE FAILED for Zone '{zone_name}' ({profile_prefix}): {reason}. "
-            f"Profile was NOT sent to NeoHub."
-        )
+        logging.error(f"PROFILE COMPLIANCE FAILED for Zone '{zone_name}' ({profile_prefix}): {reason}. Profile was NOT sent to NeoHub.")
         return False
 
     profile_name = f"{profile_prefix}_{zone_name}"
     logging.info(f"Storing validated profile '{profile_name}' on Neohub {neohub_name}")
 
+    # --- ATTEMPT 1: POST BY NAME (CREATE or FAIL with 'Name Exists') ---
     try:
-        # This call maintains the necessary 3 arguments (neohub_object, profile_name, profile_data)
-        await store_profile2(neohub_name, profile_name, profile_data)
-        logging.info(f"Successfully sent custom profile command for '{zone_name}'.")
-        return True
+        success, error_reason = await _post_profile_command(neohub_name, profile_name, profile_data)
     except Exception as e:
-        logging.error(f"Failed to execute custom store_profile2 command for '{zone_name}': {e}", exc_info=True)
-        return False
+         logging.error(f"Failed to execute custom store_profile2 command for '{zone_name}' (Attempt 1): {e}", exc_info=True)
+         return False
+
+    # --- CHECK RESULT OF ATTEMPT 1 ---
+    if success:
+        logging.info(f"Successfully sent custom profile command for '{zone_name}' (New Profile Created).")
+        return True
+    
+    # --- IF FAILED DUE TO NAME COLLISION, PROCEED TO ATTEMPT 2 ---
+    NAME_EXISTS_ERROR = "No such ID or name already exists"
+    if error_reason == NAME_EXISTS_ERROR:
+        logging.warning(f"Profile '{profile_name}' already exists. Attempting to retrieve Profile ID for update...")
+        
+        profile_id = await get_profile_id_by_name(neohub_object, neohub_name, profile_name)
+        
+        if profile_id is None:
+            logging.error(f"Could not retrieve Profile ID for existing profile '{profile_name}'. Update failed.")
+            return False
+
+        # --- ATTEMPT 2: POST BY ID (UPDATE) ---
+        logging.info(f"Retrieved ID {profile_id}. Attempting to update profile by ID...")
+        
+        # Modify the payload: replace 'name' with the numerical 'ID'
+        # The STORE_PROFILE2 command structure should be: {"ID": profile_id, "info": {...}}
+        update_payload = profile_data.copy()
+        update_payload["ID"] = profile_id
+        
+        try:
+            # We pass the ID-based payload to store_profile2
+            success, error_reason_2 = await _post_profile_command(neohub_name, profile_name, update_payload)
+            
+            if success:
+                 logging.info(f"Successfully sent custom profile command for '{zone_name}' (Updated Profile ID {profile_id}).")
+                 return True
+            else:
+                 logging.error(f"Profile update by ID failed for '{zone_name}' (ID {profile_id}): {error_reason_2}")
+                 return False
+                 
+        except Exception as e:
+            logging.error(f"Failed to execute custom store_profile2 command for '{zone_name}' (Attempt 2 - ID Update): {e}", exc_info=True)
+            return False
+
+    # --- HANDLE OTHER ERRORS ---
+    logging.error(f"Profile posting failed for '{zone_name}': {error_reason}")
+    return False
 
 async def send_command(neohub_name: str, command: Dict[str, Any]) -> Optional[Any]:
     """
