@@ -654,17 +654,17 @@ async def store_profile2(neohub_name: str, profile_name: str, profile_data: Dict
 async def _send_raw_profile_command(hub: NeoHub, command: Dict[str, Any]) -> Optional[Any]:
     """
     Manually constructs, sends, and waits for the response for the STORE_PROFILE2 
-    command. It uses manual string injection, single-quote replacement, and final 
-    backslash stripping to satisfy the finicky Neohub parser while preserving the 
-    required four-item schedule list with unquoted booleans.
+    command. Includes an aggressive reconnection check (hub.start()) to ensure 
+    the WebSocket is active, especially after a command like GET_SYSTEM causes a 
+    connection closure.
     """
     global _command_id_counter
     
-# --- FIX: Ensure the connection is ACTIVE before proceeding ---
+    # --- CRITICAL FIX: Re-establish connection if necessary ---
     if not hub.running:
-        logging.info(f"Connection inactive for {hub._host}. Attempting to re-establish connection before raw send.")
+        logging.info(f"Connection inactive for {hub._host}. Attempting to re-establish connection for raw send.")
         try:
-            # hub.start() will check if connected and re-establish the WebSocket if necessary.
+            # hub.start() attempts connection and sets hub.running = True on success.
             if not await hub.start():
                  logging.error(f"Failed to re-establish connection to {hub._host} for raw send.")
                  return None
@@ -674,32 +674,32 @@ async def _send_raw_profile_command(hub: NeoHub, command: Dict[str, Any]) -> Opt
             return None
     # -----------------------------------------------------------
 
+    # IMPORTANT: Retrieve token and client *after* potential hub.start(), 
+    # as hub.start() will reset the underlying client connection object.
     hub_token = getattr(hub, '_token', None)
-    hub_client = getattr(hub, '_client', None)
+    hub_client = getattr(hub, '_client', None) 
     
     if not hub_token or not hub_client:
-        logging.error("Could not access private token or client (_token or _client) for raw send.")
+        logging.error("Could not access private token or client (_token or _client) for raw send after check.")
         return None
 
     try:  # <--- START OF CORRECTED TRY BLOCK
-        # 0. Preparation: The input 'command' now relies on Python True/False 
-        # being correctly serialized to unquoted true/false by json.dumps.
+        # 0. Preparation
         command_to_send = command
         
-        # 1. Serialize the command to double-quoted JSON (this results in unquoted true/false)
+        # 1. Serialize the command
         command_id = next(_command_id_counter)
         command_value_str = json.dumps(command_to_send, separators=(',', ':'))
 
-        # 2. **HACK 1: Convert all double quotes to single quotes** for the inner command content.
-        # This is CRUCIAL: it leaves the unquoted 'true'/'false' untouched.
+        # 2. **HACK 1: Convert all double quotes to single quotes** (crucial for unquoted true/false)
         command_value_str_hacked = command_value_str.replace('"', "'")
         
         # 3. **HACK 2: Manually construct the INNER_MESSAGE string**
         message_str = (
             '{\\"token\\": \\"' + hub_token + '\\", '
             '\\"COMMANDS\\": ['
-                '{\\"COMMAND\\": \\"' + command_value_str_hacked + '\\", ' # Inject the single-quoted string
-                '\\"COMMANDID\\": ' + str(command_id) + '}' # COMMANDID is not quoted
+            '{\\"COMMAND\\": \\"' + command_value_str_hacked + '\\", '
+            '\\"COMMANDID\\": ' + str(command_id) + '}'
             ']}'
         )
 
@@ -715,14 +715,15 @@ async def _send_raw_profile_command(hub: NeoHub, command: Dict[str, Any]) -> Opt
         # **HACK 3 (User Request): Strip excess escaping**
         final_payload_string = final_payload_string.replace('\\\\\\"', '\\"')
         
-        # 6. Hook into the response mechanism
+        # 6. Hook into the response mechanism (Retrieve again, just in case)
         raw_connection = getattr(hub_client, '_websocket', None)
         raw_ws_send = getattr(raw_connection, 'send', None) if raw_connection else None
         pending_requests = getattr(hub_client, '_pending_requests', None)
         request_timeout = getattr(hub_client, '_request_timeout', 60) 
         
+        # CRITICAL CHECK: Ensure we actually have a valid send method after potential reconnect
         if not raw_ws_send or pending_requests is None:
-             raise AttributeError("Could not find internal mechanisms needed for raw send/receive.")
+             raise AttributeError("Could not find internal mechanisms needed for raw send/receive. Connection may have failed to stabilize.")
         
         future: asyncio.Future[Any] = asyncio.Future()
         pending_requests[command_id] = future
@@ -749,16 +750,16 @@ async def _send_raw_profile_command(hub: NeoHub, command: Dict[str, Any]) -> Opt
              logging.error(f"Neohub returned unexpected response for command {command_id}: {response_dict}. Check app/device for submission status.")
              return {"command_id": command_id, "status": "Unexpected Response", "response": response_dict}
 
-    except asyncio.TimeoutError: # <--- REQUIRED EXCEPT CLAUSE
+    except asyncio.TimeoutError:
         logging.error(f"Timeout waiting for response for command {command_id}.")
         return {"command_id": command_id, "status": "Timeout"}
-    except Exception as e: # <--- REQUIRED EXCEPT CLAUSE
+    except Exception as e:
         logging.error(f"Error during raw WebSocket send/receive for profile command: {e}")
         return None
-    finally: # <--- REQUIRED FINALLY CLAUSE
+    finally:
         # Clean up the pending request
         if pending_requests and 'command_id' in locals() and command_id in pending_requests:
-            del pending_requests[command_id]
+             del pending_requests[command_id]
 
 async def get_profile(neohub_name: str, profile_name: str) -> Optional[Dict[str, Any]]:
     """Retrieves a heating profile from the Neohub using neohubapi."""
