@@ -476,7 +476,7 @@ def _validate_neohub_profile(
             
     return True, "Profile is compliant."
 
-async def get_profile_id_by_name(neohub_name: str, profile_name: str) -> Optional[int]:
+async def get_profile_id_by_name(neohub_object: NeoHub, neohub_name: str, profile_name: str) -> Optional[int]:
     """
     Retrieves the numerical profile ID for a given profile name using the GET_PROFILE command.
     """
@@ -500,8 +500,8 @@ async def get_profile_id_by_name(neohub_name: str, profile_name: str) -> Optiona
         # If it's already a dictionary, use it directly
         profiles_dict = profiles_raw_response
     
+    # Ensure we have a dictionary before proceeding
     if not isinstance(profiles_dict, dict):
-        # This handles a failed fetch, an empty response, or an unparseable result
         logging.error(f"Failed to retrieve valid profile dictionary for '{profile_name}'.")
         return None
 
