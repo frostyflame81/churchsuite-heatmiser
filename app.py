@@ -671,39 +671,27 @@ async def store_profile2(neohub_name: str, profile_name: str, profile_data: Dict
 async def _send_raw_profile_command(hub: NeoHub, command: Dict[str, Any]) -> Optional[Any]:
     """
     Manually constructs, sends, and waits for the response for the STORE_PROFILE2 
-    command. The reconnection logic is now based on blindly calling hub.start(), 
-    which should reconnect if the connection was previously closed.
+    command. We now rely on the hub object's internal connection state being valid 
+    or the library's default handling to re-establish a connection.
     """
     global _command_id_counter
     
     # --- PROBE A (RAW): Entering _send_raw_profile_command. ---
-    logging.debug(f"PROBE A (RAW): Entering _send_raw_profile_command. Forcing connection check via hub.start().")
-
-    # --- CRITICAL FIX: AGGRESSIVE RECONNECT ---
-    # We can't check hub.running, so we attempt to start/reconnect unconditionally.
-    # This should succeed if the connection was closed by GET_SYSTEM.
-    try:
-        logging.info(f"PROBE B (RAW): Attempting aggressive reconnection for raw send via hub.start().")
-        # hub.start() is idempotent and will re-establish the WebSocket if necessary.
-        if not await hub.start():
-             logging.error(f"PROBE C (RAW): FAILED to re-establish connection to {hub._host} for raw send.")
-             return None
-        logging.info(f"PROBE D (RAW): Connection successfully re-established.")
-    except Exception as e:
-        logging.error(f"PROBE E (RAW): Error during hub.start() for {hub._host}: {e}")
-        return None
+    logging.debug(f"PROBE A (RAW): Entering _send_raw_profile_command. Relying on existing connection.")
+    
+    # The aggressive reconnection logic (PROBE B, C, D, E and the hub.start() call) 
+    # has been removed to fix the 'NeoHub' object has no attribute 'start' error.
     
     # --- PROBE F: Final Check before payload construction ---
-    logging.debug(f"PROBE F (RAW): Proceeding with raw send on active connection.")
+    logging.debug(f"PROBE F (RAW): Proceeding with raw send on existing connection.")
     # -----------------------------------------------------------
 
-    # IMPORTANT: Retrieve token and client *after* potential hub.start(), 
-    # as hub.start() will reset the underlying client connection object.
+    # IMPORTANT: Retrieve token and client
     hub_token = getattr(hub, '_token', None)
     hub_client = getattr(hub, '_client', None) 
     
     if not hub_token or not hub_client:
-        logging.error("Could not access private token or client (_token or _client) for raw send after check.")
+        logging.error("Could not access private token or client (_token or _client) for raw send.")
         return None
 
     try: 
@@ -738,15 +726,15 @@ async def _send_raw_profile_command(hub: NeoHub, command: Dict[str, Any]) -> Opt
         # **HACK 3 (User Request): Strip excess escaping**
         final_payload_string = final_payload_string.replace('\\\\\\"', '\\"')
         
-        # 6. Hook into the response mechanism (Retrieve again, just in case)
+        # 6. Hook into the response mechanism
         raw_connection = getattr(hub_client, '_websocket', None)
         raw_ws_send = getattr(raw_connection, 'send', None) if raw_connection else None
         pending_requests = getattr(hub_client, '_pending_requests', None)
         request_timeout = getattr(hub_client, '_request_timeout', 60) 
         
-        # CRITICAL CHECK: Ensure we actually have a valid send method after potential reconnect
+        # CRITICAL CHECK: Ensure we actually have a valid send method 
         if not raw_ws_send or pending_requests is None:
-             raise AttributeError("Could not find internal mechanisms needed for raw send/receive. Connection may have failed to stabilize.")
+             raise AttributeError("Could not find internal mechanisms needed for raw send/receive. Connection may be closed.")
         
         future: asyncio.Future[Any] = asyncio.Future()
         pending_requests[command_id] = future
