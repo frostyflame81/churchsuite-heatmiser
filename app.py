@@ -668,25 +668,19 @@ async def store_profile2(neohub_name: str, profile_name: str, profile_data: Dict
     response = await send_command(neohub_name, inner_payload)
     return response
 
-async def _send_raw_profile_command(hub: NeoHub, command: Dict[str, Any]) -> Optional[Any]:
+async def _send_raw_profile_command(hub, command: Dict[str, Any]) -> Optional[Any]:
     """
     Manually constructs, sends, and waits for the response for the STORE_PROFILE2 
-    command. We now rely on the hub object's internal connection state being valid 
-    or the library's default handling to re-establish a connection.
+    command.
     """
     global _command_id_counter
     
     # --- PROBE A (RAW): Entering _send_raw_profile_command. ---
     logging.debug(f"PROBE A (RAW): Entering _send_raw_profile_command. Relying on existing connection.")
     
-    # The aggressive reconnection logic (PROBE B, C, D, E and the hub.start() call) 
-    # has been removed to fix the 'NeoHub' object has no attribute 'start' error.
-    
     # --- PROBE F: Final Check before payload construction ---
     logging.debug(f"PROBE F (RAW): Proceeding with raw send on existing connection.")
-    # -----------------------------------------------------------
-
-    # IMPORTANT: Retrieve token and client
+    
     hub_token = getattr(hub, '_token', None)
     hub_client = getattr(hub, '_client', None) 
     
@@ -732,7 +726,6 @@ async def _send_raw_profile_command(hub: NeoHub, command: Dict[str, Any]) -> Opt
         pending_requests = getattr(hub_client, '_pending_requests', None)
         request_timeout = getattr(hub_client, '_request_timeout', 60) 
         
-        # CRITICAL CHECK: Ensure we actually have a valid send method 
         if not raw_ws_send or pending_requests is None:
              raise AttributeError("Could not find internal mechanisms needed for raw send/receive. Connection may be closed.")
         
@@ -745,20 +738,40 @@ async def _send_raw_profile_command(hub: NeoHub, command: Dict[str, Any]) -> Opt
         await raw_ws_send(final_payload_string)
         response_dict = await asyncio.wait_for(future, timeout=request_timeout)
         
-        # 8. Process the response (Using robust logic to prevent crash)
+        # 8. Process the response
         logging.debug(f"Received STORE_PROFILE2 response (COMMANDID {command_id}): {response_dict}")
 
+        # CRITICAL FIX 1: Add safeguard against 'str' object has no attribute 'get' error.
+        # This occurs if the future resolves with an unprocessed string instead of a dict.
+        if isinstance(response_dict, str):
+            try:
+                response_dict = json.loads(response_dict)
+            except json.JSONDecodeError as e:
+                logging.error(f"Failed to decode response string for command {command_id}: {response_dict}")
+                raise ValueError("Response was a string but failed JSON decoding.") from e
+
+        if not isinstance(response_dict, dict):
+            logging.error(f"Response for command {command_id} is not a dictionary after processing: {response_dict}")
+            return {"command_id": command_id, "status": "Format Error"}
+        
+        # CRITICAL FIX 2: Handle the SUCCESS response format based on logs: {"ID":X, "result":"profile created"}
+        if response_dict.get("result") == "profile created" and "ID" in response_dict:
+            profile_id = response_dict["ID"]
+            logging.info(f"Successfully stored profile with ID: {profile_id}")
+            return {"command_id": command_id, "status": "Success", "profile_id": profile_id}
+        
+        # Handle the secondary success/error format (original library logic)
         profile_data = response_dict.get("STORE_PROFILE2")
 
         if profile_data and isinstance(profile_data, dict) and "PROFILE_ID" in profile_data:
              profile_id = profile_data["PROFILE_ID"]
              logging.info(f"Successfully stored profile with ID: {profile_id}")
              return {"command_id": command_id, "status": "Success", "profile_id": profile_id}
-        elif isinstance(response_dict, dict) and "error" in response_dict:
+        elif "error" in response_dict:
              logging.error(f"Neohub returned error for command {command_id}: {response_dict['error']}")
              return {"command_id": command_id, "status": "Error", "neohub_error": response_dict['error']}
         else:
-             logging.error(f"Neohub returned unexpected response for command {command_id}: {response_dict}. Check app/device for submission status.")
+             logging.error(f"Neohub returned unhandled response for command {command_id}: {response_dict}. Check app/device for submission status.")
              return {"command_id": command_id, "status": "Unexpected Response", "response": response_dict}
 
     except asyncio.TimeoutError:
