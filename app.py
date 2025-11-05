@@ -483,7 +483,6 @@ async def get_profile_id_by_name(neohub_object: NeoHub, neohub_name: str, profil
     logging.info(f"Attempting ID retrieval for existing profile '{profile_name}' using GET_PROFILE...")
     
     # 1. Use the existing helper function to fetch only the required profile
-    # This returns the response payload, which may be a dict or a JSON string.
     profiles_raw_response = await get_profile(neohub_name, profile_name)
     
     profiles_dict = None
@@ -505,25 +504,26 @@ async def get_profile_id_by_name(neohub_object: NeoHub, neohub_name: str, profil
         logging.error(f"Failed to retrieve valid profile dictionary for '{profile_name}'.")
         return None
 
-    # 3. Extract the PROFILE_ID
-    # The response is expected to be {'Profile Name': {...profile data...}}
-    profile_data = profiles_dict.get(profile_name)
+    # 3. CRITICAL FIX: Direct extraction of PROFILE_ID (as 'GET_PROFILE' returns the profile data directly)
+    profile_id = profiles_dict.get("PROFILE_ID")
     
-    if profile_data and isinstance(profile_data, dict):
-        profile_id = profile_data.get("PROFILE_ID")
-        
-        if profile_id is not None:
-            try:
-                # Return the integer ID for the STORE_PROFILE2 command
-                final_id = int(profile_id)
+    if profile_id is not None:
+        try:
+            # Return the integer ID for the STORE_PROFILE2 command
+            final_id = int(profile_id)
+            # We can also confirm the name matches here for a final sanity check
+            if profiles_dict.get("name") == profile_name:
                 logging.info(f"Successfully retrieved existing profile ID: {final_id} for '{profile_name}'.")
                 return final_id
-            except ValueError:
-                logging.error(f"Found profile name '{profile_name}', but its ID ('{profile_id}') could not be parsed as an integer.")
+            else:
+                logging.error(f"Profile ID {final_id} found, but name mismatch: expected '{profile_name}', got '{profiles_dict.get('name')}'")
                 return None
+        except ValueError:
+            logging.error(f"Found profile name '{profile_name}', but its ID ('{profile_id}') could not be parsed as an integer.")
+            return None
 
-    # This handles the case where the profile name wasn't found as a top-level key
-    logging.error(f"Profile name '{profile_name}' not found in the GET_PROFILE response keys.")
+    # This handles the case where the PROFILE_ID key was missing from the response
+    logging.error(f"Key 'PROFILE_ID' not found in the GET_PROFILE response dictionary for '{profile_name}'.")
     return None
 
 async def check_neohub_compatibility(neohub_object: NeoHub, neohub_name: str) -> bool:
