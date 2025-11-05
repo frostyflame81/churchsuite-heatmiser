@@ -592,10 +592,10 @@ async def apply_single_zone_profile(
     profile_prefix: str
 ) -> bool:
     """
-    Applies a validated, aggregated weekly profile to a single NeoHub zone.
-    Now includes a retry mechanism for existing profiles using the Profile ID.
+    Applies a validated, aggregated weekly profile to a single NeoHub zone by calling 
+    the local store_profile2 function. Now attempts to update by ID if profile exists.
     """
-    
+
     # 1. --- NEOHUB COMPATIBILITY CHECK (Existing) ---
     if not await check_neohub_compatibility(neohub_object, neohub_name):
         logging.error(f"Skipping profile application for {zone_name}. Neohub {neohub_name} failed firmware/configuration checks.")
@@ -604,115 +604,31 @@ async def apply_single_zone_profile(
     # 2. --- PROFILE COMPLIANCE CHECK (Existing) ---
     is_compliant, reason = _validate_neohub_profile(profile_data, zone_name)
     if not is_compliant:
-        logging.error(f"PROFILE COMPLIANCE FAILED for Zone '{zone_name}' ({profile_prefix}): {reason}. Profile was NOT sent to NeoHub.")
+        logging.error(
+            f"PROFILE COMPLIANCE FAILED for Zone '{zone_name}' ({profile_prefix}): {reason}. "
+            f"Profile was NOT sent to NeoHub."
+        )
         return False
 
     profile_name = f"{profile_prefix}_{zone_name}"
-    logging.info(f"Storing validated profile '{profile_name}' on Neohub {neohub_name}")
-
-    # --- ATTEMPT 1: POST BY NAME (CREATE or FAIL with 'Name Exists') ---
-    try:
-        success, error_reason = await _post_profile_command(neohub_name, profile_name, profile_data)
-    except Exception as e:
-         logging.error(f"Failed to execute custom store_profile2 command for '{zone_name}' (Attempt 1): {e}", exc_info=True)
-         return False
-
-    # --- CHECK RESULT OF ATTEMPT 1 ---
-    if success:
-        logging.info(f"Successfully sent custom profile command for '{zone_name}' (New Profile Created).")
-        return True
     
-    # --- IF FAILED DUE TO NAME COLLISION, PROCEED TO ATTEMPT 2 ---
-    NAME_EXISTS_ERROR = "No such ID or name already exists"
-    if error_reason == NAME_EXISTS_ERROR:
-        logging.warning(f"Profile '{profile_name}' already exists. Attempting to retrieve Profile ID for update...")
-        
-        profile_id = await get_profile_id_by_name(neohub_object, neohub_name, profile_name)
-        
-        if profile_id is None:
-            logging.error(f"Could not retrieve Profile ID for existing profile '{profile_name}'. Update failed.")
-            return False
+    # --- NEW LOGIC: Check for existing profile ID ---
+    profile_id = await get_profile_id_by_name(neohub_object, neohub_name, profile_name)
 
-        # --- ATTEMPT 2: POST BY ID (UPDATE) ---
+    if profile_id:
         logging.info(f"Retrieved ID {profile_id}. Attempting to update profile by ID...")
-        
-        # Modify the payload: replace 'name' with the numerical 'ID'
-        # The STORE_PROFILE2 command structure should be: {"ID": profile_id, "info": {...}}
-        update_payload = profile_data.copy()
-        update_payload["ID"] = profile_id
-        
-        try:
-            # We pass the ID-based payload to store_profile2
-            success, error_reason_2 = await _post_profile_command(neohub_name, profile_name, update_payload)
-            
-            if success:
-                 logging.info(f"Successfully sent custom profile command for '{zone_name}' (Updated Profile ID {profile_id}).")
-                 return True
-            else:
-                 logging.error(f"Profile update by ID failed for '{zone_name}' (ID {profile_id}): {error_reason_2}")
-                 return False
-                 
-        except Exception as e:
-            logging.error(f"Failed to execute custom store_profile2 command for '{zone_name}' (Attempt 2 - ID Update): {e}", exc_info=True)
-            return False
+    else:
+        logging.info(f"Profile '{profile_name}' not found. Attempting to create new profile by name...")
+    # --- END NEW LOGIC ---
 
-    # --- HANDLE OTHER ERRORS ---
-    logging.error(f"Profile posting failed for '{zone_name}': {error_reason}")
-    return False
-
-async def send_command(neohub_name: str, command: Dict[str, Any]) -> Optional[Any]:
-    """
-    Sends a command to the Neohub. Profile commands delegate to the raw sender 
-    IMMEDIATELY to execute the reconnection logic before any internal checks fail.
-    """
-    global hubs
-    hub = hubs.get(neohub_name)
-    
-    # --- PROBE 1 (SC): Entry Point ---
-    logging.debug(f"PROBE 1 (SC): Entering send_command for {neohub_name}.")
-
-    if hub is None:
-        # This check is for initialization failure and is separate from connection loss.
-        logging.error(f"Not connected to Neohub: {neohub_name}") 
-        return None
-    
-    # ----------------------------------------------------------------------
-    # CRITICAL FIX: Move the profile command check to the top.
-    # This ensures delegation to the raw sender (which contains hub.start()) 
-    # executes BEFORE the general connection check inside send_command fails.
-    # ----------------------------------------------------------------------
-    is_profile_command = False
-    if isinstance(command, dict):
-        for key in ["STORE_PROFILE", "STORE_PROFILE2"]:
-            if key in command and isinstance(command[key], dict):
-                is_profile_command = True
-                break
-            
-    if is_profile_command:
-        # --- PROBE 3 (SC): Before Delegation ---
-        logging.debug(f"PROBE 3 (SC): Delegating to _send_raw_profile_command for {neohub_name}.")
-        # The aggressive reconnection logic (hub.start()) is inside this function.
-        response = await _send_raw_profile_command(hub, command)
-        return response
-    # ----------------------------------------------------------------------
-    
-    # All non-profile commands (like GET_SYSTEM/GET_ZONES) fall through here.
-    # This is where the UNSEEN connection check in your code MUST be located.
-    # For profile commands, we have now successfully bypassed it.
-    
-    # Normal command handling (for simple commands like GET_ZONES, GET_SYSTEM)
     try:
-        response = await hub._send(command)
-        return response
-    except (NeoHubUsageError, NeoHubConnectionError) as e:
-        logging.error(f"Error sending command to Neohub {neohub_name}: {e}")
-        return None
-    except json.decoder.JSONDecodeError as e:
-        logging.error(f"Error decoding JSON response from Neohub {neohub_name}: {e}")
-        return None
+        # Pass the retrieved profile_id (or None) to store_profile2
+        await store_profile2(neohub_name, profile_name, profile_data, profile_id=profile_id)
+        logging.info(f"Successfully sent custom profile command for '{zone_name}'.")
+        return True
     except Exception as e:
-        logging.error(f"An unexpected error occurred: {e}")
-        return None
+        logging.error(f"Failed to execute custom store_profile2 command for '{zone_name}': {e}", exc_info=True)
+        return False
 
 async def get_zones(neohub_name: str) -> Optional[List[str]]:
     """Retrieves zone names from the Neohub using neohubapi."""
@@ -740,12 +656,14 @@ async def get_live_data(neohub_name: str) -> Optional[Dict[str, Any]]:
     response = await send_command(neohub_name, command)
     return response
 
-async def store_profile2(neohub_name: str, profile_name: str, profile_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """Stores a heating profile on the Neohub, passing a Python dictionary structure directly to avoid double-encoding."""
-    logging.info(f"Storing profile {profile_name} on Neohub {neohub_name}")
+async def store_profile2(neohub_name: str, profile_name: str, profile_data: Dict[str, Any], profile_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
+    """
+    Stores a heating profile on the Neohub, passing a Python dictionary structure directly.
+    Accepts an optional profile_id for updates.
+    """
+    logging.info(f"Storing profile {profile_name} (ID: {profile_id if profile_id else 'New'}) on Neohub {neohub_name}")
 
     # 1. CREATE THE COMMAND PAYLOAD (clean Python dict with float temps and P_TYPE)
-    # This structure is exactly what the Hub expects under the main COMMAND key.
     inner_payload = {
         "STORE_PROFILE2": {
             "name": profile_name,
@@ -757,11 +675,54 @@ async def store_profile2(neohub_name: str, profile_name: str, profile_data: Dict
     # 2. DEBUGGING ECHO
     logging.debug(f"DEBUG: FINAL Python Dict Payload: {json.dumps(inner_payload)}")
 
-    # 3. SEND THE COMMAND DICT DIRECTLY
-    # The neohubapi library's _send() will now correctly serialize this dictionary 
-    # for the WebSocket transport, avoiding the double-encoding issue.
-    response = await send_command(neohub_name, inner_payload)
+    # 3. SEND THE COMMAND DICT DIRECTLY, PASSING THE ID
+    # The ID is passed here, but only injected into the command payload inside send_command's raw function.
+    response = await send_command(neohub_name, inner_payload, profile_id=profile_id)
     return response
+
+async def send_command(neohub_name: str, command: Dict[str, Any], profile_id: Optional[int] = None) -> Optional[Any]:
+    """
+    Sends a command to the Neohub, using a custom raw send for complex profile commands.
+    If profile_id is provided, it uses the specialized update function.
+    """
+    global hubs
+    hub = hubs.get(neohub_name)
+    if hub is None:
+        logging.error(f"Not connected to Neohub: {neohub_name}")
+        return None
+
+    # --- START FIX: Custom raw send for complex commands ---
+    is_profile_command = False
+    if isinstance(command, dict):
+        for key in ["STORE_PROFILE", "STORE_PROFILE2"]:
+            if key in command and isinstance(command[key], dict):
+                is_profile_command = True
+                break
+            
+    if is_profile_command:
+        # --- LOGIC: Route based on profile_id ---
+        if profile_id is not None:
+            logging.debug(f"PROBE 3 (SC): Delegating to _send_raw_profile_update_command for {neohub_name}.")
+            return await _send_raw_profile_update_command(hub, command, profile_id)
+        else:
+            logging.debug(f"PROBE 3 (SC): Delegating to _send_raw_profile_command for {neohub_name}.")
+            return await _send_raw_profile_command(hub, command)
+        # --- END LOGIC ---
+    # --- END FIX ---
+    
+    # Normal command handling (for simple commands like GET_ZONES)
+    try:
+        response = await hub._send(command)
+        return response
+    except (NeoHubUsageError, NeoHubConnectionError) as e:
+        logging.error(f"Error sending command to Neohub {neohub_name}: {e}")
+        return None
+    except json.decoder.JSONDecodeError as e:
+        logging.error(f"Error decoding JSON response from Neohub {neohub_name}: {e}")
+        return None
+    except Exception as e:
+        logging.error(f"An unexpected error occurred: {e}")
+        return None
 
 async def _send_raw_profile_command(hub, command: Dict[str, Any]) -> Optional[Any]:
     """
@@ -879,6 +840,145 @@ async def _send_raw_profile_command(hub, command: Dict[str, Any]) -> Optional[An
         # Clean up the pending request
         if pending_requests and 'command_id' in locals() and command_id in pending_requests:
              del pending_requests[command_id]
+
+async def _send_raw_profile_update_command(hub, command: Dict[str, Any], profile_id: int) -> Optional[Dict[str, Any]]:
+    """
+    Manually constructs, sends, and waits for the response for the STORE_PROFILE2 
+    command specifically for UPDATING an existing profile by ID.
+    
+    The ID is inserted before serialization to follow the same pattern as the original
+    function's quirky serialization process.
+    """
+    global _command_id_counter
+    
+    logging.debug(f"PROBE A (UPDATE RAW): Entering _send_raw_profile_update_command. ID: {profile_id}. Relying on existing connection.")
+    
+    hub_token = getattr(hub, '_token', None)
+    hub_client = getattr(hub, '_client', None) 
+    
+    if not hub_token or not hub_client:
+        logging.error("Could not access private token or client (_token or _client) for raw send.")
+        return None
+
+    try: 
+        # 0. Preparation
+        command_to_send = command
+        command_id = next(_command_id_counter)
+        
+        # Ensure the command has the STORE_PROFILE2 key
+        if 'STORE_PROFILE2' not in command_to_send or not isinstance(command_to_send['STORE_PROFILE2'], dict):
+             logging.error("Invalid command format provided to profile update function.")
+             return None
+
+        # 1. CRITICAL: Inject the ID into the dictionary BEFORE serialization
+        command_to_send['STORE_PROFILE2']['ID'] = profile_id
+        logging.debug(f"PROBE ID (INJECTED): ID {profile_id} injected into command payload.")
+        
+        
+        # 2. Serialize the command (ORIGINAL LOGIC)
+        command_value_str = json.dumps(command_to_send, separators=(',', ':'))
+
+        # **HACK 1: Convert all double quotes to single quotes** (crucial for unquoted true/false)
+        command_value_str_hacked = command_value_str.replace('"', "'")
+        
+        
+        # 3. **HACK 2: Manually construct the INNER_MESSAGE string**
+        message_str = (
+            '{\\"token\\": \\"' + hub_token + '\\", '
+            '\\"COMMANDS\\": ['
+            '{\\"COMMAND\\": \\"' + command_value_str_hacked + '\\", '
+            '\\"COMMANDID\\": ' + str(command_id) + '}'
+            ']}'
+        )
+
+        # 4. Construct the final payload dictionary (outer wrapper)
+        final_payload_dict = {
+            "message_type": "hm_get_command_queue",
+            "message": message_str 
+        }
+        
+        # 5. **Final Serialization & Escaping Hacks**
+        final_payload_string = json.dumps(final_payload_dict) 
+        
+        # **HACK 3 (User Request): Strip excess escaping**
+        final_payload_string = final_payload_string.replace('\\\\\\"', '\\"')
+        
+        # 6. Hook into the response mechanism
+        raw_connection = getattr(hub_client, '_websocket', None)
+        raw_ws_send = getattr(raw_connection, 'send', None) if raw_connection else None
+        pending_requests = getattr(hub_client, '_pending_requests', None)
+        request_timeout = getattr(hub_client, '_request_timeout', 60) 
+        
+        if not raw_ws_send or pending_requests is None:
+             raise AttributeError("Could not find internal mechanisms needed for raw send/receive. Connection may be closed.")
+        
+        future: asyncio.Future[Any] = asyncio.Future()
+        pending_requests[command_id] = future
+
+        logging.debug(f"Raw Sending: {final_payload_string}")
+        
+        # 7. Send and wait
+        await raw_ws_send(final_payload_string)
+        response_dict_raw = await asyncio.wait_for(future, timeout=request_timeout)
+        
+        # 8. Process the response (Handling the `hm_set_command_response` format)
+        logging.debug(f"Received STORE_PROFILE2 response (COMMANDID {command_id}): {response_dict_raw}")
+        
+        # Standardize response structure
+        response_data = response_dict_raw
+        if isinstance(response_dict_raw, dict) and 'response' in response_dict_raw:
+            try:
+                # The response field is a JSON string of the error or success payload
+                response_data = json.loads(response_dict_raw['response'])
+            except json.JSONDecodeError:
+                # If it's not JSON, assume it's the raw error string
+                response_data = response_dict_raw['response']
+        elif isinstance(response_dict_raw, str):
+            try:
+                response_data = json.loads(response_dict_raw)
+            except json.JSONDecodeError as e:
+                logging.error(f"Failed to decode response string for command {command_id}: {response_dict_raw}")
+                raise ValueError("Response was a string but failed JSON decoding.") from e
+        
+        if not isinstance(response_data, dict):
+            logging.error(f"Final response for command {command_id} is not a dictionary: {response_data}")
+            return {"command_id": command_id, "status": "Format Error"}
+        
+        # --- RESPONSE CHECKING ---
+        
+        # 8a. Handle success response for new profile (unlikely for this function, but safe)
+        if response_data.get("result") == "profile created" and "ID" in response_data:
+            profile_id_res = response_data["ID"]
+            logging.info(f"Successfully stored profile with ID: {profile_id_res}")
+            return {"command_id": command_id, "status": "Success", "profile_id": profile_id_res}
+        
+        # 8b. Handle success response for existing profile (update) - often just a success signal or echoed ID
+        if "PROFILE_ID" in response_data and response_data.get("P_TYPE") is not None:
+             profile_id_res = response_data["PROFILE_ID"]
+             logging.info(f"Successfully updated profile ID: {profile_id_res}")
+             return {"command_id": command_id, "status": "Success", "profile_id": profile_id_res}
+
+        # 8c. Handle error
+        elif "error" in response_data:
+            logging.error(f"Neohub returned error for command {command_id}: {response_data['error']}")
+            return {"command_id": command_id, "status": "Error", "neohub_error": response_data['error']}
+        
+        # 8d. Handle unhandled responses
+        else:
+            logging.error(f"Neohub returned unhandled response for command {command_id}: {response_data}. Check app/device for submission status.")
+            return {"command_id": command_id, "status": "Unexpected Response", "response": response_data}
+
+    except asyncio.TimeoutError:
+        logging.error(f"Timeout waiting for response for command {command_id}.")
+        return {"command_id": command_id, "status": "Timeout"}
+    except Exception as e:
+        # Catch errors raised inside the function (like ValueError for decoding)
+        logging.error(f"Error during raw WebSocket send/receive for profile command: {type(e).__name__}: {e}")
+        return None
+    finally:
+        # Clean up the pending request
+        if pending_requests and 'command_id' in locals() and command_id in pending_requests:
+            del pending_requests[command_id]
 
 async def get_profile(neohub_name: str, profile_name: str) -> Optional[Dict[str, Any]]:
     """Retrieves a heating profile from the Neohub using neohubapi."""
