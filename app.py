@@ -10,6 +10,7 @@ import argparse
 import os
 import pytz # type: ignore
 import dateutil.parser # type: ignore
+from types import SimpleNamespace # We need this import to check the type
 from typing import Dict, Any, List, Optional, Union, Tuple
 import websockets # type: ignore
 import ssl
@@ -478,70 +479,44 @@ def _validate_neohub_profile(
 
 async def get_profile_id_by_name(neohub_object: NeoHub, neohub_name: str, profile_name: str) -> Optional[int]:
     """
-    Retrieves the numerical profile ID for a given profile name using the GET_PROFILE command.
-    Includes probes to debug the returned data structure.
+    Retrieves the numerical profile ID for a given profile name using the GET_PROFILE command,
+    handling the response as a SimpleNamespace object.
     """
     logging.info(f"Attempting ID retrieval for existing profile '{profile_name}' using GET_PROFILE...")
     
-    # 1. Fetch the raw response
+    # 1. Fetch the raw response (returns a SimpleNamespace object)
     profiles_raw_response = await get_profile(neohub_name, profile_name)
     
-    # --- DEBUG PROBES ---
+    # --- DEBUG PROBES (Retained for one last run if needed) ---
     logging.debug(f"PROBE 1 (Raw Response Type): {type(profiles_raw_response)}")
-    logging.debug(f"PROBE 2 (Raw Response Data): {profiles_raw_response}")
     # --------------------
-    
-    current_data = profiles_raw_response
 
-    # 2. Aggressively extract the inner JSON string if necessary (up to two levels of nesting)
-    for _ in range(2): # Check for nesting up to two levels
-        if isinstance(current_data, dict):
-            # If the outer wrapper dict is returned, the profile is under the 'response' key
-            if 'response' in current_data:
-                logging.debug(f"PROBE 3: Found 'response' key. Extracting string value.")
-                current_data = current_data.get('response')
-            # If the profile data is at the top level (from the inner message parsing)
-            elif 'PROFILE_ID' in current_data:
-                logging.debug(f"PROBE 3: PROFILE_ID found at current dictionary level.")
-                break # Exit loop, data is ready
-            else:
-                # Neither the wrapper nor the profile data
-                break 
+    # 2. Check for the correct SimpleNamespace type
+    if isinstance(profiles_raw_response, SimpleNamespace):
         
-        if isinstance(current_data, str):
+        # Access the PROFILE_ID attribute directly from the SimpleNamespace object.
+        # We use getattr() for safe access.
+        profile_id = getattr(profiles_raw_response, "PROFILE_ID", None)
+        
+        if profile_id is not None:
             try:
-                # This handles the nested JSON string (the actual profile data)
-                current_data = json.loads(current_data)
-                logging.debug(f"PROBE 4: Successfully parsed JSON string to dictionary.")
-            except json.JSONDecodeError as e:
-                logging.error(f"PROBE ERROR: Failed to parse profile data as JSON: {e}")
+                # Return the integer ID for the STORE_PROFILE2 command
+                final_id = int(profile_id)
+                logging.info(f"Successfully retrieved existing profile ID: {final_id} for '{profile_name}'.")
+                return final_id
+            except ValueError:
+                logging.error(f"Found profile ID ('{profile_id}'), but it could not be parsed as an integer.")
                 return None
-        else:
-            break
-
-    profiles_dict = current_data
-    
-    # 3. Final Check and ID Extraction
-    if not isinstance(profiles_dict, dict) or 'PROFILE_ID' not in profiles_dict:
-        logging.error(f"Failed to retrieve valid profile dictionary for '{profile_name}'. Final data type: {type(profiles_dict)}")
+        
+        # Fallthrough for SimpleNamespace if PROFILE_ID is missing
+        logging.error(f"Key 'PROFILE_ID' not found in the SimpleNamespace object for '{profile_name}'.")
         return None
 
-    profile_id = profiles_dict.get("PROFILE_ID")
+    # 3. Handle unexpected types (should no longer be the case)
+    else:
+        logging.error(f"Failed to retrieve valid profile data for '{profile_name}'. Unexpected final data type: {type(profiles_raw_response)}")
+        return None
     
-    if profile_id is not None:
-        try:
-            # Return the integer ID for the STORE_PROFILE2 command
-            final_id = int(profile_id)
-            logging.info(f"Successfully retrieved existing profile ID: {final_id} for '{profile_name}'.")
-            return final_id
-        except ValueError:
-            logging.error(f"Found profile ID ('{profile_id}'), but it could not be parsed as an integer.")
-            return None
-
-    # This should be caught by the previous checks, but kept as a final fallback
-    logging.error(f"Key 'PROFILE_ID' not found in the final parsed profile dictionary.")
-    return None
-
 async def check_neohub_compatibility(neohub_object: NeoHub, neohub_name: str) -> bool:
     """
     Checks the NeoHub connection, firmware version, and 6-stage profile configuration 
