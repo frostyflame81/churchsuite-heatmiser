@@ -236,13 +236,13 @@ def create_aggregated_schedule(
     for each NeoHub Zone.
     """
     
-    # Final schedule structure: { zone_name: { day_of_week: [setpoints] } }
+    # Final schedule structure: { zone_name: { day_of_week_index: [setpoints] } }
     zone_schedule: Dict[str, Dict[int, List[Dict[str, Union[str, float]]]]] = {}
     
     logging.info(f"AGGREGATION START: Processing {len(bookings)} bookings.")
     
     # Initialize schedule with default ECO setpoints for all zones/days
-    for location_config in config.get("locations", {}).values():
+    for location_name, location_config in config.get("locations", {}).items():
         for zone_name in location_config.get("zones", []):
             if zone_name not in zone_schedule:
                 # Initialize schedule structure for the zone/day
@@ -256,26 +256,31 @@ def create_aggregated_schedule(
     
     if not bookings:
         logging.info("AGGREGATION END: Bookings list was empty. Returning ECO default schedule.")
-        # If no bookings, the initialized ECO schedule is returned
         return zone_schedule
 
     for booking in bookings:
         location_name = booking.get("resource")
         booking_id = booking.get("id", "N/A")
         
+        # NOTE: Using 'resource' name as the key, assuming that is how you map to config["locations"]
+        if location_name not in config["locations"]:
+            # Fallback check if 'resource' is the resource name string (if not using ID map)
+            location_config = None
+            for cfg_name, cfg in config["locations"].items():
+                 if location_name in cfg.get("aliases", []): # Assuming aliases exists or using resource map from the parent function
+                    location_config = cfg
+                    location_name = cfg_name # Use the internal config name
+                    break
+            
+            if not location_config:
+                logging.warning(f"Skipping booking ID {booking_id}: No config found for resource '{location_name}'.")
+                continue
+        
+        location_config = config["locations"][location_name]
+
         logging.debug(f"AGGREGATION LOOP: Processing booking ID {booking_id} for location '{location_name}'")
         
-        if not location_name:
-            logging.warning(f"Skipping booking ID {booking_id}: Missing 'resource' key.")
-            continue
-        
-        # 1. Get location config
-        location_config = _get_location_config(location_name, config)
-        if not location_config:
-            logging.warning(f"Skipping booking ID {booking_id}: No config found for location '{location_name}'.")
-            continue
-
-        # 2. Calculate the specific preheat required for THIS location/booking
+        # 1. Calculate the specific preheat required for THIS location/booking
         required_preheat_minutes = _calculate_location_preheat_minutes(
             location_name, 
             current_external_temp, 
@@ -283,7 +288,7 @@ def create_aggregated_schedule(
         )
         logging.debug(f"PREHEAT: Location '{location_name}' requires {required_preheat_minutes} minutes of preheat.")
 
-        # 3. Determine all zones associated with this location
+        # 2. Determine all zones associated with this location
         zone_names = location_config.get("zones", [])
         if not zone_names:
             logging.warning(f"Location '{location_name}' has no 'zones' configured. Skipping.")
@@ -291,28 +296,26 @@ def create_aggregated_schedule(
         logging.debug(f"ZONES: Location '{location_name}' affects zones: {zone_names}")
             
         try:
-            # CRITICAL CHECK: Ensure your booking data contains these keys.
-            # If the raw ChurchSuite bookings only contain 'starts_at' and 'ends_at',
-            # you need to change the keys below.
-            start_time_key = "starts_at" if "starts_at" in booking else "start_time_utc"
-            end_time_key = "ends_at" if "ends_at" in booking else "end_time_utc"
+            # Get the correct time keys
+            start_time_key = "starts_at"
+            end_time_key = "ends_at"
             
+            # CRITICAL TIME PARSING: Use UTC time from booking, then convert to local
             start_dt_utc = dateutil.parser.parse(booking[start_time_key])
             end_dt_utc = dateutil.parser.parse(booking[end_time_key])
             
             logging.debug(f"TIME PARSE: UTC Start: {start_dt_utc.isoformat()}, UTC End: {end_dt_utc.isoformat()}")
             
-            # Assuming 'TIMEZONE' is an environment variable or global constant
             local_tz = pytz.timezone(TIMEZONE) 
-            start_dt_local = start_dt_utc.astimezone(local_tz)
-            end_dt_local = end_dt_utc.astimezone(local_tz)
+            start_dt_local = start_dt_utc.astimezone(local_tz).replace(tzinfo=None) # Remove TZ info for comparison
+            end_dt_local = end_dt_utc.astimezone(local_tz).replace(tzinfo=None)
 
             day_of_week = start_dt_local.weekday() # Monday=0, Sunday=6
             target_temp = location_config.get("default_temp", DEFAULT_TEMPERATURE)
             
             logging.debug(f"TIME CONVERTED: Local Day: {day_of_week}, Local Start: {start_dt_local.strftime('%H:%M')}, Target Temp: {target_temp}")
 
-            # --- Iterate through all zones linked to this location ---
+            # --- Iterate through all zones linked to this location ---\n
             for zone_name in zone_names:
                 
                 # Calculate the preheat start time for THIS event
@@ -337,11 +340,10 @@ def create_aggregated_schedule(
                 logging.debug(f"SETPOINTS ADDED: Zone '{zone_name}' (Day {day_of_week}): Preheat at {preheat_time_str} ({target_temp}°C), ECO at {end_time_str} ({ECO_TEMPERATURE}°C)")
 
         except (KeyError, ValueError, TypeError) as e:
-            # Note: This is where a KeyError on the time strings would be caught.
             logging.error(f"Error processing booking for {location_name} (ID {booking_id}): {e}. Check time keys in booking data.", exc_info=True)
             continue
             
-    # --- Post-processing: Sort and Merge ---
+    # --- Post-processing: Sort and Merge ---\n
     logging.info("POST-PROCESSING START: Sorting and merging conflicting setpoints.")
     
     for zone, daily_schedule in zone_schedule.items():
@@ -350,29 +352,34 @@ def create_aggregated_schedule(
             if not setpoints:
                 continue
 
-            # 1. Sort setpoints by time
+            # 1. Sort setpoints by time (This is a quick check, but step 3 is the real sort)
             setpoints.sort(key=lambda x: x["time"])
 
             # 2. Filter out duplicate times, prioritizing the **highest** temperature.
             unique_setpoints = {} # { "HH:MM": max_temp }
-
+            
             for sp in setpoints:
                 time_str = sp["time"]
                 temp = sp["temp"]
                 
                 if time_str not in unique_setpoints or temp > unique_setpoints[time_str]:
                     unique_setpoints[time_str] = temp
-                    logging.debug(f"MERGE: Zone '{zone}' Day {day} @ {time_str}: Set to {temp}°C (Highest temperature chosen).")
 
-            # Convert back to list of dicts and sort again
-            final_setpoints = [{"time": t, "temp": temp} for t, temp in unique_setpoints.items()]
-            final_setpoints.sort(key=lambda x: x["time"]) 
+            # Convert back to list of dicts
+            final_setpoints = [
+                {"time": t, "temp": temp} 
+                for t, temp in unique_setpoints.items()
+            ]
+            
+            # CRITICAL CORRECTION: Sorts reliably by time components (Hour, Minute)
+            # Converts "HH:MM" string to a tuple of integers (HH, MM) for correct sorting.
+            final_setpoints.sort(key=lambda x: tuple(map(int, x["time"].split(':'))))
             
             zone_schedule[zone][day] = final_setpoints
 
             if final_setpoints:
-                # Log the final, merged schedule for visibility
-                logging.debug(f"AGGREGATED SCHEDULE: Zone '{zone}' Day {day}: {final_setpoints}")
+                # PROBE E (Final Merged Schedule)
+                logging.debug(f"PROBE E (Final Merged Schedule): Zone '{zone}' Day {day}: {final_setpoints}")
     
     logging.info(f"AGGREGATION END: Successfully generated schedules for {len(zone_schedule)} NeoHub zones.")
     return zone_schedule
@@ -1061,11 +1068,30 @@ def get_json_data(url: str) -> Optional[Dict[str, Any]]:
         logging.error(f"Error fetching JSON data from {url}: {e}")
         return None
 
-def get_bookings_and_locations() -> Optional[Dict[str, Any]]:
-    """Fetches bookings and locations data from ChurchSuite."""
-    if LOGGING_LEVEL == "DEBUG":
-        logging.debug(f"get_bookings_and_locations: Fetching data from {CHURCHSUITE_URL}")
-    return get_json_data(CHURCHSUITE_URL)
+def get_bookings_and_locations() -> Optional[Dict[str, List[Dict[str, Any]]]]:
+    """Fetches all bookings and resources from ChurchSuite."""
+    if not CHURCHSUITE_URL:
+        logging.error("CHURCHSUITE_URL is not configured. Cannot fetch bookings.")
+        return None
+    
+    try:
+        # NOTE: This uses the URL directly, assuming it points to a downloadable JSON resource.
+        response = requests.get(CHURCHSUITE_URL, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        
+        # LOGGING IMPROVEMENT: Check the pagination block for total results
+        num_results = data.get("pagination", {}).get("num_results", 0)
+        logging.info(f"Successfully downloaded ChurchSuite data: {num_results} total bookings found.")
+        
+        return data
+
+    except requests.exceptions.RequestException as e:
+        logging.error(f"Failed to fetch ChurchSuite data from {CHURCHSUITE_URL}: {e}")
+        return None
+    except json.JSONDecodeError as e:
+        logging.error(f"Failed to parse ChurchSuite response as JSON: {e}")
+        return None
 
 async def log_existing_profile(neohub_name: str, profile_name: str) -> None:
     """
@@ -1262,108 +1288,6 @@ async def apply_aggregated_schedules(
     else:
         logging.warning(f"No profiles generated or applied for {profile_prefix}.")
 
-# --- MODIFIED FUNCTION ---
-def calculate_schedule(
-    booking: Dict[str, Any], config: Dict[str, Any], external_temperature: Optional[float], resource_map: Dict[int, str]
-) -> Optional[Dict[str, Any]]:
-    """
-    Calculates the heating schedule for a single booking and returns it
-    with metadata for aggregation.
-    """
-    resource_id = booking["resource_id"]
-    location_name = resource_map.get(resource_id)
-    if not location_name:
-        logging.error(f"Resource ID '{resource_id}' not found in resource map.")
-        return None
-
-    if location_name not in config["locations"]:
-        logging.error(f"Location '{location_name}' not found in configuration.")
-        return None
-
-    location_config = config["locations"][location_name]
-    neohub_name = location_config["neohub"]
-    zones = location_config["zones"]
-    heat_loss_factor = location_config["heat_loss_factor"]
-    min_external_temp = location_config["min_external_temp"]
-
-    start_time_str = booking.get("starts_at")
-    end_time_str = booking.get("ends_at")
-
-    if not start_time_str or not end_time_str:
-        logging.error(f"Booking is missing start or end time: {booking}")
-        return None
-    # Use dateutil.parser.parse to handle the timestamp format
-    start_time = dateutil.parser.parse(start_time_str).replace(tzinfo=None)
-    end_time = dateutil.parser.parse(end_time_str).replace(tzinfo=None)
-    
-    # Use global constants
-    preheat_time = datetime.timedelta(minutes=PREHEAT_TIME_MINUTES)
-    if (
-        external_temperature is not None
-        and external_temperature < TEMPERATURE_SENSITIVITY
-        and external_temperature < min_external_temp
-    ):
-        temp_diff = TEMPERATURE_SENSITIVITY - external_temperature
-        adjustment = (
-            temp_diff * PREHEAT_ADJUSTMENT_MINUTES_PER_DEGREE
-        ) * heat_loss_factor
-        preheat_time += datetime.timedelta(minutes=adjustment)
-        logging.info(
-            f"Adjusted preheat time for {location_name} by {adjustment:.0f} minutes due to external temperature."
-        )
-        if LOGGING_LEVEL == "DEBUG":
-            logging.debug(
-                f"calculate_schedule: Adjusted preheat time for {location_name} by {adjustment:.0f} minutes.  External temp = {external_temperature}, temp_diff = {temp_diff}, heat_loss_factor={heat_loss_factor}, preheat_time={preheat_time}"
-            )
-            
-    profile_data = {}
-    days = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
-    for day in days:
-        profile_data[day] = {}
-
-    def add_level(
-        day_data: Dict[str, Any],
-        level_name: str,
-        event_time: datetime.datetime,
-        temperature: float,
-    ):
-        """Adds a level to the day's schedule."""
-        # Note: The NeoHub API expects a list of [time_str, temp, step_duration_min, is_active]
-        day_data[level_name] = [
-            event_time.strftime("%H:%M"),
-            float(temperature),  # Ensure temperature is a float
-            5,  # Set to 5 (or the desired step duration)
-            True,  # Set to True (active)
-        ]
-
-    # Assume all bookings are for the current day for simplicity in the loop structure,
-    # but the time calculation is correct. The aggregation logic handles overlapping days.
-    # Note: This logic assumes ChurchSuite provides separate bookings for midnight crossing.
-    for day in days: # This loop structure is preserved from the original user's code.
-        day_schedule = profile_data[day]
-        
-        # Start levels (Preheat start time)
-        add_level(day_schedule, "wake", start_time - preheat_time, DEFAULT_TEMPERATURE)
-        add_level(day_schedule, "level2", start_time - preheat_time, DEFAULT_TEMPERATURE)
-        
-        # End levels (Booking end time - switch to ECO)
-        add_level(day_schedule, "level3", end_time, ECO_TEMPERATURE)
-        add_level(day_schedule, "level4", end_time, ECO_TEMPERATURE)
-        add_level(day_schedule, "sleep", end_time, ECO_TEMPERATURE)
-        add_level(day_schedule, "level1", end_time, ECO_TEMPERATURE)
-    
-    if LOGGING_LEVEL == "DEBUG":
-        logging.debug(f"calculate_schedule: Calculated schedule: {profile_data}")
-        
-    # --- MODIFIED RETURN VALUE ---
-    return {
-        "location_name": location_name,
-        "neohub": neohub_name,
-        "zones": zones,
-        "profile_data": profile_data,
-    }
-
-# --- MODIFIED FUNCTION (Using the collected schedules for aggregation and application) ---
 async def update_heating_schedule() -> None:
     """
     Updates the heating schedule based on upcoming bookings,
@@ -1379,33 +1303,32 @@ async def update_heating_schedule() -> None:
     if not validate_config(config):
         logging.error("Invalid configuration. Exiting.")
         return
-    if LOGGING_LEVEL == "DEBUG":
-        logging.debug(f"Loaded config: {json.dumps(config, indent=2)}")
-
-    # NEW: Build the centralized configuration map (Place this after config validation)
+    
+    # NEW: Build the centralized configuration map
     zone_to_neohub_map = build_zone_to_neohub_map(config)
     
     # 2. Timezone and Week Calculation
     location_timezone_name = os.environ.get("CHURCHSUITE_TIMEZONE", "Europe/London")
     try:
         location_timezone = pytz.timezone(location_timezone_name)
-        logging.debug(f"Using timezone: {location_timezone_name}")
     except pytz.exceptions.UnknownTimeZoneError:
         logging.error(
-            f"Timezone '{location_timezone_name}' is invalid. Defaulting to Europe/London. "
-            "Please set the CHURCHSUITE_TIMEZONE environment variable with a valid timezone name (e.g., 'Europe/London')."
+            f"Timezone '{location_timezone_name}' is invalid. Defaulting to Europe/London."
         )
         location_timezone = pytz.timezone("Europe/London")
 
     today = datetime.datetime.now(location_timezone).replace(tzinfo=None)
+    # Start of the week (Monday at 00:00:00)
     current_week_start = today - datetime.timedelta(days=today.weekday())
-    current_week_end = current_week_start + datetime.timedelta(days=6)
-    next_week_start = current_week_end + datetime.timedelta(days=1)
-    next_week_end = next_week_start + datetime.timedelta(days=6)
+    # End of the week (Sunday at 23:59:59) - we use midnight Monday of next week for comparison end point
+    current_week_end = current_week_start + datetime.timedelta(days=7) # Use 7 days for a full week boundary
+    next_week_start = current_week_end
+    next_week_end = next_week_start + datetime.timedelta(days=7)
     
     logging.info(f"Current Date: {today.date()}")
-    logging.info(f"Current Week Range: {current_week_start.date()} to {current_week_end.date()}")
-    logging.info(f"Next Week Range: {next_week_start.date()} to {next_week_end.date()}")
+    logging.info(f"Current Week Range (Local): {current_week_start.date()} to {current_week_end.date() - datetime.timedelta(days=1)}")
+    logging.info(f"Next Week Range (Local): {next_week_start.date()} to {next_week_end.date() - datetime.timedelta(days=1)}")
+
 
     # 3. Fetch Bookings and Resources
     data = get_bookings_and_locations()
@@ -1423,84 +1346,53 @@ async def update_heating_schedule() -> None:
             logging.error("No resources found. Cannot map bookings to locations. Exiting schedule update early.")
             return
 
-        resource_map = {r["id"]: r["name"] for r in resources}
-        if LOGGING_LEVEL == "DEBUG":
-            logging.debug(f"update_heating_schedule: resource_map = {resource_map}")
-
         # 4. Filter Bookings by Week
         current_week_bookings = []
         next_week_bookings = []
 
         for booking in booked_resources:
             start_time_str = booking.get("starts_at")
+            resource_id = booking.get("resource_id", "unknown")
+            
             if start_time_str:
                 try:
                     parsed_dt = dateutil.parser.parse(start_time_str)
 
+                    # Ensure we have a timezone-aware object (assuming ChurchSuite returns UTC or has TZ info)
                     if parsed_dt.tzinfo is None or parsed_dt.utcoffset() is None:
                         utc_dt = parsed_dt.replace(tzinfo=pytz.utc)
-                        logging.warning(f"Booking time for ID {booking.get('id', 'unknown')} was naive, assuming UTC")
                     else:
                         utc_dt = parsed_dt.astimezone(pytz.utc)
 
+                    # Convert to local time, remove TZ info for naive comparison against naive range objects
                     local_start_dt = utc_dt.astimezone(location_timezone).replace(tzinfo=None)
 
-                    if current_week_start <= local_start_dt <= current_week_end:
+                    # PROBE B: Check the parsing and comparison logic for the first booking
+                    if LOGGING_LEVEL == "DEBUG" and not (current_week_bookings or next_week_bookings):
+                        logging.debug(f"PROBE B (Filtering Check): First booking starts_at: {start_time_str}. Parsed local DT: {local_start_dt}. Current Week End (Exclusive): {current_week_end}")
+
+                    # Use exclusive end point for current_week_end and next_week_end
+                    if current_week_start <= local_start_dt < current_week_end:
                         current_week_bookings.append(booking)
-                    elif next_week_start <= local_start_dt <= next_week_end:
+                    elif next_week_start <= local_start_dt < next_week_end:
                         next_week_bookings.append(booking)
+                        
                 except dateutil.parser.ParserError as e:
                     logging.error(f"Failed to parse datetime for booking ID {booking.get('id', 'unknown')}: {e}")
             else:
-                logging.warning(f"Booking with id {booking.get('id', 'unknown')} has no 'starts_at' time.")
+                logging.warning(f"Booking with resource ID {resource_id} has no 'starts_at' time.")
 
         logging.info(f"Filtered Bookings: Current Week: {len(current_week_bookings)}, Next Week: {len(next_week_bookings)}")
-        if LOGGING_LEVEL == "DEBUG":
-            logging.debug(f"Current Week Bookings: {current_week_bookings}")
-
-
-        # 5. Calculate Individual Schedules and Get External Temperature
-        current_week_schedules: List[Dict[str, Any]] = []
-        next_week_schedules: List[Dict[str, Any]] = []
         
+        # PROBE C: Log the resulting lists
+        if LOGGING_LEVEL == "DEBUG":
+            logging.debug(f"PROBE C (Filtered): Current Week Bookings ({len(current_week_bookings)}): {current_week_bookings}")
+            logging.debug(f"PROBE C (Filtered): Next Week Bookings ({len(next_week_bookings)}): {next_week_bookings}")
+
+
+        # 5. Get External Temperature
         external_temperature = get_external_temperature()
         logging.info(f"Fetched external temperature: {external_temperature}°C")
-
-        # The loop below is **redundant** for final schedule application 
-        # (as the raw bookings are used later), but essential for logging if 'calculate_schedule' works.
-        for location_name, location_config in config["locations"].items():
-            neohub_name = location_config["neohub"]
-            resource_ids = [resource_id for resource_id, name in resource_map.items() if name == location_name]
-            
-            # Process current week bookings
-            for booked_resource in current_week_bookings:
-                if booked_resource["resource_id"] in resource_ids:
-                    logging.debug(f"PROCESSING: Current Week Booking for Location: {location_name}")
-                    
-                    schedule_data = calculate_schedule(booked_resource, config, external_temperature, resource_map)
-                    
-                    if schedule_data:
-                        current_week_schedules.append(schedule_data) 
-                        logging.debug(f"SCHEDULE_CALCULATED: Current Week for {location_name}. Schedule length: {len(schedule_data.get(location_name, {}))}")
-                    else:
-                        logging.warning(f"CALCULATE_SCHEDULE returned None/Empty for {location_name} (Current Week).")
-
-            # Process next week bookings
-            for booked_resource in next_week_bookings:
-                if booked_resource["resource_id"] in resource_ids:
-                    logging.debug(f"PROCESSING: Next Week Booking for Location: {location_name}")
-
-                    schedule_data = calculate_schedule(booked_resource, config, external_temperature, resource_map)
-                    
-                    if schedule_data:
-                        next_week_schedules.append(schedule_data)
-                        logging.debug(f"SCHEDULE_CALCULATED: Next Week for {location_name}. Schedule length: {len(schedule_data.get(location_name, {}))}")
-                    else:
-                        logging.warning(f"CALCULATE_SCHEDULE returned None/Empty for {location_name} (Next Week).")
-        
-        logging.info(f"Intermediate Schedules Calculated (Current Week): {len(current_week_schedules)}")
-        logging.info(f"Intermediate Schedules Calculated (Next Week): {len(next_week_schedules)}")
-
 
         # 6. AGGREGATE SCHEDULES BY ZONE (The Critical Step)
         aggregated_current_schedules = create_aggregated_schedule(
@@ -1509,7 +1401,6 @@ async def update_heating_schedule() -> None:
             config
         )
         logging.info(f"AGGREGATION RESULT (Current Week): {len(aggregated_current_schedules)} final locations/zones scheduled.")
-        logging.debug(f"DEBUG: create_aggregated_schedule returned Current Week: {aggregated_current_schedules}")
         
         aggregated_next_schedules = create_aggregated_schedule(
             next_week_bookings, 
@@ -1517,14 +1408,19 @@ async def update_heating_schedule() -> None:
             config
         )
         logging.info(f"AGGREGATION RESULT (Next Week): {len(aggregated_next_schedules)} final locations/zones scheduled.")
-        logging.debug(f"DEBUG: create_aggregated_schedule returned Next Week: {aggregated_next_schedules}")
+
+        # PROBE D: Log the final aggregated schedules before application
+        if LOGGING_LEVEL == "DEBUG":
+            logging.debug(f"PROBE D (Final Aggregation): Current Week: {aggregated_current_schedules}")
+            logging.debug(f"PROBE D (Final Aggregation): Next Week: {aggregated_next_schedules}")
+
 
         # 7. APPLY AGGREGATED SCHEDULES
         await apply_aggregated_schedules(
-            aggregated_current_schedules, "Current Week", config, zone_to_neohub_map # Pass the new map
+            aggregated_current_schedules, "Current Week", config, zone_to_neohub_map
         )
         await apply_aggregated_schedules(
-            aggregated_next_schedules, "Next Week", config, zone_to_neohub_map # Pass the new map
+            aggregated_next_schedules, "Next Week", config, zone_to_neohub_map
         )
 
     else:
