@@ -234,7 +234,7 @@ def create_aggregated_schedule(
 ) -> Dict[str, Dict[int, List[Dict[str, Union[str, float]]]]]:
     """
     Processes ChurchSuite bookings to create a single, aggregated heating schedule 
-    for each NeoHub Zone.
+    for each NeoHub Zone, incorporating setpoint optimization.
     """
     
     # Final schedule structure: { zone_name: { day_of_week_index: [setpoints] } }
@@ -242,26 +242,27 @@ def create_aggregated_schedule(
     
     logging.info(f"AGGREGATION START: Processing {len(bookings)} bookings.")
     
-    # Initialize schedule with default ECO setpoints for all zones/days
-    # This 00:00 ECO is ESSENTIAL to guarantee that any day with NO bookings at all
-    # defaults to ECO and does not inherit a comfort temperature from a previous day.
+    # 1. Initialize schedule structure for all zones/days
     for location_name, location_config in config.get("locations", {}).items():
         for zone_name in location_config.get("zones", []):
             if zone_name not in zone_schedule:
-                # Initialize schedule structure for the zone/day
                 zone_schedule[zone_name] = {i: [] for i in range(7)}
-                for day in range(7):
-                    zone_schedule[zone_name][day].append({"time": "00:00", "temp": ECO_TEMPERATURE})
+                # NOTE: We DO NOT add the 00:00 ECO here. It is added in the post-processing phase.
                     
     logging.debug(f"AGGREGATION INIT: Initialized zones: {list(zone_schedule.keys())}")
     
     if not bookings:
-        logging.info("AGGREGATION END: Bookings list was empty. Returning ECO default schedule.")
+        logging.info("AGGREGATION END: Bookings list was empty. Returning fully optimized ECO default schedule.")
+        # If no bookings, we must manually inject the 00:00 ECO to all days/zones
+        for zone, daily_schedule in zone_schedule.items():
+            for day in range(7):
+                zone_schedule[zone][day].append({"time": "00:00", "temp": ECO_TEMPERATURE})
         return zone_schedule
 
     first_booking_id = bookings[0].get("id") if bookings else None
     
     for booking in bookings:
+        # ... [Unchanged booking processing, preheat calculation, and zone identification] ...
         booking_id = booking.get("id", "N/A")
         resource_id = booking.get("resource_id")
         
@@ -324,7 +325,7 @@ def create_aggregated_schedule(
             
             logging.debug(f"TIME CONVERTED: Local Day: {start_day_of_week}, Local Start: {start_dt_local.strftime('%H:%M')}, Target Temp: {target_temp}")
 
-            # --- Iterate through all zones linked to this location ---\n
+            # --- Iterate through all zones linked to this location ---
             for zone_name in zone_names:
                 
                 # Calculate the preheat start time for THIS event
@@ -340,12 +341,9 @@ def create_aggregated_schedule(
                     "temp": target_temp
                 })
                 
-                # --- CRITICAL FIX AND PROBE G: Handle cross-midnight events ---
-                
                 # The ECO setpoint must be placed on the END day.
                 if start_day_of_week != end_day_of_week:
-                    # PROBE G: Log the detection of a cross-midnight event
-                    logging.debug(f"PROBE G (Cross-Midnight): Booking ID {booking_id} spans midnight. ECO setpoint moved from Day {start_day_of_week} to Day {end_day_of_week}.")
+                    logging.debug(f"PROBE G (Cross-Midnight): Booking ID {booking_id} spans midnight. ECO setpoint added to Day {end_day_of_week}.")
                 
                 # Add the eco setpoint (Set to ECO temp at event end time) - NOW on the END day
                 zone_schedule[zone_name][end_day_of_week].append({
@@ -359,16 +357,13 @@ def create_aggregated_schedule(
             logging.error(f"Error processing booking for {location_name} (ID {booking_id}): {e}. Check time keys in booking data.", exc_info=True)
             continue
             
-    # --- Post-processing: Sort and Merge ---
-    logging.info("POST-PROCESSING START: Sorting and merging conflicting setpoints.")
+    # --- Post-processing: Sort, Merge, Optimize, and Limit ---
+    logging.info("POST-PROCESSING START: Sorting, merging, optimizing, and limiting setpoints.")
     
     for zone, daily_schedule in zone_schedule.items():
         for day, setpoints in daily_schedule.items():
             
-            if not setpoints:
-                continue
-
-            # 1. Filter out duplicate times, prioritizing the **highest** temperature.
+            # --- 1. Filter out duplicate times, prioritizing the **highest** temperature (Merge) ---
             unique_setpoints = {} # { "HH:MM": max_temp }
             
             for sp in setpoints:
@@ -378,15 +373,89 @@ def create_aggregated_schedule(
                 if time_str not in unique_setpoints or temp > unique_setpoints[time_str]:
                     unique_setpoints[time_str] = temp
 
-            # Convert back to list of dicts
-            final_setpoints = [
+            # Convert back to list of dicts and sort by time
+            working_setpoints = [
                 {"time": t, "temp": temp} 
                 for t, temp in unique_setpoints.items()
             ]
-            
             # CRITICAL CORRECTION: Sorts reliably by time components (Hour, Minute)
-            final_setpoints.sort(key=lambda x: tuple(map(int, x["time"].split(':'))))
+            working_setpoints.sort(key=lambda x: tuple(map(int, x["time"].split(':'))))
+
+            # --- 2. De-Duplication Optimization (Remove redundant state changes) ---
+            # Remove setpoints that don't change the temperature from the previous point
+            optimized_setpoints = []
+            previous_temp = None
             
+            # Check for 00:00 setpoint which might be a duplicate of a previous day's setting
+            if working_setpoints and working_setpoints[0]['time'] == '00:00':
+                 # If the list starts with 00:00, we skip the first one for now
+                 # The first setpoint added must be the first actual heating event, 
+                 # or the 00:00 ECO if no other setpoint exists.
+                 pass
+            
+            for sp in working_setpoints:
+                # Always keep the very first point of the day to set a baseline (even if it's 00:00)
+                if not optimized_setpoints:
+                    optimized_setpoints.append(sp)
+                    previous_temp = sp["temp"]
+                    continue
+                
+                # Skip if the temperature is the same as the last recorded setpoint
+                if sp["temp"] != previous_temp:
+                    optimized_setpoints.append(sp)
+                    previous_temp = sp["temp"]
+
+            # --- 3. Conditional 00:00 ECO Insertion (Resilience vs. Premature Shutdown) ---
+            
+            # If the optimized schedule is empty (day with no bookings), add the 00:00 ECO
+            if not optimized_setpoints:
+                optimized_setpoints.append({"time": "00:00", "temp": ECO_TEMPERATURE})
+                logging.debug(f"OPTIMIZATION: Zone '{zone}' Day {day}: Added default 00:00 ECO (No bookings).")
+
+            # --- 4. Slot Limiting and Maximum Comfort Optimization (Final 6 Setpoints) ---
+            
+            final_setpoints = []
+            
+            # If we have 6 or fewer setpoints, we're done
+            if len(optimized_setpoints) <= 6:
+                final_setpoints = optimized_setpoints
+            else:
+                # If > 6 setpoints, we must intelligently reduce them.
+                # Prioritize KEEPING heat ON over turning it OFF.
+                # We do this by removing the least impactful ECO setpoints.
+                
+                # Start by taking the 6 highest priority events: all HEAT ON setpoints ("temp" > ECO_TEMPERATURE).
+                comfort_setpoints = [sp for sp in optimized_setpoints if sp['temp'] > ECO_TEMPERATURE]
+                
+                # If comfort setpoints + 1 (for the final ECO) is <= 6, we keep all comfort points and the *last* ECO point.
+                if len(comfort_setpoints) <= 5:
+                    # Keep all comfort points and the very last ECO point (the final "sleep" of the day)
+                    last_eco = next((sp for sp in reversed(optimized_setpoints) if sp['temp'] == ECO_TEMPERATURE), None)
+                    
+                    final_setpoints = comfort_setpoints
+                    if last_eco and last_eco not in comfort_setpoints:
+                         final_setpoints.append(last_eco)
+
+                    # Now, re-sort and re-optimize for de-duplication one last time
+                    final_setpoints.sort(key=lambda x: tuple(map(int, x["time"].split(':'))))
+                    
+                    # FINAL de-duplication pass
+                    final_final_setpoints = []
+                    prev_temp = None
+                    for sp in final_setpoints:
+                        if sp["temp"] != prev_temp:
+                            final_final_setpoints.append(sp)
+                            prev_temp = sp["temp"]
+                    final_setpoints = final_final_setpoints
+                    
+                    logging.warning(f"OPTIMIZATION: Zone '{zone}' Day {day} had {len(optimized_setpoints)} setpoints. Reduced to {len(final_setpoints)} by prioritizing all comfort events and the final ECO setting.")
+
+                # If we still have too many events (e.g., 6 comfort + 6 ECO) or a complex mix, we use the first 6
+                else:
+                    final_setpoints = optimized_setpoints[:6]
+                    logging.warning(f"OPTIMIZATION: Zone '{zone}' Day {day} had too many critical setpoints ({len(optimized_setpoints)}). Truncated to the first 6 points.")
+
+
             zone_schedule[zone][day] = final_setpoints
 
             if final_setpoints:
