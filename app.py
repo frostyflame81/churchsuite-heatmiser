@@ -243,14 +243,14 @@ def create_aggregated_schedule(
     logging.info(f"AGGREGATION START: Processing {len(bookings)} bookings.")
     
     # Initialize schedule with default ECO setpoints for all zones/days
+    # This 00:00 ECO is ESSENTIAL to guarantee that any day with NO bookings at all
+    # defaults to ECO and does not inherit a comfort temperature from a previous day.
     for location_name, location_config in config.get("locations", {}).items():
         for zone_name in location_config.get("zones", []):
             if zone_name not in zone_schedule:
                 # Initialize schedule structure for the zone/day
                 zone_schedule[zone_name] = {i: [] for i in range(7)}
-                # CRITICAL: Add default ECO profile for a full week (00:00 @ ECO_TEMPERATURE)
                 for day in range(7):
-                    # This ensures the thermostat defaults to ECO if no booking is present
                     zone_schedule[zone_name][day].append({"time": "00:00", "temp": ECO_TEMPERATURE})
                     
     logging.debug(f"AGGREGATION INIT: Initialized zones: {list(zone_schedule.keys())}")
@@ -259,14 +259,12 @@ def create_aggregated_schedule(
         logging.info("AGGREGATION END: Bookings list was empty. Returning ECO default schedule.")
         return zone_schedule
 
-    # Determine the ID of the first booking in this filtered list for the probe
     first_booking_id = bookings[0].get("id") if bookings else None
     
     for booking in bookings:
         booking_id = booking.get("id", "N/A")
         resource_id = booking.get("resource_id")
         
-        # CRITICAL FIX: Use the ID map to find the location name
         location_name = resource_id_to_name.get(resource_id)
         
         if not location_name:
@@ -275,10 +273,8 @@ def create_aggregated_schedule(
         
         # Check config using the retrieved name
         if location_name not in config["locations"]:
-            # Fallback check if the name is an alias (existing logic retained)
             location_config = None
             for cfg_name, cfg in config["locations"].items():
-                 # Assuming aliases exists in config or mapping is direct
                  if location_name == cfg_name or location_name in cfg.get("aliases", []):
                     location_config = cfg
                     location_name = cfg_name # Use the internal config name
@@ -288,7 +284,6 @@ def create_aggregated_schedule(
                 logging.warning(f"Skipping booking ID {booking_id}: No config found for location '{location_name}'.")
                 continue
         
-        # We now know location_name is a valid key in config["locations"] (or was resolved to one)
         location_config = config["locations"][location_name]
 
         logging.debug(f"AGGREGATION LOOP: Processing booking ID {booking_id} for location '{location_name}' (Resource ID: {resource_id})")
@@ -313,20 +308,21 @@ def create_aggregated_schedule(
             start_time_key = "starts_at"
             end_time_key = "ends_at"
             
-            # CRITICAL TIME PARSING: Use UTC time from booking, then convert to local
+            # CRITICAL TIME PARSING
             start_dt_utc = dateutil.parser.parse(booking[start_time_key])
             end_dt_utc = dateutil.parser.parse(booking[end_time_key])
-            
-            logging.debug(f"TIME PARSE: UTC Start: {start_dt_utc.isoformat()}, UTC End: {end_dt_utc.isoformat()}")
             
             local_tz = pytz.timezone(TIMEZONE) 
             start_dt_local = start_dt_utc.astimezone(local_tz).replace(tzinfo=None) # Remove TZ info for comparison
             end_dt_local = end_dt_utc.astimezone(local_tz).replace(tzinfo=None)
 
-            day_of_week = start_dt_local.weekday() # Monday=0, Sunday=6
+            # Determine the day indexes
+            start_day_of_week = start_dt_local.weekday() # Monday=0, Sunday=6
+            end_day_of_week = end_dt_local.weekday()
+            
             target_temp = location_config.get("default_temp", DEFAULT_TEMPERATURE)
             
-            logging.debug(f"TIME CONVERTED: Local Day: {day_of_week}, Local Start: {start_dt_local.strftime('%H:%M')}, Target Temp: {target_temp}")
+            logging.debug(f"TIME CONVERTED: Local Day: {start_day_of_week}, Local Start: {start_dt_local.strftime('%H:%M')}, Target Temp: {target_temp}")
 
             # --- Iterate through all zones linked to this location ---\n
             for zone_name in zone_names:
@@ -334,34 +330,36 @@ def create_aggregated_schedule(
                 # Calculate the preheat start time for THIS event
                 preheat_start_dt_local = start_dt_local - datetime.timedelta(minutes=required_preheat_minutes)
                 
-                # PROBE F: Log the crucial calculation details for the first successful event
-                # Check if this is the first booking in the list
-                if LOGGING_LEVEL == "DEBUG" and booking_id == first_booking_id:
-                    logging.debug(f"PROBE F (Calculation): Preheat needed: {required_preheat_minutes} mins. Preheat Starts: {preheat_start_dt_local.strftime('%H:%M')} ({target_temp}°C). ECO Ends: {end_dt_local.strftime('%H:%M')} ({ECO_TEMPERATURE}°C).")
-                
                 # Format times as "HH:MM"
                 preheat_time_str = preheat_start_dt_local.strftime("%H:%M")
                 end_time_str = end_dt_local.strftime("%H:%M")
                 
-                # Add the pre-heat setpoint (Set to target temp at preheat start time)
-                zone_schedule[zone_name][day_of_week].append({
+                # Add the pre-heat setpoint (Set to target temp at preheat start time) - ALWAYS on the START day
+                zone_schedule[zone_name][start_day_of_week].append({
                     "time": preheat_time_str, 
                     "temp": target_temp
                 })
                 
-                # Add the eco setpoint (Set to ECO temp at event end time)
-                zone_schedule[zone_name][day_of_week].append({
+                # --- CRITICAL FIX AND PROBE G: Handle cross-midnight events ---
+                
+                # The ECO setpoint must be placed on the END day.
+                if start_day_of_week != end_day_of_week:
+                    # PROBE G: Log the detection of a cross-midnight event
+                    logging.debug(f"PROBE G (Cross-Midnight): Booking ID {booking_id} spans midnight. ECO setpoint moved from Day {start_day_of_week} to Day {end_day_of_week}.")
+                
+                # Add the eco setpoint (Set to ECO temp at event end time) - NOW on the END day
+                zone_schedule[zone_name][end_day_of_week].append({
                     "time": end_time_str, 
                     "temp": ECO_TEMPERATURE
                 })
                 
-                logging.debug(f"SETPOINTS ADDED: Zone '{zone_name}' (Day {day_of_week}): Preheat at {preheat_time_str} ({target_temp}°C), ECO at {end_time_str} ({ECO_TEMPERATURE}°C)")
+                logging.debug(f"SETPOINTS ADDED: Zone '{zone_name}' (Day {start_day_of_week}): Preheat at {preheat_time_str} ({target_temp}°C). ECO setpoint added to Day {end_day_of_week} at {end_time_str} ({ECO_TEMPERATURE}°C)")
 
         except (KeyError, ValueError, TypeError) as e:
             logging.error(f"Error processing booking for {location_name} (ID {booking_id}): {e}. Check time keys in booking data.", exc_info=True)
             continue
             
-    # --- Post-processing: Sort and Merge ---\n
+    # --- Post-processing: Sort and Merge ---
     logging.info("POST-PROCESSING START: Sorting and merging conflicting setpoints.")
     
     for zone, daily_schedule in zone_schedule.items():
@@ -370,10 +368,7 @@ def create_aggregated_schedule(
             if not setpoints:
                 continue
 
-            # 1. Sort setpoints by time (This is a quick check, but step 3 is the real sort)
-            setpoints.sort(key=lambda x: x["time"])
-
-            # 2. Filter out duplicate times, prioritizing the **highest** temperature.
+            # 1. Filter out duplicate times, prioritizing the **highest** temperature.
             unique_setpoints = {} # { "HH:MM": max_temp }
             
             for sp in setpoints:
@@ -1458,7 +1453,7 @@ async def update_heating_schedule() -> None:
         logging.info("No data received from ChurchSuite.")
     
     logging.info("--- HEATING SCHEDULE UPDATE PROCESS COMPLETE ---")
-    
+
 def main():
     """Main application function."""
     # Use the LOGGING_LEVEL environment variable
