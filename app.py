@@ -229,7 +229,8 @@ def _calculate_location_preheat_minutes(
 def create_aggregated_schedule(
     bookings: List[Dict[str, Any]], 
     current_external_temp: Optional[float], 
-    config: Dict[str, Any]
+    config: Dict[str, Any],
+    resource_id_to_name: Dict[int, str] # NEW ARGUMENT
 ) -> Dict[str, Dict[int, List[Dict[str, Union[str, float]]]]]:
     """
     Processes ChurchSuite bookings to create a single, aggregated heating schedule 
@@ -259,26 +260,35 @@ def create_aggregated_schedule(
         return zone_schedule
 
     for booking in bookings:
-        location_name = booking.get("resource")
         booking_id = booking.get("id", "N/A")
+        resource_id = booking.get("resource_id")
         
-        # NOTE: Using 'resource' name as the key, assuming that is how you map to config["locations"]
+        # CRITICAL FIX: Use the ID map to find the location name
+        location_name = resource_id_to_name.get(resource_id)
+        
+        if not location_name:
+            logging.warning(f"Skipping booking ID {booking_id}: Resource ID {resource_id} not found in the resource map. Check ChurchSuite data.")
+            continue
+        
+        # Check config using the retrieved name
         if location_name not in config["locations"]:
-            # Fallback check if 'resource' is the resource name string (if not using ID map)
+            # Fallback check if the name is an alias (existing logic retained)
             location_config = None
             for cfg_name, cfg in config["locations"].items():
-                 if location_name in cfg.get("aliases", []): # Assuming aliases exists or using resource map from the parent function
+                 # Assuming aliases exists in config or mapping is direct
+                 if location_name == cfg_name or location_name in cfg.get("aliases", []):
                     location_config = cfg
                     location_name = cfg_name # Use the internal config name
                     break
             
             if not location_config:
-                logging.warning(f"Skipping booking ID {booking_id}: No config found for resource '{location_name}'.")
+                logging.warning(f"Skipping booking ID {booking_id}: No config found for location '{location_name}'.")
                 continue
         
+        # We now know location_name is a valid key in config["locations"] (or was resolved to one)
         location_config = config["locations"][location_name]
 
-        logging.debug(f"AGGREGATION LOOP: Processing booking ID {booking_id} for location '{location_name}'")
+        logging.debug(f"AGGREGATION LOOP: Processing booking ID {booking_id} for location '{location_name}' (Resource ID: {resource_id})")
         
         # 1. Calculate the specific preheat required for THIS location/booking
         required_preheat_minutes = _calculate_location_preheat_minutes(
@@ -320,6 +330,10 @@ def create_aggregated_schedule(
                 
                 # Calculate the preheat start time for THIS event
                 preheat_start_dt_local = start_dt_local - datetime.timedelta(minutes=required_preheat_minutes)
+                
+                # PROBE F: Log the crucial calculation details for the first successful event
+                if LOGGING_LEVEL == "DEBUG" and booking_id == booked_resources[0].get("id"):
+                    logging.debug(f"PROBE F (Calculation): Preheat needed: {required_preheat_minutes} mins. Preheat Starts: {preheat_start_dt_local.strftime('%H:%M')} ({target_temp}°C). ECO Ends: {end_dt_local.strftime('%H:%M')} ({ECO_TEMPERATURE}°C).")
                 
                 # Format times as "HH:MM"
                 preheat_time_str = preheat_start_dt_local.strftime("%H:%M")
@@ -372,7 +386,6 @@ def create_aggregated_schedule(
             ]
             
             # CRITICAL CORRECTION: Sorts reliably by time components (Hour, Minute)
-            # Converts "HH:MM" string to a tuple of integers (HH, MM) for correct sorting.
             final_setpoints.sort(key=lambda x: tuple(map(int, x["time"].split(':'))))
             
             zone_schedule[zone][day] = final_setpoints
@@ -1346,6 +1359,11 @@ async def update_heating_schedule() -> None:
             logging.error("No resources found. Cannot map bookings to locations. Exiting schedule update early.")
             return
 
+        # NEW LOGIC START: Create a map to resolve resource_id to location name
+        resource_id_to_name = {r.get('id'): r.get('name') for r in resources if r.get('id') and r.get('name')}
+        logging.debug(f"RESOURCE MAP: Created ID to Name map with {len(resource_id_to_name)} entries.")
+        # NEW LOGIC END
+        
         # 4. Filter Bookings by Week
         current_week_bookings = []
         next_week_bookings = []
@@ -1395,17 +1413,21 @@ async def update_heating_schedule() -> None:
         logging.info(f"Fetched external temperature: {external_temperature}°C")
 
         # 6. AGGREGATE SCHEDULES BY ZONE (The Critical Step)
+        # NEW ARGUMENT ADDED: resource_id_to_name
         aggregated_current_schedules = create_aggregated_schedule(
             current_week_bookings, 
             external_temperature, 
-            config
+            config,
+            resource_id_to_name
         )
         logging.info(f"AGGREGATION RESULT (Current Week): {len(aggregated_current_schedules)} final locations/zones scheduled.")
         
+        # NEW ARGUMENT ADDED: resource_id_to_name
         aggregated_next_schedules = create_aggregated_schedule(
             next_week_bookings, 
             external_temperature, 
-            config
+            config,
+            resource_id_to_name
         )
         logging.info(f"AGGREGATION RESULT (Next Week): {len(aggregated_next_schedules)} final locations/zones scheduled.")
 
