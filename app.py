@@ -1401,7 +1401,6 @@ async def update_heating_schedule() -> None:
     # --- END CRITICAL LIFECYCLE MANAGEMENT ---
 
     logging.info("--- STARTING HEATING SCHEDULE UPDATE PROCESS (7-Day Rolling Window) ---")
-    global config
     
     # 1. Configuration Validation
     if config is None:
@@ -1538,10 +1537,10 @@ async def update_heating_schedule() -> None:
         # 7. APPLY AGGREGATED SCHEDULES
         # The profile names remain "Current Week" and "Next Week" for the NeoHub hardware
         await apply_aggregated_schedules(
-            aggregated_p1_schedules, "Current Week", config, zone_to_neohub_map
+            aggregated_p1_schedules, "Current Week", zone_to_neohub_map
         )
         await apply_aggregated_schedules(
-            aggregated_p2_schedules, "Next Week", config, zone_to_neohub_map
+            aggregated_p2_schedules, "Next Week", zone_to_neohub_map
         )
 
     else:
@@ -1551,6 +1550,11 @@ async def update_heating_schedule() -> None:
 
 def main():
     """Main application function."""
+    
+    # CRITICAL FIX: Global declarations must be the first lines in the function body
+    global config
+    global _neohub_clients 
+    
     # Use the LOGGING_LEVEL environment variable
     logging_level = getattr(logging, LOGGING_LEVEL.upper(), logging.INFO)
     logging.basicConfig(level=logging_level)
@@ -1565,7 +1569,8 @@ def main():
     )
     args = parser.parse_args()
     config_file = args.config
-    global config
+    
+    # The redundant 'global config' line is now removed from here
     config = load_config(config_file)
     if config is None:
         logging.error("Failed to load configuration. Exiting.")
@@ -1593,7 +1598,7 @@ def main():
         scheduler.shutdown()
         logging.info("Closing Neohub connections...")
 
-        global _neohub_clients
+        # The global declaration here is now also removed as it is at the top
         for client in _neohub_clients.values():
             try:
                 # Use asyncio.run safely for final cleanup
