@@ -16,7 +16,32 @@ import websockets # type: ignore
 import ssl
 from neohubapi.neohub import NeoHub, NeoHubUsageError, NeoHubConnectionError, WebSocketClient # type: ignore
 
-_command_id_counter = itertools.count(start=100)
+class CommandIdManager:
+    """Manages the command ID, resetting at the start of a logical unit (like update_heating_schedule)."""
+    
+    def __init__(self, start_id: int):
+        self.start_id = start_id
+        self._counter = itertools.count(start=start_id)
+
+    def __call__(self) -> int:
+        """Returns the next command ID."""
+        return next(self._counter)
+
+    def reset(self):
+        """Resets the counter for a new loop iteration."""
+        self._counter = itertools.count(start=self.start_id)
+        logging.info(f"Command ID counter for bulk commands reset to {self.start_id}.")
+
+# Define the global manager instance (starts at 100)
+_command_id_manager = CommandIdManager(start_id=100)
+
+# The function used by the neohub library to get the next ID for bulk commands
+def _command_id_counter():
+    """Proxy function to get the next command ID."""
+    return _command_id_manager()
+
+# NEW GLOBAL STATE: Dictionary to hold active NeoHub client instances
+_neohub_clients: Dict[str, NeoHub] = {}
 
 # Configuration
 OPENWEATHERMAP_API_KEY = os.environ.get("OPENWEATHERMAP_API_KEY")
@@ -95,24 +120,46 @@ def load_config(config_file: str) -> Optional[Dict[str, Any]]:
         logging.error(f"An unexpected error occurred: {e}")
         return None
 
-def connect_to_neohub(neohub_name: str, neohub_config: Dict[str, Any]) -> bool:
-    """Connects to a Neohub using neohubapi."""
-    global hubs
-    try:
-        # Use the port from the environment variable, defaulting to 4243
-        port = neohub_config['port']
-        token = neohub_config.get('token')  # Token is optional
-        hub = NeoHub(host=neohub_config['address'], port=port, token=token)
-        hubs[neohub_name] = hub  # Store
-        logging.info(f"Connected to Neohub: {neohub_name} at {neohub_config['address']}:{port}")
-        return True
-    except (NeoHubConnectionError, NeoHubUsageError) as e:
-        logging.error(f"Error connecting to Neohub {neohub_name}: {e}")
-        return False
-    except Exception as e:
-        logging.error(f"An unexpected error occurred: {e}")
-        return False
+def get_neohub_instance(neohub_name: str) -> Optional[NeoHub]:
+    """Retrieves the active NeoHub client instance."""
+    return _neohub_clients.get(neohub_name)
 
+async def connect_to_neohub(neohub_name: str, neohub_config: Dict[str, Any]) -> bool:
+    """
+    Forces a disconnect/reconnect. Creating a new NeoHub object forces the
+    low-level simple command ID counter to reset (start=1).
+    """
+    global _neohub_clients
+    
+    # 1. Force disconnect and cleanup if client already exists (CRITICAL for reset)
+    if neohub_name in _neohub_clients:
+        try:
+            # Attempt to close connection gracefully
+            await _neohub_clients[neohub_name].close_connection()
+            logging.debug(f"Forced disconnection of old client for {neohub_name}.")
+        except Exception:
+            pass
+        del _neohub_clients[neohub_name]
+        
+    # 2. Create a brand new NeoHub instance (This resets the low-level counter)
+    try:
+        # NOTE: Passing command_id_generator ensures bulk commands start at 100
+        hub = NeoHub(
+            neohub_config["address"],
+            neohub_config["port"],
+            neohub_config["token"],
+            command_id_generator=_command_id_counter
+        )
+        
+        # 3. Establish the new connection
+        await hub.connect()
+        _neohub_clients[neohub_name] = hub
+        logging.info(f"Connected to Neohub: {neohub_name}. Simple Command IDs reset to 1.")
+        return True
+    except NeoHubConnectionError as e:
+        logging.error(f"NeoHub connection failed for {neohub_name}: {e}")
+        return False
+    
 def validate_config(config: Dict[str, Any]) -> bool:
     if "neohubs" not in config or not config["neohubs"]:
         logging.error("No Neohubs found in configuration.")
@@ -527,6 +574,12 @@ def _validate_neohub_profile(
     return True, "Profile is compliant."
 
 async def get_profile_id_by_name(neohub_object: NeoHub, neohub_name: str, profile_name: str) -> Optional[int]:
+    
+    hub = get_neohub_instance(neohub_name) # <-- NEW: Get active connection
+    if hub is None: # <-- NEW: Check connection state
+        logging.error(f"Cannot get profile ID: No active connection for Neohub '{neohub_name}'.") 
+        return None
+    
     """
     Retrieves the numerical profile ID for a given profile name using the GET_PROFILE command,
     handling the response as a SimpleNamespace object.
@@ -679,17 +732,21 @@ async def apply_single_zone_profile(
         logging.error(f"Failed to execute custom store_profile2 command for '{zone_name}': {e}", exc_info=True)
         return False
 
-async def get_zones(neohub_name: str) -> Optional[List[str]]:
-    """Retrieves zone names from the Neohub using neohubapi."""
-    logging.info(f"Getting zones from Neohub: {neohub_name}")
-    command = {"GET_ZONES": 0}
-    response = await send_command(neohub_name, command)
-    if response:
-        zones = []
-        for attr_name, attr_value in vars(response).items():
-            zones.append(attr_name)
-        return zones
-    return None
+async def get_zones(neohub_name: str) -> Optional[Dict[str, Any]]:
+    """Retrieves all zones from a specific NeoHub."""
+    hub = get_neohub_instance(neohub_name) # <-- NEW
+    if hub is None: # <-- NEW
+        logging.error(f"Cannot get zones: No active connection for Neohub '{neohub_name}'.") # <-- NEW
+        return None # <-- NEW
+        
+    logging.info(f"Getting zones from Neohub: {neohub_name}...")
+    try:
+        # Use the retrieved hub instance
+        response = await hub.get_zones() 
+        return response
+    except Exception as e:
+        logging.error(f"Error fetching zones from {neohub_name}: {e}")
+        return None
 
 async def set_temperature(neohub_name: str, zone_name: str, temperature: float) -> Optional[Dict[str, Any]]:
     """Sets the temperature for a specified zone using neohubapi."""
@@ -1283,10 +1340,10 @@ async def apply_aggregated_schedules(
         
         neohub_name = zone_to_neohub_map.get(zone_name)
         # Assuming 'hubs' is a globally available dictionary mapping neohub names to connected NeoHub objects
-        neohub_object = hubs.get(neohub_name) 
+        neohub_object = get_neohub_instance(neohub_name)
 
         if not neohub_object:
-            logging.error(f"Cannot apply schedule for zone '{zone_name}': Neohub '{neohub_name}' not connected or mapped. Skipping.")
+            logging.error(f"Cannot apply schedule for zone '{zone_name}': No active connection for Neohub '{neohub_name}'. Skipping.")
             continue
             
         profile_data = {}
@@ -1335,6 +1392,25 @@ async def update_heating_schedule() -> None:
     Updates the heating schedule based on upcoming bookings,
     aggregating schedules by neohub and zone using a rolling 7-day window.
     """
+    # --- START CRITICAL LIFECYCLE MANAGEMENT ---
+    
+    # 1. Reset the high-ID application counter
+    global _command_id_manager
+    _command_id_manager.reset()
+    
+    # 2. Force disconnect and reconnect all NeoHubs (Resets low-ID counter to 1)
+    global config
+    if config and "neohubs" in config:
+        for neohub_name, neohub_config in config["neohubs"].items():
+            if not await connect_to_neohub(neohub_name, neohub_config):
+                logging.error(f"Failed to reconnect to Neohub: {neohub_name}. Aborting schedule update.")
+                return
+    else:
+        logging.error("Configuration not loaded or missing 'neohubs' section. Exiting.")
+        return
+        
+    # --- END CRITICAL LIFECYCLE MANAGEMENT ---
+
     logging.info("--- STARTING HEATING SCHEDULE UPDATE PROCESS (7-Day Rolling Window) ---")
     global config
     
@@ -1509,16 +1585,6 @@ def main():
     if LOGGING_LEVEL == "DEBUG":
         logging.debug(f"Loaded config: {json.dumps(config, indent=2)}")
 
-    for neohub_name, neohub_config in config["neohubs"].items():
-        if not connect_to_neohub(neohub_name, neohub_config):
-            logging.error(f"Failed to connect to Neohub: {neohub_name}. Exiting.")
-            exit()
-    for neohub_name in config["neohubs"]:
-        zones = asyncio.run(get_zones(neohub_name))
-        if zones:
-            logging.info(f"Zones on {neohub_name}: {zones}")
-            if LOGGING_LEVEL == "DEBUG":
-                logging.debug(f"main: Zones on {neohub_name}: {zones}")
     if not validate_config(config):
         logging.error("Invalid configuration. Exiting.")
         exit()
@@ -1537,7 +1603,15 @@ def main():
         logging.info("Shutting down scheduler...")
         scheduler.shutdown()
         logging.info("Closing Neohub connections...")
-#       close_connections()
+
+        global _neohub_clients
+        for client in _neohub_clients.values():
+            try:
+                # Use asyncio.run safely for final cleanup
+                asyncio.run(client.close_connection())
+            except Exception:
+                pass
+
         logging.info("Exiting...")
 
 if __name__ == "__main__":
