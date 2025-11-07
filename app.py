@@ -573,12 +573,7 @@ def _validate_neohub_profile(
             
     return True, "Profile is compliant."
 
-async def get_profile_id_by_name(neohub_object: NeoHub, neohub_name: str, profile_name: str) -> Optional[int]:
-    
-    hub = get_neohub_instance(neohub_name) # <-- NEW: Get active connection
-    if hub is None: # <-- NEW: Check connection state
-        logging.error(f"Cannot get profile ID: No active connection for Neohub '{neohub_name}'.") 
-        return None
+async def get_profile_id_by_name(neohub_object: NeoHub, profile_name: str) -> Optional[int]:
     
     """
     Retrieves the numerical profile ID for a given profile name using the GET_PROFILE command,
@@ -587,7 +582,7 @@ async def get_profile_id_by_name(neohub_object: NeoHub, neohub_name: str, profil
     logging.info(f"Attempting ID retrieval for existing profile '{profile_name}' using GET_PROFILE...")
     
     # 1. Fetch the raw response (returns a SimpleNamespace object)
-    profiles_raw_response = await get_profile(neohub_name, profile_name)
+    profiles_raw_response = await get_profile(neohub_object, neohub_name, profile_name)
     
     # --- DEBUG PROBES (Retained for one last run if needed) ---
     logging.debug(f"PROBE 1 (Raw Response Type): {type(profiles_raw_response)}")
@@ -629,7 +624,7 @@ async def check_neohub_compatibility(neohub_object: NeoHub, neohub_name: str) ->
     try:
         # Pass neohub_name (the string key) as the first argument to your custom send_command
         command = {"GET_SYSTEM": {}}
-        system_info: Optional[Dict[str, Any]] = await send_command(neohub_name, command) 
+        system_info: Optional[Dict[str, Any]] = await send_command(neohub_object, neohub_name, command) 
         
         if system_info is None:
             # Error comes from your send_command (e.g., "Not connected to Neohub")
@@ -687,7 +682,6 @@ async def _post_profile_command(neohub_name: str, profile_name: str, profile_dat
     return False, "Unknown or non-hub-specific error during profile posting."
 
 async def apply_single_zone_profile(
-    neohub_object: NeoHub,
     neohub_name: str, 
     zone_name: str, 
     profile_data: Dict[str, Dict[str, List[Union[str, float, int, bool]]]], 
@@ -697,9 +691,13 @@ async def apply_single_zone_profile(
     Applies a validated, aggregated weekly profile to a single NeoHub zone by calling 
     the local store_profile2 function. Now attempts to update by ID if profile exists.
     """
-
+    hub = get_neohub_instance(neohub_name)
+    if hub is None:
+        logging.error(f"Cannot apply profile: No active connection found for Neohub '{neohub_name}'. Skipping zone {zone_name}.")
+        return False
+    
     # 1. --- NEOHUB COMPATIBILITY CHECK (Existing) ---
-    if not await check_neohub_compatibility(neohub_object, neohub_name):
+    if not await check_neohub_compatibility(hub, neohub_name):
         logging.error(f"Skipping profile application for {zone_name}. Neohub {neohub_name} failed firmware/configuration checks.")
         return False
 
@@ -715,7 +713,7 @@ async def apply_single_zone_profile(
     profile_name = f"{profile_prefix}_{zone_name}"
     
     # --- NEW LOGIC: Check for existing profile ID ---
-    profile_id = await get_profile_id_by_name(neohub_object, neohub_name, profile_name)
+    profile_id = await get_profile_id_by_name(hub, profile_name)
 
     if profile_id:
         logging.info(f"Retrieved ID {profile_id}. Attempting to update profile by ID...")
@@ -732,37 +730,33 @@ async def apply_single_zone_profile(
         logging.error(f"Failed to execute custom store_profile2 command for '{zone_name}': {e}", exc_info=True)
         return False
 
-async def get_zones(neohub_name: str) -> Optional[Dict[str, Any]]:
-    """Retrieves all zones from a specific NeoHub."""
-    hub = get_neohub_instance(neohub_name) # <-- NEW
-    if hub is None: # <-- NEW
-        logging.error(f"Cannot get zones: No active connection for Neohub '{neohub_name}'.") # <-- NEW
-        return None # <-- NEW
+async def get_zones(neohub_object: NeoHub, neohub_name: str) -> Optional[Dict[str, Any]]:
+    """Retrieves all zones from a specific NeoHub using the provided active object."""
         
     logging.info(f"Getting zones from Neohub: {neohub_name}...")
     try:
-        # Use the retrieved hub instance
-        response = await hub.get_zones() 
+        # Use the provided neohub_object instance
+        response = await neohub_object.get_zones() 
         return response
     except Exception as e:
         logging.error(f"Error fetching zones from {neohub_name}: {e}")
         return None
 
-async def set_temperature(neohub_name: str, zone_name: str, temperature: float) -> Optional[Dict[str, Any]]:
+async def set_temperature(neohub_object: NeoHub, neohub_name: str, zone_name: str, temperature: float) -> Optional[Dict[str, Any]]:
     """Sets the temperature for a specified zone using neohubapi."""
     logging.info(f"Setting temperature for zone {zone_name} on Neohub {neohub_name} to {temperature}")
     command = {"SET_TEMP": [temperature, zone_name]}
-    response = await send_command(neohub_name, command)
+    response = await send_command(neohub_object, command)
     return response #modified
 
-async def get_live_data(neohub_name: str) -> Optional[Dict[str, Any]]:
+async def get_live_data(neohub_object: NeoHub, neohub_name: str) -> Optional[Dict[str, Any]]:
     """Gets the live data using neohubapi."""
     logging.info(f"Getting live data from Neohub: {neohub_name}")
     command = {"GET_LIVE_DATA": 0}
-    response = await send_command(neohub_name, command)
+    response = await send_command(neohub_object, neohub_name, command)
     return response
 
-async def store_profile2(neohub_name: str, profile_name: str, profile_data: Dict[str, Any], profile_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
+async def store_profile2(neohub_object: NeoHub, neohub_name: str, profile_name: str, profile_data: Dict[str, Any], profile_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
     """
     Stores a heating profile on the Neohub, passing a Python dictionary structure directly.
     Accepts an optional profile_id for updates.
@@ -783,19 +777,14 @@ async def store_profile2(neohub_name: str, profile_name: str, profile_data: Dict
 
     # 3. SEND THE COMMAND DICT DIRECTLY, PASSING THE ID
     # The ID is passed here, but only injected into the command payload inside send_command's raw function.
-    response = await send_command(neohub_name, inner_payload, profile_id=profile_id)
+    response = await send_command(neohub_object, neohub_name, inner_payload, profile_id=profile_id)
     return response
 
-async def send_command(neohub_name: str, command: Dict[str, Any], profile_id: Optional[int] = None) -> Optional[Any]:
+async def send_command(neohub_object: NeoHub, neohub_name: str, command: Dict[str, Any], profile_id: Optional[int] = None) -> Optional[Any]:
     """
     Sends a command to the Neohub, using a custom raw send for complex profile commands.
     If profile_id is provided, it uses the specialized update function.
     """
-    global hubs
-    hub = hubs.get(neohub_name)
-    if hub is None:
-        logging.error(f"Not connected to Neohub: {neohub_name}")
-        return None
 
     # --- START FIX: Custom raw send for complex commands ---
     is_profile_command = False
@@ -809,16 +798,16 @@ async def send_command(neohub_name: str, command: Dict[str, Any], profile_id: Op
         # --- LOGIC: Route based on profile_id ---
         if profile_id is not None:
             logging.debug(f"PROBE 3 (SC): Delegating to _send_raw_profile_update_command for {neohub_name}.")
-            return await _send_raw_profile_update_command(hub, command, profile_id)
+            return await _send_raw_profile_update_command(neohub_object, command, profile_id)
         else:
             logging.debug(f"PROBE 3 (SC): Delegating to _send_raw_profile_command for {neohub_name}.")
-            return await _send_raw_profile_command(hub, command)
+            return await _send_raw_profile_command(neohub_object, command)
         # --- END LOGIC ---
     # --- END FIX ---
     
     # Normal command handling (for simple commands like GET_ZONES)
     try:
-        response = await hub._send(command)
+        response = await neohub_object._send(command)
         return response
     except (NeoHubUsageError, NeoHubConnectionError) as e:
         logging.error(f"Error sending command to Neohub {neohub_name}: {e}")
@@ -830,12 +819,12 @@ async def send_command(neohub_name: str, command: Dict[str, Any], profile_id: Op
         logging.error(f"An unexpected error occurred: {e}")
         return None
 
-async def _send_raw_profile_command(hub, command: Dict[str, Any]) -> Optional[Any]:
+async def _send_raw_profile_command(neohub_object: NeoHub, command: Dict[str, Any]) -> Optional[Any]:
     """
     Manually constructs, sends, and waits for the response for the STORE_PROFILE2 
     command.
     """
-    global _command_id_counter
+    global _command_id_manager
     
     # --- PROBE A (RAW): Entering _send_raw_profile_command. ---
     logging.debug(f"PROBE A (RAW): Entering _send_raw_profile_command. Relying on existing connection.")
@@ -843,8 +832,8 @@ async def _send_raw_profile_command(hub, command: Dict[str, Any]) -> Optional[An
     # --- PROBE F: Final Check before payload construction ---
     logging.debug(f"PROBE F (RAW): Proceeding with raw send on existing connection.")
     
-    hub_token = getattr(hub, '_token', None)
-    hub_client = getattr(hub, '_client', None) 
+    hub_token = getattr(neohub_object, '_token', None)
+    hub_client = getattr(neohub_object, '_client', None) 
     
     if not hub_token or not hub_client:
         logging.error("Could not access private token or client (_token or _client) for raw send.")
@@ -855,7 +844,7 @@ async def _send_raw_profile_command(hub, command: Dict[str, Any]) -> Optional[An
         command_to_send = command
         
         # 1. Serialize the command
-        command_id = next(_command_id_counter)
+        command_id = _command_id_manager()
         command_value_str = json.dumps(command_to_send, separators=(',', ':'))
 
         # 2. **HACK 1: Convert all double quotes to single quotes** (crucial for unquoted true/false)
@@ -947,7 +936,7 @@ async def _send_raw_profile_command(hub, command: Dict[str, Any]) -> Optional[An
         if pending_requests and 'command_id' in locals() and command_id in pending_requests:
              del pending_requests[command_id]
 
-async def _send_raw_profile_update_command(hub, command: Dict[str, Any], profile_id: int) -> Optional[Dict[str, Any]]:
+async def _send_raw_profile_update_command(neohub_object: NeoHub, command: Dict[str, Any], profile_id: int) -> Optional[Dict[str, Any]]:
     """
     Manually constructs, sends, and waits for the response for the STORE_PROFILE2 
     command specifically for UPDATING an existing profile by ID.
@@ -955,12 +944,12 @@ async def _send_raw_profile_update_command(hub, command: Dict[str, Any], profile
     The ID is inserted before serialization to follow the same pattern as the original
     function's quirky serialization process.
     """
-    global _command_id_counter
+    global _command_id_manager
     
     logging.debug(f"PROBE A (UPDATE RAW): Entering _send_raw_profile_update_command. ID: {profile_id}. Relying on existing connection.")
     
-    hub_token = getattr(hub, '_token', None)
-    hub_client = getattr(hub, '_client', None) 
+    hub_token = getattr(neohub_object, '_token', None)
+    hub_client = getattr(neohub_object, '_client', None) 
     
     if not hub_token or not hub_client:
         logging.error("Could not access private token or client (_token or _client) for raw send.")
@@ -969,7 +958,7 @@ async def _send_raw_profile_update_command(hub, command: Dict[str, Any], profile
     try: 
         # 0. Preparation
         command_to_send = command
-        command_id = next(_command_id_counter)
+        command_id = _command_id_manager()
         
         # Ensure the command has the STORE_PROFILE2 key
         if 'STORE_PROFILE2' not in command_to_send or not isinstance(command_to_send['STORE_PROFILE2'], dict):
@@ -1086,53 +1075,51 @@ async def _send_raw_profile_update_command(hub, command: Dict[str, Any], profile
         if pending_requests and 'command_id' in locals() and command_id in pending_requests:
             del pending_requests[command_id]
 
-async def get_profile(neohub_name: str, profile_name: str) -> Optional[Dict[str, Any]]:
+async def get_profile(neohub_object: NeoHub, neohub_name: str, profile_name: str) -> Optional[Dict[str, Any]]:
     """Retrieves a heating profile from the Neohub using neohubapi."""
     logging.info(f"Getting profile {profile_name} from Neohub {neohub_name}")
     command = {"GET_PROFILE": profile_name}
-    response = await send_command(neohub_name, command)
+    response = await send_command(neohub_object, command)
     return response
 
-async def get_neohub_firmware_version(neohub_name: str) -> Optional[int]:
-    """Gets the firmware version of the Neohub."""
+async def get_neohub_firmware_version(neohub_object: NeoHub, neohub_name: str) -> Optional[int]:
+    """
+    Gets the firmware version of the Neohub using the active neohub_object instance.
+    """
     logger = logging.getLogger("neohub")
     logger.info(f"Getting firmware version from Neohub: {neohub_name}")
 
-    # Construct the GET_SYSTEM command
+    # Construct the command (using FIRMWARE: 0 as per the original function)
     command = {"FIRMWARE": 0}
 
-    # Get Neohub configuration
-    neohub_config = config["neohubs"].get(neohub_name)
-    if not neohub_config:
-        logger.error(f"Neohub configuration not found for {neohub_name}")
-        return None
-
-    # Get the Neohub instance
-    global hubs
-    hub = hubs.get(neohub_name)
-    if hub is None:
-        logging.error(f"Not connected to Neohub: {neohub_name}")
-        return None
+    # REMOVED: Redundant config lookup (neohub_config = config["neohubs"].get(neohub_name))
+    # REMOVED: Global hubs access and connection check (global hubs, hub = hubs.get(neohub_name), if hub is None)
 
     try:
-        # Use the neohubapi library's _send function directly
-        response = await hub._send(command)
+        # Use the established wrapper: send_command now handles error logging and uses the active object.
+        response = await send_command(neohub_object, neohub_name, command)
+
+        if response is None:
+            # send_command handles logging the connection/send error
+            return None
 
         if response:
             try:
                 # Extract the firmware version from the response
+                # Note: HUB_VERSION typically comes from GET_SYSTEM, but we use the result from the call.
                 firmware_version = int(response.get("HUB_VERSION"))
                 logger.info(f"Firmware version for Neohub {neohub_name}: {firmware_version}")
                 return firmware_version
             except (ValueError, AttributeError) as e:
-                logger.error(f"Error parsing firmware version from response: {e}")
+                logger.error(f"Error parsing firmware version from response for {neohub_name}: {e}")
                 return None
         else:
             logger.error(f"Failed to retrieve system data from Neohub {neohub_name}.")
             return None
 
     except Exception as e:
-        logger.error(f"An unexpected error occurred: {e}")
+        # Catch unexpected errors outside of those handled by send_command
+        logger.error(f"An unexpected error occurred during firmware check for {neohub_name}: {e}", exc_info=True)
         return None
 
 def get_external_temperature() -> Optional[float]:
@@ -1192,10 +1179,10 @@ def get_bookings_and_locations() -> Optional[Dict[str, List[Dict[str, Any]]]]:
         logging.error(f"Failed to parse ChurchSuite response as JSON: {e}")
         return None
 
-async def log_existing_profile(neohub_name: str, profile_name: str) -> None:
+async def log_existing_profile(neohub_object: NeoHub, neohub_name: str, profile_name: str) -> None:
     """
-    Fetches and logs the current settings of a specific profile on a NeoHub for debugging.
-    This runs only if LOGGING_LEVEL is set to DEBUG.
+    Fetches and logs the current settings of a specific profile on a NeoHub for debugging,
+    using the active neohub_object instance.
     """
     global LOGGING_LEVEL
     if LOGGING_LEVEL != "DEBUG":
@@ -1205,10 +1192,19 @@ async def log_existing_profile(neohub_name: str, profile_name: str) -> None:
     
     # Use GET_PROFILE to retrieve the schedule data for the named profile (validated command)
     command = {"GET_PROFILE": profile_name}
-    response = await send_command(neohub_name, command)
+    
+    # CRITICAL CHANGE: Pass the neohub_object and neohub_name to the wrapper
+    response = await send_command(neohub_object, neohub_name, command)
     
     # BUG FIX: Use attribute access (response.status) or safe attribute access (getattr/hasattr)
-    # Check if response exists, if its status attribute is 'success', and if it has a data attribute
+    # Note: Your send_command wrapper returns Dict[str, Any] or None, not an object with attributes.
+    # We should assume the response here is a SimpleNamespace object if it comes from a low-level API call,
+    # or a Dict if it comes from your wrapper. Given the attribute checks (response.status, response.data),
+    # the function seems to expect a SimpleNamespace object (or similar structure).
+    
+    # Assuming the upstream call to 'send_command' (which uses 'hub._send(command)') ultimately returns 
+    # a SimpleNamespace object as your other functions suggested:
+    
     if response and getattr(response, "status", None) == "success" and hasattr(response, "data"):
         # Log the received data cleanly. response.data is assumed to be a dictionary or list.
         logging.debug(
@@ -1262,7 +1258,7 @@ async def check_neohub_compatibility(neohub_object: NeoHub, neohub_name: str) ->
     try:
         command = {"GET_SYSTEM": {}}
         # We expect a Dict, but the client library is returning a SimpleNamespace object
-        system_info: Optional[Dict[str, Any]] = await send_command(neohub_name, command) 
+        system_info: Optional[Dict[str, Any]] = await send_command(neohub_object, neohub_name, command) 
         
         if system_info is None:
             logging.error(f"Compatibility check FAILED for {neohub_name}: Did not receive a valid response from GET_SYSTEM or hub not found.")
@@ -1315,7 +1311,6 @@ async def check_neohub_compatibility(neohub_object: NeoHub, neohub_name: str) ->
 async def apply_aggregated_schedules(
     aggregated_schedules: Dict[str, Dict[int, List[Dict[str, Union[str, float]]]]], 
     profile_prefix: str, 
-    config: Dict[str, Any],
     zone_to_neohub_map: Dict[str, str]
 ) -> None:
     """
@@ -1340,11 +1335,6 @@ async def apply_aggregated_schedules(
         
         neohub_name = zone_to_neohub_map.get(zone_name)
         # Assuming 'hubs' is a globally available dictionary mapping neohub names to connected NeoHub objects
-        neohub_object = get_neohub_instance(neohub_name)
-
-        if not neohub_object:
-            logging.error(f"Cannot apply schedule for zone '{zone_name}': No active connection for Neohub '{neohub_name}'. Skipping.")
-            continue
             
         profile_data = {}
         
@@ -1373,7 +1363,6 @@ async def apply_aggregated_schedules(
         # Add a task to apply the profile (this calls the function with the validation check)
         tasks.append(
             apply_single_zone_profile(
-                neohub_object,
                 neohub_name, 
                 zone_name, 
                 profile_data, 
