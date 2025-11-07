@@ -147,8 +147,7 @@ async def connect_to_neohub(neohub_name: str, neohub_config: Dict[str, Any]) -> 
         hub = NeoHub(
             neohub_config["address"],
             neohub_config["port"],
-            neohub_config["token"],
-            command_id_generator=_command_id_counter
+            neohub_config["token"]
         )
         
         # 3. Establish the new connection
