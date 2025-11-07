@@ -230,7 +230,7 @@ def create_aggregated_schedule(
     bookings: List[Dict[str, Any]], 
     current_external_temp: Optional[float], 
     config: Dict[str, Any],
-    resource_id_to_name: Dict[int, str] # NEW ARGUMENT
+    resource_id_to_name: Dict[int, str] 
 ) -> Dict[str, Dict[int, List[Dict[str, Union[str, float]]]]]:
     """
     Processes ChurchSuite bookings to create a single, aggregated heating schedule 
@@ -259,6 +259,9 @@ def create_aggregated_schedule(
         logging.info("AGGREGATION END: Bookings list was empty. Returning ECO default schedule.")
         return zone_schedule
 
+    # Determine the ID of the first booking in this filtered list for the probe
+    first_booking_id = bookings[0].get("id") if bookings else None
+    
     for booking in bookings:
         booking_id = booking.get("id", "N/A")
         resource_id = booking.get("resource_id")
@@ -332,7 +335,8 @@ def create_aggregated_schedule(
                 preheat_start_dt_local = start_dt_local - datetime.timedelta(minutes=required_preheat_minutes)
                 
                 # PROBE F: Log the crucial calculation details for the first successful event
-                if LOGGING_LEVEL == "DEBUG" and booking_id == booked_resources[0].get("id"):
+                # Check if this is the first booking in the list
+                if LOGGING_LEVEL == "DEBUG" and booking_id == first_booking_id:
                     logging.debug(f"PROBE F (Calculation): Preheat needed: {required_preheat_minutes} mins. Preheat Starts: {preheat_start_dt_local.strftime('%H:%M')} ({target_temp}°C). ECO Ends: {end_dt_local.strftime('%H:%M')} ({ECO_TEMPERATURE}°C).")
                 
                 # Format times as "HH:MM"
@@ -1346,7 +1350,7 @@ async def update_heating_schedule() -> None:
     # 3. Fetch Bookings and Resources
     data = get_bookings_and_locations()
     if data:
-        booked_resources = data.get("booked_resources", [])
+        booked_resources = data.get("booked_resources", []) # NOTE: booked_resources is defined here
         resources = data.get("resources", [])
         
         logging.info(f"Fetched {len(booked_resources)} total bookings and {len(resources)} resources from ChurchSuite.")
@@ -1415,7 +1419,7 @@ async def update_heating_schedule() -> None:
         # 6. AGGREGATE SCHEDULES BY ZONE (The Critical Step)
         # NEW ARGUMENT ADDED: resource_id_to_name
         aggregated_current_schedules = create_aggregated_schedule(
-            current_week_bookings, 
+            current_week_bookings, # This is the list of bookings we need
             external_temperature, 
             config,
             resource_id_to_name
@@ -1424,7 +1428,7 @@ async def update_heating_schedule() -> None:
         
         # NEW ARGUMENT ADDED: resource_id_to_name
         aggregated_next_schedules = create_aggregated_schedule(
-            next_week_bookings, 
+            next_week_bookings, # This is the list of bookings we need
             external_temperature, 
             config,
             resource_id_to_name
