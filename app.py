@@ -1308,9 +1308,9 @@ async def apply_aggregated_schedules(
 async def update_heating_schedule() -> None:
     """
     Updates the heating schedule based on upcoming bookings,
-    aggregating schedules by neohub and zone.
+    aggregating schedules by neohub and zone using a rolling 7-day window.
     """
-    logging.info("--- STARTING HEATING SCHEDULE UPDATE PROCESS ---")
+    logging.info("--- STARTING HEATING SCHEDULE UPDATE PROCESS (7-Day Rolling Window) ---")
     global config
     
     # 1. Configuration Validation
@@ -1324,7 +1324,7 @@ async def update_heating_schedule() -> None:
     # NEW: Build the centralized configuration map
     zone_to_neohub_map = build_zone_to_neohub_map(config)
     
-    # 2. Timezone and Week Calculation
+    # 2. Timezone and Rolling Window Calculation
     location_timezone_name = os.environ.get("CHURCHSUITE_TIMEZONE", "Europe/London")
     try:
         location_timezone = pytz.timezone(location_timezone_name)
@@ -1334,23 +1334,23 @@ async def update_heating_schedule() -> None:
         )
         location_timezone = pytz.timezone("Europe/London")
 
-    today = datetime.datetime.now(location_timezone).replace(tzinfo=None)
-    # Start of the week (Monday at 00:00:00)
-    current_week_start = today - datetime.timedelta(days=today.weekday())
-    # End of the week (Sunday at 23:59:59) - we use midnight Monday of next week for comparison end point
-    current_week_end = current_week_start + datetime.timedelta(days=7) # Use 7 days for a full week boundary
-    next_week_start = current_week_end
-    next_week_end = next_week_start + datetime.timedelta(days=7)
+    # The current moment, naive time in the location's timezone
+    now_naive = datetime.datetime.now(location_timezone).replace(tzinfo=None)
+
+    # PROFILE 1: Covers the next 7 days (the current rolling week)
+    profile_1_end = now_naive + datetime.timedelta(days=7)
+    # PROFILE 2: Covers days 8 through 14
+    profile_2_end = now_naive + datetime.timedelta(days=14)
     
-    logging.info(f"Current Date: {today.date()}")
-    logging.info(f"Current Week Range (Local): {current_week_start.date()} to {current_week_end.date() - datetime.timedelta(days=1)}")
-    logging.info(f"Next Week Range (Local): {next_week_start.date()} to {next_week_end.date() - datetime.timedelta(days=1)}")
+    logging.info(f"Current Date/Time: {now_naive.strftime('%Y-%m-%d %H:%M')}")
+    logging.info(f"Profile 1 (Current Week) Range: NOW to {profile_1_end.strftime('%Y-%m-%d %H:%M')}")
+    logging.info(f"Profile 2 (Next Week) Range: {profile_1_end.strftime('%Y-%m-%d %H:%M')} to {profile_2_end.strftime('%Y-%m-%d %H:%M')}")
 
 
     # 3. Fetch Bookings and Resources
     data = get_bookings_and_locations()
     if data:
-        booked_resources = data.get("booked_resources", []) # NOTE: booked_resources is defined here
+        booked_resources = data.get("booked_resources", [])
         resources = data.get("resources", [])
         
         logging.info(f"Fetched {len(booked_resources)} total bookings and {len(resources)} resources from ChurchSuite.")
@@ -1363,53 +1363,59 @@ async def update_heating_schedule() -> None:
             logging.error("No resources found. Cannot map bookings to locations. Exiting schedule update early.")
             return
 
-        # NEW LOGIC START: Create a map to resolve resource_id to location name
+        # Create a map to resolve resource_id to location name
         resource_id_to_name = {r.get('id'): r.get('name') for r in resources if r.get('id') and r.get('name')}
         logging.debug(f"RESOURCE MAP: Created ID to Name map with {len(resource_id_to_name)} entries.")
-        # NEW LOGIC END
         
-        # 4. Filter Bookings by Week
-        current_week_bookings = []
-        next_week_bookings = []
+        # 4. Filter Bookings by Rolling Window
+        profile_1_bookings = []
+        profile_2_bookings = []
 
         for booking in booked_resources:
             start_time_str = booking.get("starts_at")
+            end_time_str = booking.get("ends_at")
             resource_id = booking.get("resource_id", "unknown")
             
-            if start_time_str:
+            if start_time_str and end_time_str:
                 try:
-                    parsed_dt = dateutil.parser.parse(start_time_str)
+                    # Parse all times to local naive time for comparison
+                    start_dt_utc = dateutil.parser.parse(start_time_str)
+                    end_dt_utc = dateutil.parser.parse(end_time_str)
+                    
+                    # Convert to local time, remove TZ info
+                    local_start_dt = start_dt_utc.astimezone(location_timezone).replace(tzinfo=None)
+                    local_end_dt = end_dt_utc.astimezone(location_timezone).replace(tzinfo=None)
+                    
+                    # CRITICAL: Lapsed Event Check
+                    # If the event has already ENDED, we skip it. This prevents deleting an active schedule
+                    # if the start time was in the past, but the end time is in the future.
+                    if local_end_dt < now_naive:
+                        logging.debug(f"Skipping booking ID {booking.get('id')}: Event finished at {local_end_dt}.")
+                        continue
+                    
+                    # PROBE B (Filtering Check) - Renamed for clarity on the first event being processed
+                    if LOGGING_LEVEL == "DEBUG" and not (profile_1_bookings or profile_2_bookings):
+                        logging.debug(f"PROBE B (Filtering Check): First un-lapsed booking starts: {local_start_dt}. Ends: {local_end_dt}. Now: {now_naive}")
 
-                    # Ensure we have a timezone-aware object (assuming ChurchSuite returns UTC or has TZ info)
-                    if parsed_dt.tzinfo is None or parsed_dt.utcoffset() is None:
-                        utc_dt = parsed_dt.replace(tzinfo=pytz.utc)
-                    else:
-                        utc_dt = parsed_dt.astimezone(pytz.utc)
-
-                    # Convert to local time, remove TZ info for naive comparison against naive range objects
-                    local_start_dt = utc_dt.astimezone(location_timezone).replace(tzinfo=None)
-
-                    # PROBE B: Check the parsing and comparison logic for the first booking
-                    if LOGGING_LEVEL == "DEBUG" and not (current_week_bookings or next_week_bookings):
-                        logging.debug(f"PROBE B (Filtering Check): First booking starts_at: {start_time_str}. Parsed local DT: {local_start_dt}. Current Week End (Exclusive): {current_week_end}")
-
-                    # Use exclusive end point for current_week_end and next_week_end
-                    if current_week_start <= local_start_dt < current_week_end:
-                        current_week_bookings.append(booking)
-                    elif next_week_start <= local_start_dt < next_week_end:
-                        next_week_bookings.append(booking)
+                    # PROFILE 1: Events that start in the next 7 days (or are currently running)
+                    if local_start_dt < profile_1_end:
+                        profile_1_bookings.append(booking)
+                    
+                    # PROFILE 2: Events that start between day 7 and day 14
+                    elif local_start_dt < profile_2_end:
+                        profile_2_bookings.append(booking)
                         
                 except dateutil.parser.ParserError as e:
                     logging.error(f"Failed to parse datetime for booking ID {booking.get('id', 'unknown')}: {e}")
             else:
-                logging.warning(f"Booking with resource ID {resource_id} has no 'starts_at' time.")
+                logging.warning(f"Booking with resource ID {resource_id} has missing start/end time.")
 
-        logging.info(f"Filtered Bookings: Current Week: {len(current_week_bookings)}, Next Week: {len(next_week_bookings)}")
+        logging.info(f"Filtered Bookings: Profile 1 (Next 7 days): {len(profile_1_bookings)}, Profile 2 (Days 8-14): {len(profile_2_bookings)}")
         
         # PROBE C: Log the resulting lists
         if LOGGING_LEVEL == "DEBUG":
-            logging.debug(f"PROBE C (Filtered): Current Week Bookings ({len(current_week_bookings)}): {current_week_bookings}")
-            logging.debug(f"PROBE C (Filtered): Next Week Bookings ({len(next_week_bookings)}): {next_week_bookings}")
+            logging.debug(f"PROBE C (Filtered): Profile 1 Bookings ({len(profile_1_bookings)}): {profile_1_bookings}")
+            logging.debug(f"PROBE C (Filtered): Profile 2 Bookings ({len(profile_2_bookings)}): {profile_2_bookings}")
 
 
         # 5. Get External Temperature
@@ -1417,43 +1423,42 @@ async def update_heating_schedule() -> None:
         logging.info(f"Fetched external temperature: {external_temperature}°C")
 
         # 6. AGGREGATE SCHEDULES BY ZONE (The Critical Step)
-        # NEW ARGUMENT ADDED: resource_id_to_name
-        aggregated_current_schedules = create_aggregated_schedule(
-            current_week_bookings, # This is the list of bookings we need
+        aggregated_p1_schedules = create_aggregated_schedule(
+            profile_1_bookings, 
             external_temperature, 
             config,
             resource_id_to_name
         )
-        logging.info(f"AGGREGATION RESULT (Current Week): {len(aggregated_current_schedules)} final locations/zones scheduled.")
+        logging.info(f"AGGREGATION RESULT (Profile 1): {len(aggregated_p1_schedules)} final locations/zones scheduled.")
         
-        # NEW ARGUMENT ADDED: resource_id_to_name
-        aggregated_next_schedules = create_aggregated_schedule(
-            next_week_bookings, # This is the list of bookings we need
+        aggregated_p2_schedules = create_aggregated_schedule(
+            profile_2_bookings, 
             external_temperature, 
             config,
             resource_id_to_name
         )
-        logging.info(f"AGGREGATION RESULT (Next Week): {len(aggregated_next_schedules)} final locations/zones scheduled.")
+        logging.info(f"AGGREGATION RESULT (Profile 2): {len(aggregated_p2_schedules)} final locations/zones scheduled.")
 
         # PROBE D: Log the final aggregated schedules before application
         if LOGGING_LEVEL == "DEBUG":
-            logging.debug(f"PROBE D (Final Aggregation): Current Week: {aggregated_current_schedules}")
-            logging.debug(f"PROBE D (Final Aggregation): Next Week: {aggregated_next_schedules}")
+            logging.debug(f"PROBE D (Final Aggregation): Profile 1: {aggregated_p1_schedules}")
+            logging.debug(f"PROBE D (Final Aggregation): Profile 2: {aggregated_p2_schedules}")
 
 
         # 7. APPLY AGGREGATED SCHEDULES
+        # The profile names remain "Current Week" and "Next Week" for the NeoHub hardware
         await apply_aggregated_schedules(
-            aggregated_current_schedules, "Current Week", config, zone_to_neohub_map
+            aggregated_p1_schedules, "Current Week", config, zone_to_neohub_map
         )
         await apply_aggregated_schedules(
-            aggregated_next_schedules, "Next Week", config, zone_to_neohub_map
+            aggregated_p2_schedules, "Next Week", config, zone_to_neohub_map
         )
 
     else:
         logging.info("No data received from ChurchSuite.")
     
     logging.info("--- HEATING SCHEDULE UPDATE PROCESS COMPLETE ---")
-
+    
 def main():
     """Main application function."""
     # Use the LOGGING_LEVEL environment variable
