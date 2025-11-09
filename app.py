@@ -98,6 +98,10 @@ neohub_connections = {}
 config = None
 hubs = {}  # Dictionary to store NeoHub instances
 
+# Other Constants
+RETRY_DELAYS = [0.5, 2.0] # Delay before 2nd and 3rd attempt, respectively
+MAX_ATTEMPTS = 1 + len(RETRY_DELAYS) # Total attempts: 1 initial + 2 retries = 3
+
 def load_config(config_file: str) -> Optional[Dict[str, Any]]:
     """Loads configuration data from a JSON file."""
     try:
@@ -1221,62 +1225,73 @@ async def apply_schedule_to_heating(
 async def check_neohub_compatibility(neohub_object: NeoHub, neohub_name: str) -> bool:
     """
     Checks the NeoHub connection, firmware version, and 6-stage profile configuration 
-    using the custom send_command utility, passing neohub_name (string key) as required.
+    using a retry mechanism to stabilize the connection before the first command.
     """
     logging.info(f"Checking compatibility for Neohub {neohub_name} using custom send_command...")
 
-    try:
-        command = {"GET_SYSTEM": {}}
-        # We expect a Dict, but the client library is returning a SimpleNamespace object
-        system_info: Optional[Dict[str, Any]] = await send_command(neohub_name, command) 
-        
-        if system_info is None:
-            logging.error(f"Compatibility check FAILED for {neohub_name}: Did not receive a valid response from GET_SYSTEM or hub not found.")
-            return False
-
-        # --- CRITICAL FIX for AttributeError: 'types.SimpleNamespace' object has no attribute 'get' ---
-        # Convert SimpleNamespace object back to a dictionary so .get() can be used.
-        if not isinstance(system_info, dict):
-            try:
-                system_info = vars(system_info) 
-            except TypeError:
-                logging.error(f"Compatibility check FAILED for {neohub_name}: system_info is an unexpected object type and cannot be converted to a dictionary.")
-                return False
-        # ------------------------------------------------------------------------------------------
-
-        # --- Check 1: Heating Levels ---
-        current_levels = system_info.get('HEATING_LEVELS')
-        if current_levels != REQUIRED_HEATING_LEVELS:
-            logging.error(
-                f"Compatibility check FAILED for {neohub_name}: "
-                f"Hub is not configured for a {REQUIRED_HEATING_LEVELS}-stage profile (HEATING_LEVELS). "
-                f"Current: {current_levels}. Expected: {REQUIRED_HEATING_LEVELS}."
-            )
-            return False
-
-        # --- Check 2: Firmware Version ---
+    command = {"GET_SYSTEM": {}}
+    
+    for attempt in range(MAX_ATTEMPTS):
+        if attempt > 0:
+            # Apply delay before retry (0.5s before 2nd, 2.0s before 3rd)
+            delay = RETRY_DELAYS[attempt - 1]
+            logging.warning(f"Compatibility check failed on attempt {attempt}. Retrying in {delay} seconds...")
+            await asyncio.sleep(delay)
+            
         try:
-            current_firmware = int(system_info.get('HUB_VERSION', 0)) 
-        except (ValueError, TypeError):
-            current_firmware = 0
-            
-        if current_firmware < MIN_FIRMWARE_VERSION:
-            logging.error(
-                f"Compatibility check FAILED for {neohub_name}: "
-                f"Firmware version ({current_firmware}) is too old. "
-                f"Minimum required ({MIN_FIRMWARE_VERSION}) for this profile type."
-            )
-            return False
-            
-    except NeoHubConnectionError as e:
-        logging.error(f"Compatibility check FAILED for {neohub_name} due to connection error: {e}")
-        return False
-    except Exception as e:
-        logging.error(f"Compatibility check FAILED for {neohub_name} due to unexpected error: {e}", exc_info=True)
-        return False
+            # We assume send_command handles the raw send and uses the global _command_id_counter.
+            system_info: Optional[Dict[str, Any]] = await send_command(neohub_name, command) 
 
-    logging.info(f"Compatibility check PASSED for {neohub_name}.")
-    return True
+            if system_info is None:
+                # If send_command returns None, something fundamental failed (e.g., ConnectionError)
+                # The loop will proceed to retry unless it's the last attempt.
+                raise NeoHubConnectionError("No valid response received from GET_SYSTEM.")
+                
+            # --- CRITICAL FIX for SimpleNamespace ---
+            # Convert to a dictionary if necessary to use .get()
+            if not isinstance(system_info, dict):
+                try:
+                    system_info = vars(system_info) 
+                except TypeError:
+                    logging.error(f"Compatibility check FAILED for {neohub_name}: system_info is an unexpected object type.")
+                    # Return False immediately if the object is corrupted
+                    return False
+            # ----------------------------------------
+            
+            # --- Check 1: Heating Levels ---
+            current_levels = system_info.get('HEATING_LEVELS')
+            if current_levels != REQUIRED_HEATING_LEVELS:
+                 # Success, but wrong config. Fail immediately (no retry needed for config error).
+                 logging.error(f"Compatibility check FAILED for {neohub_name}: Hub is not configured for a {REQUIRED_HEATING_LEVELS}-stage profile (HEATING_LEVELS). Current: {current_levels}. Expected: {REQUIRED_HEATING_LEVELS}.")
+                 return False
+
+            # --- Check 2: Firmware Version ---
+            # (Your existing firmware check logic goes here)
+            try:
+                current_firmware = int(system_info.get('HUB_VERSION', 0)) 
+            except (ValueError, TypeError):
+                current_firmware = 0
+                
+            if current_firmware < MIN_FIRMWARE_VERSION:
+                logging.error(f"Compatibility check FAILED for {neohub_name}: Firmware version ({current_firmware}) is too old. Minimum required ({MIN_FIRMWARE_VERSION}) for this profile type.")
+                # Success, but wrong firmware. Fail immediately.
+                return False
+
+            # If all checks pass, break the loop and succeed
+            logging.info(f"Compatibility check PASSED for {neohub_name}.")
+            return True
+
+        except (NeoHubConnectionError, Exception) as e:
+            # Log the specific error that triggered the retry/failure
+            if attempt == MAX_ATTEMPTS - 1:
+                 logging.error(f"Compatibility check FAILED permanently for {neohub_name} after {MAX_ATTEMPTS} attempts: {e}")
+                 return False
+            else:
+                 logging.debug(f"Attempt {attempt+1} failed with error: {e}")
+                 # Continue to the next iteration for retry
+
+    # Should be unreachable, but here for completeness
+    return False
 
 async def apply_aggregated_schedules(
     aggregated_schedules: Dict[str, Dict[int, List[Dict[str, Union[str, float]]]]], 
