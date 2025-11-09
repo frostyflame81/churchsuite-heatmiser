@@ -1571,7 +1571,7 @@ def main():
 
     # Run update_heating_schedule() immediately, and then schedule it to run every 60 minutes.
     asyncio.run(update_heating_schedule())  # Run immediately
-    scheduler.add_job(lambda: asyncio.run(update_heating_schedule()), "interval", minutes=3)
+    scheduler.add_job(lambda: asyncio.run(update_heating_schedule()), "interval", minutes=60)
     scheduler.start()
 
     try:
