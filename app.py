@@ -23,7 +23,13 @@ class CommandIdManager:
         self.start_id = start_id
         self._counter = itertools.count(start=start_id)
 
-    def __call__(self) -> int:
+    # The __iter__ method returns the object itself, satisfying the iterator protocol.
+    def __iter__(self):
+        return self
+        
+    # The __next__ method is what allows the object to be passed to next().
+    # This replaces the old __call__ method.
+    def __next__(self) -> int:
         """Returns the next command ID."""
         return next(self._counter)
 
