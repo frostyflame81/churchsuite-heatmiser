@@ -668,8 +668,8 @@ async def apply_single_zone_profile(
     profile_prefix: str
 ) -> bool:
     """
-    Applies a validated, aggregated weekly profile to a single NeoHub zone by calling 
-    the local store_profile2 function. Now attempts to update by ID if profile exists.
+    Applies a validated, aggregated weekly profile to a single NeoHub zone.
+    It now activates the profile after successful storage by retrieving the ID.
     """
 
     # 1. --- NEOHUB COMPATIBILITY CHECK (Existing) ---
@@ -688,24 +688,41 @@ async def apply_single_zone_profile(
 
     profile_name = f"{profile_prefix}_{zone_name}"
     
-    # --- NEW LOGIC: Check for existing profile ID ---
-    profile_id = await get_profile_id_by_name(neohub_object, neohub_name, profile_name)
-
-    if profile_id:
-        logging.info(f"Retrieved ID {profile_id}. Attempting to update profile by ID...")
+    # --- STEP A: Check for existing profile ID ---
+    profile_id_for_storage = await get_profile_id_by_name(neohub_object, neohub_name, profile_name)
+    
+    if profile_id_for_storage:
+        logging.info(f"Retrieved ID {profile_id_for_storage}. Attempting to update profile by ID...")
     else:
         logging.info(f"Profile '{profile_name}' not found. Attempting to create new profile by name...")
-    # --- END NEW LOGIC ---
 
     try:
-        # Pass the retrieved profile_id (or None) to store_profile2
-        await store_profile2(neohub_name, profile_name, profile_data, profile_id=profile_id)
-        logging.info(f"Successfully sent custom profile command for '{zone_name}'.")
-        return True
-    except Exception as e:
-        logging.error(f"Failed to execute custom store_profile2 command for '{zone_name}': {e}", exc_info=True)
-        return False
+        # 3. Store/Update the profile
+        if profile_id_for_storage:
+            # UPDATE PATH: Pass the existing ID to update the profile
+            await store_profile2(neohub_name, profile_name, profile_data, profile_id=profile_id_for_storage)
+            profile_id_to_activate = profile_id_for_storage
+        else:
+            # CREATE PATH: OMIT the profile_id argument entirely
+            await store_profile2(neohub_name, profile_name, profile_data)
+            
+            # 4. Retrieve ID if a NEW profile was created
+            profile_id_to_activate = await get_profile_id_by_name(neohub_object, neohub_name, profile_name)
 
+            if profile_id_to_activate is None:
+                logging.error(f"FATAL: New profile stored successfully for '{zone_name}' but the new ID could not be retrieved for activation.")
+                return False
+
+        logging.info(f"Profile successfully stored/updated. Preparing to activate ID {profile_id_to_activate} on '{zone_name}'.")
+
+        # 5. --- ACTIVATE THE PROFILE ---
+        # profile_id_to_activate is now guaranteed to hold a valid ID
+        return await activate_profile_on_zones(neohub_name, profile_id_to_activate, zone_name)
+
+    except Exception as e:
+        logging.error(f"Failed to execute custom profile command for '{zone_name}': {e}", exc_info=True)
+        return False
+    
 async def get_zones(neohub_name: str) -> Optional[List[str]]:
     """Retrieves zone names from the Neohub using neohubapi."""
     logging.info(f"Getting zones from Neohub: {neohub_name}")
@@ -1367,6 +1384,50 @@ async def apply_aggregated_schedules(
         await asyncio.gather(*tasks)
     else:
         logging.warning(f"No profiles generated or applied for {profile_prefix}.")
+
+async def activate_profile_on_zones(neohub_name: str, profile_id: int, zone_name: str) -> bool:
+    """
+    Activates a specific profile ID on one or more heating zones using the 
+    RUN_PROFILE_ID command.
+
+    Args:
+        neohub_name (str): The name of the NeoHub client is connected to.
+        profile_id (int): The ID of the profile to be activated.
+        zone_name (str): The name of the zone (or a list of zones) to apply the profile to.
+                         (We assume the zone name maps directly to the neoStat name/identifier).
+                         
+    Returns:
+        bool: True if the command was sent successfully and the response indicates success.
+    """
+    logging.info(f"Attempting to activate Profile ID {profile_id} on zone(s): '{zone_name}' via {neohub_name}.")
+
+    try:
+        # The required payload format for the RUN_PROFILE_ID command:
+        # {“RUN_PROFILE_ID”:[25,"Kitchen","Lounge"]}
+        
+        # Build the command payload structure
+        # Note: The API docs show a list of zones, so we wrap the single zone_name in a list.
+        inner_command = {
+            "RUN_PROFILE_ID": [
+                profile_id,
+                zone_name
+            ]
+        }
+        
+        # Use your existing send_command wrapper. We assume it correctly handles 
+        # wrapping the inner_command into the full WebSocket payload.
+        response: Optional[Dict[str, Any]] = await send_command(neohub_name, inner_command)
+
+        if response and response.get('result') == 'ok':
+            logging.info(f"Successfully activated Profile ID {profile_id} on zone(s) '{zone_name}'.")
+            return True
+        else:
+            logging.error(f"Failed to activate profile {profile_id} on '{zone_name}'. Hub response: {response}")
+            return False
+
+    except Exception as e:
+        logging.error(f"Error during RUN_PROFILE_ID command for zone '{zone_name}' on {neohub_name}: {e}")
+        return False
 
 async def update_heating_schedule() -> None:
     """
