@@ -715,9 +715,17 @@ async def apply_single_zone_profile(
 
         logging.info(f"Profile successfully stored/updated. Preparing to activate ID {profile_id_to_activate} on '{zone_name}'.")
 
-        # 5. --- ACTIVATE THE PROFILE ---
-        # profile_id_to_activate is now guaranteed to hold a valid ID
-        return await activate_profile_on_zones(neohub_name, profile_id_to_activate, zone_name)
+        # -----------------------------------------------------------
+        # 5. --- CONDITIONAL ACTIVATION LOGIC (TWEAKED) ---
+        # -----------------------------------------------------------
+        # Check if the prefix CONTAINS "Current Week" (robust partial match)
+        if "Current Week" in profile_prefix:
+            # ONLY ACTIVATE Current Week profiles
+            return await activate_profile_on_zones(neohub_name, profile_id_to_activate, zone_name)
+        else:
+            # For Next Week (or any other prefix), simply confirm success without activating.
+            logging.info(f"Activation skipped for non-Current Week profile: '{profile_name}'.")
+            return True
 
     except Exception as e:
         logging.error(f"Failed to execute custom profile command for '{zone_name}': {e}", exc_info=True)
