@@ -1396,25 +1396,11 @@ async def apply_aggregated_schedules(
 async def activate_profile_on_zones(neohub_name: str, profile_id: int, zone_name: str) -> bool:
     """
     Activates a specific profile ID on one or more heating zones using the 
-    RUN_PROFILE_ID command.
-
-    Args:
-        neohub_name (str): The name of the NeoHub client is connected to.
-        profile_id (int): The ID of the profile to be activated.
-        zone_name (str): The name of the zone (or a list of zones) to apply the profile to.
-                         (We assume the zone name maps directly to the neoStat name/identifier).
-                         
-    Returns:
-        bool: True if the command was sent successfully and the response indicates success.
+    RUN_PROFILE_ID command, with robust response handling.
     """
     logging.info(f"Attempting to activate Profile ID {profile_id} on zone(s): '{zone_name}' via {neohub_name}.")
 
     try:
-        # The required payload format for the RUN_PROFILE_ID command:
-        # {“RUN_PROFILE_ID”:[25,"Kitchen","Lounge"]}
-        
-        # Build the command payload structure
-        # Note: The API docs show a list of zones, so we wrap the single zone_name in a list.
         inner_command = {
             "RUN_PROFILE_ID": [
                 profile_id,
@@ -1422,19 +1408,32 @@ async def activate_profile_on_zones(neohub_name: str, profile_id: int, zone_name
             ]
         }
         
-        # Use your existing send_command wrapper. We assume it correctly handles 
-        # wrapping the inner_command into the full WebSocket payload.
         response: Optional[Dict[str, Any]] = await send_command(neohub_name, inner_command)
 
-        if response and response.get('result') == 'ok':
-            logging.info(f"Successfully activated Profile ID {profile_id} on zone(s) '{zone_name}'.")
+        # ----------------------------------------------------------------------
+        # NEW LOGIC: Convert SimpleNamespace to dict for reliable access
+        # ----------------------------------------------------------------------
+        if response and not isinstance(response, dict):
+            try:
+                # Use vars() to convert SimpleNamespace to a dictionary
+                response = vars(response)
+            except TypeError:
+                # Log the issue but proceed to check the result
+                logging.warning(f"Response for RUN_PROFILE_ID was neither a dict nor convertible to one for '{zone_name}'.")
+        # ----------------------------------------------------------------------
+
+        # Now check the 'result' key, which works reliably on the dictionary (or None)
+        if response and response.get('result') == 'profile was run':
+            logging.info(f"Successfully activated Profile ID {profile_id} on zone(s) '{zone_name}'. Hub result: '{response.get('result')}'")
             return True
         else:
             logging.error(f"Failed to activate profile {profile_id} on '{zone_name}'. Hub response: {response}")
             return False
 
     except Exception as e:
-        logging.error(f"Error during RUN_PROFILE_ID command for zone '{zone_name}' on {neohub_name}: {e}")
+        # The SimpleNamespace error should be caught here if conversion failed, 
+        # but the conversion logic should prevent it from happening.
+        logging.error(f"Error during RUN_PROFILE_ID command for zone '{zone_name}' on {neohub_name}: {e}", exc_info=True)
         return False
 
 async def update_heating_schedule() -> None:
