@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Heating Scheduler Dashboard</title>
+    <style>
+        body { font-family: sans-serif; margin: 2em; }
+        h1 { color: #333; }
+        .status-box { border: 1px solid #ccc; padding: 15px; margin-bottom: 20px; border-radius: 5px; }
+        .status-ok { background-color: #e6ffe6; border-color: #00cc00; }
+        .status-error { background-color: #ffe6e6; border-color: #cc0000; }
+        .control-btn { padding: 10px 15px; margin-right: 10px; cursor: pointer; border-radius: 5px; border: 1px solid #555; background-color: #eee; }
+        .control-btn:hover { background-color: #ddd; }
+        .config-table { width: 100%; border-collapse: collapse; margin-top: 15px; }
+        .config-table th, .config-table td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+    </style>
+</head>
+<body>
+    <h1>ChurchSuite Heating Scheduler</h1>
+
+    <div class="status-box status-ok">
+        <h2>System Health</h2>
+        <p>Scheduler Status: RUNNING (PID: {{ scheduler_pid }})</p>
+        <p>Last Successful Run: (Feature to be implemented)</p>
+    </div>
+
+    <h2>Manual Controls</h2>
+    <p>Use these controls to manage the scheduling process:</p>
+    <button class="control-btn" onclick="triggerRun()">Trigger Manual Update Now</button>
+    <button class="control-btn" onclick="reloadConfig()">Reload Configuration</button>
+
+    <h2>Current Configuration (From Environment)</h2>
+    <table class="config-table">
+        {% for key, value in config.items() %}
+        <tr>
+            <th>{{ key }}</th>
+            <td>{{ value }}</td>
+        </tr>
+        {% endfor %}
+    </table>
+
+    <script>
+        function triggerRun() {
+            if (confirm('Are you sure you want to trigger a manual schedule update immediately?')) {
+                fetch('/api/trigger-manual', { method: 'POST' })
+                    .then(response => response.json())
+                    .then(data => alert('Manual Trigger Status: ' + data.message))
+                    .catch(error => alert('Error triggering manual run.'));
+            }
+        }
+
+        function reloadConfig() {
+            if (confirm('Are you sure you want to reload the configuration? This will NOT restart the app, but will force the scheduler to read new config values from /config/config.json.')) {
+                fetch('/api/config/reload', { method: 'POST' })
+                    .then(response => response.json())
+                    .then(data => alert('Config Reload Status: ' + data.message))
+                    .catch(error => alert('Error reloading config.'));
+            }
+        }
+    </script>
+</body>
+</html>
