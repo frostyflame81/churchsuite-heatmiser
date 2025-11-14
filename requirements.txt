@@ -5,3 +5,5 @@ websocket-client
 asyncio
 pytz
 python-dateutil
+Flask
+gunicorn

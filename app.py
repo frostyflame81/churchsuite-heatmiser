@@ -5,7 +5,7 @@ import logging
 import time
 import itertools
 import requests # type: ignore
-from apscheduler.schedulers.background import BackgroundScheduler # type: ignore
+from apscheduler.schedulers.asyncio import AsyncIOScheduler # type: ignore
 import argparse
 import os
 import pytz # type: ignore
@@ -101,6 +101,8 @@ hubs = {}  # Dictionary to store NeoHub instances
 # Other Constants
 RETRY_DELAYS = [0.5, 2.0] # Delay before 2nd and 3rd attempt, respectively
 MAX_ATTEMPTS = 1 + len(RETRY_DELAYS) # Total attempts: 1 initial + 2 retries = 3
+MANUAL_RUN_FLAG = '/tmp/manual_run_flag'
+CONFIG_RELOAD_FLAG = '/tmp/config_reload_flag'
 
 def load_config(config_file: str) -> Optional[Dict[str, Any]]:
     """Loads configuration data from a JSON file."""
@@ -121,6 +123,21 @@ def load_config(config_file: str) -> Optional[Dict[str, Any]]:
     except Exception as e:
         logging.error(f"An unexpected error occurred: {e}")
         return None
+
+def reload_config_from_disk():
+    """Reads configuration from the file path defined by CONFIG_FILE environment variable."""
+    global config
+    config_file_path = os.environ.get("CONFIG_FILE")
+    if config_file_path and os.path.exists(config_file_path):
+        try:
+            with open(config_file_path, 'r') as f:
+                new_config = json.load(f)
+                config = new_config # Update the global config dictionary
+                logging.info(f"Configuration successfully reloaded from {config_file_path}.")
+        except Exception as e:
+            logging.error(f"Failed to reload config file {config_file_path}: {e}")
+    else:
+        logging.error("Cannot reload config: CONFIG_FILE path is not set or file does not exist.")
 
 def connect_to_neohub(neohub_name: str, neohub_config: Dict[str, Any]) -> bool:
     """Connects to a Neohub using neohubapi."""
@@ -552,6 +569,20 @@ def _validate_neohub_profile(
             prev_time_str = time_str
             
     return True, "Profile is compliant."
+
+async def check_ipc_flags():
+    """Checks for IPC flag files created by the web GUI process."""
+    if os.path.exists(CONFIG_RELOAD_FLAG):
+        logging.info("IPC: Config reload flag detected. Reloading configuration.")
+        reload_config_from_disk()
+        os.remove(CONFIG_RELOAD_FLAG) # Clear the flag
+        # You may want to call update_heating_schedule() after a config reload
+
+    if os.path.exists(MANUAL_RUN_FLAG):
+        logging.info("IPC: Manual run flag detected. Triggering immediate update.")
+        # Ensure the manual run is executed in the event loop
+        await update_heating_schedule()
+        os.remove(MANUAL_RUN_FLAG) # Clear the flag
 
 async def get_profile_id_by_name(neohub_object: NeoHub, neohub_name: str, profile_name: str) -> Optional[int]:
     """
@@ -1596,6 +1627,25 @@ async def update_heating_schedule() -> None:
     
     logging.info("--- HEATING SCHEDULE UPDATE PROCESS COMPLETE ---")
 
+async def run_scheduler_forever(scheduler):
+    """Starts the scheduler and keeps the asyncio loop running indefinitely."""
+    try:
+        scheduler.start()
+        # Keep the main thread alive indefinitely until a stop signal is received
+        while True:
+            await asyncio.sleep(600) # Use async sleep to not block the event loop
+    except (KeyboardInterrupt, SystemExit):
+        logging.info("Received shutdown signal.")
+    finally:
+        logging.info("Shutting down scheduler...")
+        scheduler.shutdown()
+        logging.info("Closing Neohub connections...")
+        # Add the connection closing logic here, if not handled elsewhere
+        # global _neohub_clients
+        # for client in _neohub_clients.values():
+        #     await client.close_connection()
+        logging.info("Exiting...")
+
 def main():
     """Main application function."""
     # Use the LOGGING_LEVEL environment variable
@@ -1634,23 +1684,30 @@ def main():
     if not validate_config(config):
         logging.error("Invalid configuration. Exiting.")
         exit()
-    # Create a scheduler.
-    scheduler = BackgroundScheduler()
+    # --- SCHEDULER SETUP ---
+    scheduler = AsyncIOScheduler()
 
-    # Run update_heating_schedule() immediately, and then schedule it to run every 60 minutes.
-    asyncio.run(update_heating_schedule())  # Run immediately
-    scheduler.add_job(lambda: asyncio.run(update_heating_schedule()), "interval", minutes=60)
-    scheduler.start()
-
+    # Run update_heating_schedule() immediately.
+    # We run this sync, but it's crucial to only do this once.
     try:
-        while True:
-            time.sleep(600)
-    except KeyboardInterrupt:
-        logging.info("Shutting down scheduler...")
-        scheduler.shutdown()
-        logging.info("Closing Neohub connections...")
-#       close_connections()
-        logging.info("Exiting...")
+        asyncio.run(update_heating_schedule())
+    except RuntimeError as e:
+        # Handle case where event loop might already be running (rare in this context, but safe)
+        logging.error(f"Error during immediate heating schedule update: {e}")
+
+    # Schedule the recurring jobs
+    scheduler.add_job(update_heating_schedule, "interval", minutes=60)
+    scheduler.add_job(
+        check_ipc_flags, 
+        'interval', 
+        seconds=5, # Check every 5 seconds for a new request
+        id='ipc_monitor_job', 
+        name='IPC Flag Monitor'
+    )
+    
+    # --- START THE ASYNC LOOP ---
+    logging.info("Starting AsyncIOScheduler and background loop...")
+    asyncio.run(run_scheduler_forever(scheduler))
 
 if __name__ == "__main__":
     main()
