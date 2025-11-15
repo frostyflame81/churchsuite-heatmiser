@@ -1384,11 +1384,13 @@ async def apply_aggregated_schedules(
     profile_prefix: str, 
     config: Dict[str, Any],
     zone_to_neohub_map: Dict[str, str],
-    zone_statuses: dict
+    zone_statuses: dict,
+    hub_connectivity_status: Dict[str, str] # <-- NEW PARAMETER ADDED HERE
 ) -> None:
     """
     Takes aggregated weekly setpoints, formats them for the NeoHub, validates them,
-    and applies them to the corresponding NeoHub zones.
+    and applies them to the corresponding NeoHub zones. This function now includes
+    caching and skipping logic for unresponsive NeoHubs.
     """
     
     tasks = []
@@ -1407,11 +1409,45 @@ async def apply_aggregated_schedules(
     for zone_name, daily_schedules in aggregated_schedules.items(): 
         
         neohub_name = zone_to_neohub_map.get(zone_name)
+        
+        # --- NEW: HUB CONNECTION CACHING AND CHECK ---
+        
+        # 1. Check if the hub status is already cached in this run
+        if neohub_name not in hub_connectivity_status:
+            
+            neohub_config = config["neohubs"].get(neohub_name)
+            
+            if not neohub_config:
+                logging.error(f"Configuration missing for NeoHub '{neohub_name}' required by zone '{zone_name}'. Skipping.")
+                hub_connectivity_status[neohub_name] = "FAILED"
+            else:
+                # 2. If not cached, run the compatibility check (assumes check_neohub_compatibility returns True/False)
+                # IMPORTANT: We assume check_neohub_compatibility handles its own logging on failure.
+                is_compatible = await check_neohub_compatibility(neohub_name, neohub_config)
+                hub_connectivity_status[neohub_name] = "PASSED" if is_compatible else "FAILED"
+
+
+        # 3. Check the cached status: If failed, skip this zone entirely
+        if hub_connectivity_status.get(neohub_name) == "FAILED":
+            logging.warning(f"Skipping zone '{zone_name}' because NeoHub '{neohub_name}' failed compatibility check. Marking zone status as skipped.")
+            
+            # Ensure zone_statuses reflects the skip/failure
+            # We set AGGREGATE_PROFILE=1 because the aggregation step itself succeeded.
+            zone_statuses.setdefault(neohub_name, {}).setdefault(zone_name, {})
+            zone_statuses[neohub_name][zone_name]['CREATE_PROFILE'] = 0
+            zone_statuses[neohub_name][zone_name]['AGGREGATE_PROFILE'] = 1 
+            zone_statuses[neohub_name][zone_name]['POST_PROFILE'] = 0
+            zone_statuses[neohub_name][zone_name]['ACTIVATE_PROFILE'] = 0
+            zone_statuses[neohub_name][zone_name]['MESSAGE'] = "SKIPPED: Hub connection failed."
+            continue
+        # --- END NEW HUB CONNECTION CACHING AND CHECK ---
+
         # Assuming 'hubs' is a globally available dictionary mapping neohub names to connected NeoHub objects
         neohub_object = hubs.get(neohub_name) 
 
         if not neohub_object:
-            logging.error(f"Cannot apply schedule for zone '{zone_name}': Neohub '{neohub_name}' not connected or mapped. Skipping.")
+            # This handles a failure case where compatibility passed but the global object wasn't set up.
+            logging.error(f"Cannot apply schedule for zone '{zone_name}': Neohub '{neohub_name}' object not found in global 'hubs'. Skipping.")
             continue
 
         # --- NEW: Initialize Status and Mark AGGREGATE_PROFILE Success ---
@@ -1526,6 +1562,7 @@ async def update_heating_schedule() -> None:
     """
     Updates the heating schedule based on upcoming bookings,
     aggregating schedules by neohub and zone using a rolling 7-day window.
+    Now includes hub connection caching and guarantees status reporting on exit.
     """
     # --- START CRITICAL LIFECYCLE MANAGEMENT ---
     
@@ -1539,6 +1576,10 @@ async def update_heating_schedule() -> None:
     # NEW: Multi-stage status tracking dictionary defined with the four stages.
     # Status: 0 (Initial/Failure), 1 (Success)
     zone_statuses = {} 
+    
+    # NEW: Dictionary to cache compatibility check results for NeoHubs in this run.
+    # Key: neohub_name (str), Value: "PASSED" or "FAILED" (str)
+    hub_connectivity_status: Dict[str, str] = {}
     
     neohub_reports = []
     # Initialize overall_status to FAILURE as the default.
@@ -1672,70 +1713,90 @@ async def update_heating_schedule() -> None:
 
         # 5. APPLY AGGREGATED SCHEDULES
         # The profile names remain "Current Week" and "Next Week" for the NeoHub hardware
+        # NEW: Pass hub_connectivity_status cache
         await apply_aggregated_schedules(
-            aggregated_p1_schedules, "Current Week", config, zone_to_neohub_map, zone_statuses
+            aggregated_p1_schedules, "Current Week", config, zone_to_neohub_map, zone_statuses, hub_connectivity_status
         )
         await apply_aggregated_schedules(
-            aggregated_p2_schedules, "Next Week", config, zone_to_neohub_map, zone_statuses
+            aggregated_p2_schedules, "Next Week", config, zone_to_neohub_map, zone_statuses, hub_connectivity_status
         )
+        
+        # If we reached this point successfully, default overall_status to SUCCESS
+        overall_status = "SUCCESS"
 
     except StopIteration as e:
         # Expected exit path for 'No bookings' or 'No data'. Status is set above.
         logging.info(f"Graceful exit: {e}")
-        pass
-
+        
     except Exception as e:
         # CRITICAL UNHANDLED ERROR
         logging.critical(f"UNHANDLED CRITICAL ERROR during update_heating_schedule: {e}")
         overall_status = "CRITICAL_FAILURE"
 
-        # --- 6. FINAL STATUS COMPILATION AND SAVING ---
-    
+    finally:
+        # --- 6. FINAL STATUS COMPILATION AND SAVING (Inside finally block for guaranteed run) ---
+        
         # Only analyze the results if processing went through and wasn't immediately halted 
-        if overall_status == "FAILURE": 
+        # (i.e., not a critical failure before config or setup)
+        if overall_status != "CRITICAL_FAILURE" and config is not None: 
         
             all_neohub_names = list(config["neohubs"].keys())
             total_zones_processed = 0
             successful_zones = 0
-
-            for neohub_name in all_neohub_names:
-                zone_results = zone_statuses.get(neohub_name, {})
-                zones_configured = config["neohubs"][neohub_name].get("zones", [])
+            neohub_reports = [] # Reset/ensure reports are fresh
             
+            # --- Check Hub Connectivity Status and Individual Zone Status ---
+            for neohub_name in all_neohub_names:
+                conn_status = hub_connectivity_status.get(neohub_name)
+                zones_configured = config["neohubs"][neohub_name].get("zones", [])
+                
+                if conn_status == "FAILED":
+                    # Connection failure is a critical failure for this hub
+                    # The zones were skipped, so we report the hub failure immediately.
+                    neohub_reports.append({
+                        "name": neohub_name,
+                        "hub_status": "CRITICAL_FAILURE",
+                        "zones_updated": 0,
+                        "zones_total": len(zones_configured),
+                        "message": "Connection and compatibility check FAILED."
+                    })
+                    logging.error(f"Hub '{neohub_name}' permanently failed connection check. All its zones were skipped.")
+                    # Skip to next hub, do not check individual zone success below
+                    continue
+                
+                # --- Check individual zone status for PASSED hubs ---
+                zone_results = zone_statuses.get(neohub_name, {})
+                
                 hub_total_zones = len(zones_configured)
                 hub_success_count = 0
-            
+                
                 for zone_name in zones_configured:
                     total_zones_processed += 1
-                
-                    # Retrieve status flags (default to 0 if key is missing/unprocessed)
-                    create_status = zone_results.get(zone_name, {}).get('CREATE_PROFILE', 0)
-                    aggregate_status = zone_results.get(zone_name, {}).get('AGGREGATE_PROFILE', 0)
-                    post_status = zone_results.get(zone_name, {}).get('POST_PROFILE', 0)
-                    activate_status = zone_results.get(zone_name, {}).get('ACTIVATE_PROFILE', 0)
-                
-                    # Zone is successful ONLY if ALL FOUR stages succeeded (1).
-                    if (create_status == 1 and 
-                        aggregate_status == 1 and
-                        post_status == 1 and 
-                        activate_status == 1):
                     
+                    # Check for the final action flags (ACTIVATE/POST) which signal success
+                    # A zone is successful if the final desired action (ACTIVATE or POST) was set to 1.
+                    # This implicitly accounts for both Current Week (ACTIVATE=1) and Next Week (POST=1 and ACTIVATE=0/skipped)
+                    post_status = zone_results.get(zone_name, {}).get('POST_PROFILE', 0)
+                    
+                    # We assume POST_PROFILE=1 means the profile was successfully created/updated 
+                    # and the system proceeded to the activation step (which might be skipped for Next Week).
+                    if post_status == 1: 
                         successful_zones += 1
                         hub_success_count += 1
-
+                    
                 # Determine hub-level status
                 if hub_total_zones == 0:
                     hub_status = "SUCCESS" 
                     message = "No zones configured for this NeoHub."
                 elif hub_success_count == hub_total_zones:
                     hub_status = "SUCCESS"
-                    message = f"Updated {hub_success_count} of {hub_total_zones} zones."
+                    message = f"Updated {hub_success_count} of {hub_total_zones} zones successfully."
                 elif hub_success_count > 0:
                     hub_status = "PARTIAL_FAILURE"
                     message = f"Partial update: {hub_success_count} of {hub_total_zones} zones updated."
                 else:
                     hub_status = "FAILURE" 
-                    message = f"Failed to update all {hub_total_zones} zones."
+                    message = f"Failed to update all {hub_total_zones} zones due to profile errors."
 
                 neohub_reports.append({
                     "name": neohub_name,
@@ -1745,23 +1806,26 @@ async def update_heating_schedule() -> None:
                     "message": message
                 })
 
-            # --- Determine Overall System Status (Promotion from FAILURE) ---
+
+            # --- Determine Overall System Status ---
             if total_zones_processed > 0:
-                if successful_zones == total_zones_processed:
+                # Count critical hub failures
+                critical_hub_failures = sum(1 for report in neohub_reports if report['hub_status'] == 'CRITICAL_FAILURE')
+                
+                if critical_hub_failures > 0:
+                    overall_status = "CRITICAL_FAILURE"
+                elif successful_zones == total_zones_processed:
                     overall_status = "SUCCESS"
                 elif successful_zones > 0:
                     overall_status = "PARTIAL_FAILURE"
                 else:
-                    pass 
+                    overall_status = "FAILURE" 
+            elif overall_status == "FAILURE":
+                # Only reachable if config/bookings failed, but we still ensure a report
+                pass
             else:
                 overall_status = "SUCCESS" 
-
-        # Final metadata and status file creation
-        if location_timezone is None:
-            location_timezone = pytz.timezone("UTC")
-            
-        last_run_time = datetime.datetime.now(location_timezone).strftime("%Y-%m-%d %H:%M:%S %Z")
-        
+                
         # Ensure a report exists for critical failure
         if overall_status == "CRITICAL_FAILURE" and not neohub_reports:
             neohub_reports.append({
@@ -1769,18 +1833,24 @@ async def update_heating_schedule() -> None:
                 "hub_status": overall_status,
                 "zones_updated": 0,
                 "zones_total": 0,
-                "message": "A critical error occurred before zone processing could start."
+                "message": "A critical error occurred before processing could be fully initialized."
             })
 
+        if location_timezone is None:
+            location_timezone = pytz.timezone("UTC")
+            
+        last_run_time = datetime.datetime.now(location_timezone).strftime("%Y-%m-%d %H:%M:%S %Z")
+        
         status_data = {
             "last_run_time": last_run_time,
             "overall_status": overall_status,
             "neohub_reports": neohub_reports
         }
         
+        # Assume write_status_file(status_data) exists and is the one that writes SCHEDULER_STATUS_FILE
         write_status_file(status_data)
         
-        logging.info("--- HEATING SCHEDULE UPDATE PROCESS COMPLETE ---")
+        logging.info(f"--- HEATING SCHEDULE UPDATE PROCESS COMPLETE with status: {overall_status} ---")
 
 async def run_scheduler_forever(scheduler):
     """Starts the scheduler and keeps the asyncio loop running indefinitely."""
