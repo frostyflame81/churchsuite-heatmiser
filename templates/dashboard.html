@@ -13,49 +13,74 @@
         .control-btn:hover { background-color: #ddd; }
         .config-table { width: 100%; border-collapse: collapse; margin-top: 15px; }
         .config-table th, .config-table td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+        
+        /* NEW: Styles for granular status flags */
+        .report-table { width: 100%; border-collapse: collapse; margin-top: 15px; }
+        .report-table th, .report-table td { border: 1px solid #ddd; padding: 8px; text-align: left; vertical-align: top; }
+        .flag-status {
+            display: inline-block;
+            padding: 3px 6px;
+            border-radius: 4px;
+            font-size: 0.8em;
+            font-weight: bold;
+            margin-right: 5px;
+        }
+        .flag-1 { background-color: #d4edda; color: #155724; } /* Green for Success (1) */
+        .flag-0 { background-color: #f8d7da; color: #721c24; } /* Red for Failure (0) */
     </style>
 </head>
 <body>
     <h1>ChurchSuite Heating Scheduler</h1>
 
-    {% set overall_class = 'status-ok' if scheduler_status.overall_status == 'SUCCESS' else ('status-partial' if scheduler_status.overall_status == 'PARTIAL_FAILURE' else 'status-error') %}
-
+    {% set overall_class = 'status-ok' if scheduler_status.overall_status == 'SUCCESS' else ('status-error' if scheduler_status.overall_status == 'FAILED' else '') %}
+    
+    <h2>Scheduler Status (PID: {{ scheduler_pid }})</h2>
     <div class="status-box {{ overall_class }}">
-        <h2>System Health</h2>
-        <p>Scheduler Status: RUNNING (PID: {{ scheduler_pid }})</p>
-        <p>Last Update Run Time: <strong>{{ scheduler_status.last_run_time }}</strong></p>
-        <p>Overall Status: <strong>{{ scheduler_status.overall_status }}</strong></p>
+        <p><strong>Last Run:</strong> {{ scheduler_status.last_run_time if scheduler_status.last_run_time else 'N/A' }}</p>
+        <p><strong>Overall Status:</strong> {{ scheduler_status.overall_status if scheduler_status.overall_status else 'UNAVAILABLE' }}</p>
     </div>
 
-    {% if scheduler_status.neohub_reports %}
-    <h2>NeoHub Update Status</h2>
-    <table class="status-table">
+    <!-- NEW SECTION: Detailed Status Reports -->
+    <h2>Status Reports ({{ scheduler_status.neohub_reports | length if scheduler_status.neohub_reports else 0 }} Zones Processed)</h2>
+    
+    <table class="report-table">
         <thead>
             <tr>
-                <th>NeoHub Name</th>
-                <th>Status Message</th>
-                <th>Zones Updated</th>
-                <th>Hub Status</th>
+                <th>Zone</th>
+                <th>Hub</th>
+                <th>Final Status</th>
+                <th>Profile Creation</th>
+                <th>Aggregation</th>
+                <th>Post Profile</th>
+                <th>Activation</th>
+                <th>Message</th>
             </tr>
         </thead>
         <tbody>
+        {% if scheduler_status.neohub_reports %}
             {% for report in scheduler_status.neohub_reports %}
-                {% set hub_class = 'status-ok' if report.hub_status == 'SUCCESS' else ('status-partial' if report.hub_status == 'PARTIAL_FAILURE' else 'status-error') %}
+                {% set status_class = 'status-ok' if report.status == 'SUCCESS' else 'status-error' %}
                 <tr>
-                    <td>{{ report.name }}</td>
+                    <td><strong>{{ report.zone_name }}</strong></td>
+                    <td>{{ report.neohub_name }}</td>
+                    <td class="{{ status_class }}">{{ report.status }}</td>
+                    
+                    <!-- Granular Status Flags -->
+                    <td><span class="flag-status flag-{{ report.flags.CREATE_PROFILE }}">CREATE_PROFILE: {{ report.flags.CREATE_PROFILE }}</span></td>
+                    <td><span class="flag-status flag-{{ report.flags.AGGREGATE_PROFILE }}">AGGREGATE_PROFILE: {{ report.flags.AGGREGATE_PROFILE }}</span></td>
+                    <td><span class="flag-status flag-{{ report.flags.POST_PROFILE }}">POST_PROFILE: {{ report.flags.POST_PROFILE }}</span></td>
+                    <td><span class="flag-status flag-{{ report.flags.ACTIVATE_PROFILE }}">ACTIVATE_PROFILE: {{ report.flags.ACTIVATE_PROFILE }}</span></td>
+                    
                     <td>{{ report.message }}</td>
-                    <td>{{ report.zones_updated }} / {{ report.zones_total }}</td>
-                    <td class="{{ hub_class }}"><strong>{{ report.hub_status }}</strong></td>
                 </tr>
             {% endfor %}
+        {% else %}
+            <tr><td colspan="8">No detailed status reports available yet.</td></tr>
+        {% endif %}
         </tbody>
     </table>
-    {% else %}
-    <p>No NeoHub reports available yet. Run a manual update or wait for the hourly schedule.</p>
-    {% endif %}
-
-    <h2>Manual Controls</h2>
-    <p>Use these controls to manage the scheduling process:</p>
+    
+    <p>Control the scheduling process:</p>
     <button class="control-btn" onclick="triggerRun()">Trigger Manual Update Now</button>
     <button class="control-btn" onclick="reloadConfig()">Reload Configuration</button>
 
@@ -70,22 +95,37 @@
     </table>
 
     <script>
+        // Use a simple, non-blocking notification instead of alert/confirm
+        function showNotification(message) {
+            const notification = document.createElement('div');
+            notification.textContent = message;
+            notification.style.cssText = 'position: fixed; top: 20px; right: 20px; background-color: #333; color: white; padding: 15px; border-radius: 5px; z-index: 1000; opacity: 0; transition: opacity 0.5s;';
+            document.body.appendChild(notification);
+            
+            setTimeout(() => {
+                notification.style.opacity = '1';
+            }, 10);
+
+            setTimeout(() => {
+                notification.style.opacity = '0';
+                setTimeout(() => notification.remove(), 500);
+            }, 3000);
+        }
+
         function triggerRun() {
-            if (confirm('Are you sure you want to trigger a manual schedule update immediately?')) {
-                fetch('/api/trigger-manual', { method: 'POST' })
-                    .then(response => response.json())
-                    .then(data => alert('Manual Trigger Status: ' + data.message))
-                    .catch(error => alert('Error triggering manual run.'));
-            }
+            showNotification('Sending manual run signal...');
+            fetch('/api/trigger-manual', { method: 'POST' })
+                .then(response => response.json())
+                .then(data => showNotification('Manual Trigger Status: ' + data.message))
+                .catch(error => showNotification('Error triggering manual run.'));
         }
 
         function reloadConfig() {
-            if (confirm('Are you sure you want to reload the configuration? This will NOT restart the app, but will force the scheduler to read new config values from /config/config.json.')) {
-                fetch('/api/config/reload', { method: 'POST' })
-                    .then(response => response.json())
-                    .then(data => alert('Config Reload Status: ' + data.message))
-                    .catch(error => alert('Error reloading config.'));
-            }
+            showNotification('Sending config reload signal...');
+            fetch('/api/config/reload', { method: 'POST' })
+                .then(response => response.json())
+                .then(data => showNotification('Config Reload Status: ' + data.message))
+                .catch(error => showNotification('Error reloading config.'));
         }
     </script>
 </body>
