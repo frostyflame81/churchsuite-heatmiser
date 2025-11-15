@@ -781,7 +781,7 @@ async def apply_single_zone_profile(
         # Check if the prefix CONTAINS "Current Week" (robust partial match)
         if "Current Week" in profile_prefix:
             # ONLY ACTIVATE Current Week profiles
-            return await activate_profile_on_zones(neohub_name, profile_id_to_activate, zone_name)
+            return await activate_profile_on_zones(neohub_name, profile_id_to_activate, zone_name, zone_statuses)
         else:
             # For Next Week (or any other prefix), simply confirm success without activating.
             zone_statuses[neohub_name][zone_name]['ACTIVATE_PROFILE'] = 1
