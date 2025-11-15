@@ -11,6 +11,7 @@ logging.basicConfig(level=logging.INFO)
 # Constants
 MANUAL_RUN_FLAG = '/tmp/manual_run_flag'
 CONFIG_RELOAD_FLAG = '/tmp/config_reload_flag'
+SCHEDULER_STATUS_FILE = '/tmp/scheduler_status.json'
 
 # --------------------------------------------------------------------------
 # 1. FLASK SETUP
@@ -28,6 +29,17 @@ def get_env_config() -> Dict[str, Any]:
         k.startswith(prefix) for prefix in ['CHURCHSUITE', 'OPENWEATHERMAP', 'PREHEAT', 'DEFAULT', 'ECO', 'NEOHUB']
     )}
 
+def get_scheduler_status() -> Dict[str, Any]:
+    """Reads the status file created by app.py."""
+    try:
+        with open(SCHEDULER_STATUS_FILE, 'r') as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {"overall_status": "UNAVAILABLE", "last_run_time": "N/A", "neohub_reports": []}
+    except Exception as e:
+        logging.error(f"Error reading status file: {e}")
+        return {"overall_status": "ERROR", "last_run_time": "N/A", "neohub_reports": []}
+    
 # Placeholder functions for interaction with the app.py process.
 # IMPORTANT: Since app.py is a separate process, these stubs must be
 # replaced with inter-process communication (IPC) logic (e.g., writing
@@ -64,12 +76,14 @@ def dashboard():
     """Renders the main dashboard and config view."""
     config_data = get_env_config()
     scheduler_pid = os.getppid()
-    
+    scheduler_status = get_scheduler_status()
+
     # NEW: Render the external template
     return render_template(
         'dashboard.html', # Reference the new file
         config=config_data,
-        scheduler_pid=scheduler_pid
+        scheduler_pid=scheduler_pid,
+        scheduler_status=scheduler_status
     )
 
 @app.route('/api/trigger-manual', methods=['POST'])
