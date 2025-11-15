@@ -709,17 +709,40 @@ async def apply_single_zone_profile(
     zone_name: str, 
     profile_data: Dict[str, Dict[str, List[Union[str, float, int, bool]]]], 
     profile_prefix: str,
-    zone_statuses: dict
+    zone_statuses: dict,
+    hub_connectivity_status: Dict[str, str] # <-- ADDED to the signature
 ) -> bool:
     """
     Applies a validated, aggregated weekly profile to a single NeoHub zone.
-    It now activates the profile after successful storage by retrieving the ID.
+    It now incorporates hub status caching to prevent repeated connection checks,
+    skipping straight to compliance if the hub status is 'PASSED'.
     """
 
-    # 1. --- NEOHUB COMPATIBILITY CHECK (Existing) ---
-    if not await check_neohub_compatibility(neohub_object, neohub_name):
-        logging.error(f"Skipping profile application for {zone_name}. Neohub {neohub_name} failed firmware/configuration checks.")
+    # --- 1. NEOHUB COMPATIBILITY CHECK (Now with Caching and PASSED bypass) ---
+    hub_status = hub_connectivity_status.get(neohub_name)
+
+    if hub_status == "PASSED":
+        # Skip all checks and caching logic; proceed straight to compliance (2.)
+        pass 
+        
+    elif hub_status == "FAILED":
+        # Skip if already known to be FAILED
+        logging.error(f"Skipping profile application for {zone_name}. Neohub {neohub_name} previously failed firmware/configuration checks.")
         return False
+    
+    # If status is UNKNOWN (None), run the compatibility check and cache the result
+    else: # status is None (UNKNOWN)
+        
+        # Run the actual compatibility check
+        is_compatible = await check_neohub_compatibility(neohub_object, neohub_name)
+        
+        # Cache the result for subsequent calls
+        hub_connectivity_status[neohub_name] = "PASSED" if is_compatible else "FAILED"
+        
+        if not is_compatible:
+            logging.error(f"Skipping profile application for {zone_name}. Neohub {neohub_name} failed firmware/configuration checks.")
+            return False
+    # --- END CACHING LOGIC ---
 
     # 2. --- PROFILE COMPLIANCE CHECK (Existing) ---
     is_compliant, reason = _validate_neohub_profile(profile_data, zone_name)
@@ -791,7 +814,7 @@ async def apply_single_zone_profile(
     except Exception as e:
         logging.error(f"Failed to execute custom profile command for '{zone_name}': {e}", exc_info=True)
         return False
-    
+      
 async def get_zones(neohub_name: str) -> Optional[List[str]]:
     """Retrieves zone names from the Neohub using neohubapi."""
     logging.info(f"Getting zones from Neohub: {neohub_name}")
@@ -1385,12 +1408,12 @@ async def apply_aggregated_schedules(
     config: Dict[str, Any],
     zone_to_neohub_map: Dict[str, str],
     zone_statuses: dict,
-    hub_connectivity_status: Dict[str, str] # <-- NEW PARAMETER ADDED HERE
+    hub_connectivity_status: Dict[str, str] # Keep this in the signature, but only pass it along
 ) -> None:
     """
     Takes aggregated weekly setpoints, formats them for the NeoHub, validates them,
-    and applies them to the corresponding NeoHub zones. This function now includes
-    caching and skipping logic for unresponsive NeoHubs.
+    and applies them to the corresponding NeoHub zones. The hub compatibility check
+    has been moved to apply_single_zone_profile for isolation.
     """
     
     tasks = []
@@ -1409,48 +1432,18 @@ async def apply_aggregated_schedules(
     for zone_name, daily_schedules in aggregated_schedules.items(): 
         
         neohub_name = zone_to_neohub_map.get(zone_name)
-        
-        # --- NEW: HUB CONNECTION CACHING AND CHECK ---
-        
-        # 1. Check if the hub status is already cached in this run
-        if neohub_name not in hub_connectivity_status:
-            
-            neohub_config = config["neohubs"].get(neohub_name)
-            
-            if not neohub_config:
-                logging.error(f"Configuration missing for NeoHub '{neohub_name}' required by zone '{zone_name}'. Skipping.")
-                hub_connectivity_status[neohub_name] = "FAILED"
-            else:
-                # 2. If not cached, run the compatibility check (assumes check_neohub_compatibility returns True/False)
-                # IMPORTANT: We assume check_neohub_compatibility handles its own logging on failure.
-                is_compatible = await check_neohub_compatibility(neohub_name, neohub_config)
-                hub_connectivity_status[neohub_name] = "PASSED" if is_compatible else "FAILED"
-
-
-        # 3. Check the cached status: If failed, skip this zone entirely
-        if hub_connectivity_status.get(neohub_name) == "FAILED":
-            logging.warning(f"Skipping zone '{zone_name}' because NeoHub '{neohub_name}' failed compatibility check. Marking zone status as skipped.")
-            
-            # Ensure zone_statuses reflects the skip/failure
-            # We set AGGREGATE_PROFILE=1 because the aggregation step itself succeeded.
-            zone_statuses.setdefault(neohub_name, {}).setdefault(zone_name, {})
-            zone_statuses[neohub_name][zone_name]['CREATE_PROFILE'] = 0
-            zone_statuses[neohub_name][zone_name]['AGGREGATE_PROFILE'] = 1 
-            zone_statuses[neohub_name][zone_name]['POST_PROFILE'] = 0
-            zone_statuses[neohub_name][zone_name]['ACTIVATE_PROFILE'] = 0
-            zone_statuses[neohub_name][zone_name]['MESSAGE'] = "SKIPPED: Hub connection failed."
-            continue
-        # --- END NEW HUB CONNECTION CACHING AND CHECK ---
-
         # Assuming 'hubs' is a globally available dictionary mapping neohub names to connected NeoHub objects
+        # neohub_object will be None if the object hasn't been created yet (which is fine now)
         neohub_object = hubs.get(neohub_name) 
 
-        if not neohub_object:
-            # This handles a failure case where compatibility passed but the global object wasn't set up.
-            logging.error(f"Cannot apply schedule for zone '{zone_name}': Neohub '{neohub_name}' object not found in global 'hubs'. Skipping.")
-            continue
+        if not neohub_object and neohub_name not in hub_connectivity_status:
+            # We don't check for object presence here anymore, as the check happens in the sub-function.
+            # We only check if the neohub name is known to be mapped.
+            if not neohub_name:
+                logging.error(f"Cannot apply schedule for zone '{zone_name}': Zone name not mapped to a Neohub. Skipping.")
+                continue
 
-        # --- NEW: Initialize Status and Mark AGGREGATE_PROFILE Success ---
+        # --- Initialize Status and Mark AGGREGATE_PROFILE Success ---
         # 1. Initialize the status dictionary for the current zone (if it wasn't pre-initialized)
         zone_statuses.setdefault(neohub_name, {}).setdefault(zone_name, {
             'CREATE_PROFILE': 0, 
@@ -1496,15 +1489,10 @@ async def apply_aggregated_schedules(
                 zone_name, 
                 profile_data, 
                 profile_prefix,
-                zone_statuses
+                zone_statuses,
+                hub_connectivity_status # <-- NEW: Pass cache for compatibility check
             )
         )
-
-    if tasks:
-        logging.info(f"Applying {len(tasks)} zone profiles for {profile_prefix}.")
-        await asyncio.gather(*tasks)
-    else:
-        logging.warning(f"No profiles generated or applied for {profile_prefix}.")
 
 async def activate_profile_on_zones(neohub_name: str, profile_id: int, zone_name: str, zone_statuses: dict) -> bool:
     """
