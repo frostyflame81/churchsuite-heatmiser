@@ -101,8 +101,11 @@ hubs = {}  # Dictionary to store NeoHub instances
 # Other Constants
 RETRY_DELAYS = [0.5, 2.0] # Delay before 2nd and 3rd attempt, respectively
 MAX_ATTEMPTS = 1 + len(RETRY_DELAYS) # Total attempts: 1 initial + 2 retries = 3
+
+#IPC Constants
 MANUAL_RUN_FLAG = '/tmp/manual_run_flag'
 CONFIG_RELOAD_FLAG = '/tmp/config_reload_flag'
+SCHEDULER_STATUS_FILE = '/tmp/scheduler_status.json'
 
 def load_config(config_file: str) -> Optional[Dict[str, Any]]:
     """Loads configuration data from a JSON file."""
@@ -138,6 +141,15 @@ def reload_config_from_disk():
             logging.error(f"Failed to reload config file {config_file_path}: {e}")
     else:
         logging.error("Cannot reload config: CONFIG_FILE path is not set or file does not exist.")
+
+def write_status_file(status_data: Dict[str, Any]):
+    """Writes the detailed status report to a temporary JSON file."""
+    try:
+        with open(SCHEDULER_STATUS_FILE, 'w') as f:
+            json.dump(status_data, f, indent=4)
+        logging.info(f"Scheduler status saved to {SCHEDULER_STATUS_FILE}")
+    except Exception as e:
+        logging.error(f"Failed to write scheduler status file: {e}")
 
 def connect_to_neohub(neohub_name: str, neohub_config: Dict[str, Any]) -> bool:
     """Connects to a Neohub using neohubapi."""
@@ -696,7 +708,8 @@ async def apply_single_zone_profile(
     neohub_name: str, 
     zone_name: str, 
     profile_data: Dict[str, Dict[str, List[Union[str, float, int, bool]]]], 
-    profile_prefix: str
+    profile_prefix: str,
+    zone_statuses: dict
 ) -> bool:
     """
     Applies a validated, aggregated weekly profile to a single NeoHub zone.
@@ -716,6 +729,17 @@ async def apply_single_zone_profile(
             f"Profile was NOT sent to NeoHub."
         )
         return False
+    
+    # --- NEW STATUS: Profile data is compliant and ready to send ---
+    # CREATE_PROFILE is set to 1 here because the profile data has been fully created/formatted
+    # and passed all application-level checks.
+    try:
+        zone_statuses[neohub_name][zone_name]['CREATE_PROFILE'] = 1 
+        logging.debug(f"[{neohub_name}/{zone_name}] CREATE_PROFILE set to 1 (Compliant data).")
+    except KeyError:
+        # Defensive catch: Status should have been initialized in apply_aggregated_schedules
+        logging.warning(f"Status not initialized for {neohub_name}/{zone_name}. Skipping status update.")
+    # --- END NEW STATUS ---
 
     profile_name = f"{profile_prefix}_{zone_name}"
     
@@ -744,6 +768,11 @@ async def apply_single_zone_profile(
                 logging.error(f"FATAL: New profile stored successfully for '{zone_name}' but the new ID could not be retrieved for activation.")
                 return False
 
+        # --- NEW STATUS: Profile successfully posted to NeoHub ---
+        zone_statuses[neohub_name][zone_name]['POST_PROFILE'] = 1
+        logging.debug(f"[{neohub_name}/{zone_name}] POST_PROFILE set to 1 (Stored/Updated).")
+        # --- END NEW STATUS ---
+
         logging.info(f"Profile successfully stored/updated. Preparing to activate ID {profile_id_to_activate} on '{zone_name}'.")
 
         # -----------------------------------------------------------
@@ -755,6 +784,7 @@ async def apply_single_zone_profile(
             return await activate_profile_on_zones(neohub_name, profile_id_to_activate, zone_name)
         else:
             # For Next Week (or any other prefix), simply confirm success without activating.
+            zone_statuses[neohub_name][zone_name]['ACTIVATE_PROFILE'] = 1
             logging.info(f"Activation skipped for non-Current Week profile: '{profile_name}'.")
             return True
 
@@ -1353,7 +1383,8 @@ async def apply_aggregated_schedules(
     aggregated_schedules: Dict[str, Dict[int, List[Dict[str, Union[str, float]]]]], 
     profile_prefix: str, 
     config: Dict[str, Any],
-    zone_to_neohub_map: Dict[str, str]
+    zone_to_neohub_map: Dict[str, str],
+    zone_statuses: dict
 ) -> None:
     """
     Takes aggregated weekly setpoints, formats them for the NeoHub, validates them,
@@ -1382,7 +1413,21 @@ async def apply_aggregated_schedules(
         if not neohub_object:
             logging.error(f"Cannot apply schedule for zone '{zone_name}': Neohub '{neohub_name}' not connected or mapped. Skipping.")
             continue
-            
+
+        # --- NEW: Initialize Status and Mark AGGREGATE_PROFILE Success ---
+        # 1. Initialize the status dictionary for the current zone (if it wasn't pre-initialized)
+        zone_statuses.setdefault(neohub_name, {}).setdefault(zone_name, {
+            'CREATE_PROFILE': 0, 
+            'AGGREGATE_PROFILE': 0,
+            'POST_PROFILE': 0, 
+            'ACTIVATE_PROFILE': 0
+        })
+        
+        # 2. Mark successful aggregation (this function's job)
+        zone_statuses[neohub_name][zone_name]['AGGREGATE_PROFILE'] = 1 
+        logging.debug(f"[{neohub_name}/{zone_name}] AGGREGATE_PROFILE set to 1.")
+        # --- END NEW STATUS LOGIC ---
+
         profile_data = {}
         
         # daily_schedules.items() yields (day_index: int, setpoints_list: list)
@@ -1414,7 +1459,8 @@ async def apply_aggregated_schedules(
                 neohub_name, 
                 zone_name, 
                 profile_data, 
-                profile_prefix
+                profile_prefix,
+                zone_statuses
             )
         )
 
@@ -1424,7 +1470,7 @@ async def apply_aggregated_schedules(
     else:
         logging.warning(f"No profiles generated or applied for {profile_prefix}.")
 
-async def activate_profile_on_zones(neohub_name: str, profile_id: int, zone_name: str) -> bool:
+async def activate_profile_on_zones(neohub_name: str, profile_id: int, zone_name: str, zone_statuses: dict) -> bool:
     """
     Activates a specific profile ID on one or more heating zones using the 
     RUN_PROFILE_ID command, with robust response handling.
@@ -1442,7 +1488,7 @@ async def activate_profile_on_zones(neohub_name: str, profile_id: int, zone_name
         response: Optional[Dict[str, Any]] = await send_command(neohub_name, inner_command)
 
         # ----------------------------------------------------------------------
-        # NEW LOGIC: Convert SimpleNamespace to dict for reliable access
+        # Convert SimpleNamespace to dict for reliable access
         # ----------------------------------------------------------------------
         if response and not isinstance(response, dict):
             try:
@@ -1456,6 +1502,15 @@ async def activate_profile_on_zones(neohub_name: str, profile_id: int, zone_name
         # Now check the 'result' key, which works reliably on the dictionary (or None)
         if response and response.get('result') == 'profile was run':
             logging.info(f"Successfully activated Profile ID {profile_id} on zone(s) '{zone_name}'. Hub result: '{response.get('result')}'")
+            
+            # --- NEW STATUS LOGIC: Mark Activation Success ---
+            try:
+                zone_statuses[neohub_name][zone_name]['ACTIVATE_PROFILE'] = 1 
+                logging.debug(f"[{neohub_name}/{zone_name}] ACTIVATE_PROFILE set to 1 (Success).")
+            except KeyError:
+                logging.warning(f"Status structure missing for {neohub_name}/{zone_name} during activation update.")
+            # --- END NEW STATUS LOGIC ---
+            
             return True
         else:
             logging.error(f"Failed to activate profile {profile_id} on '{zone_name}'. Hub response: {response}")
@@ -1481,60 +1536,78 @@ async def update_heating_schedule() -> None:
     logging.info("--- STARTING HEATING SCHEDULE UPDATE PROCESS (7-Day Rolling Window) ---")
     global config
     
-    # 1. Configuration Validation
-    if config is None:
-        logging.error("Configuration not loaded. Exiting.")
-        return
-    if not validate_config(config):
-        logging.error("Invalid configuration. Exiting.")
-        return
+    # NEW: Multi-stage status tracking dictionary defined with the four stages.
+    # Status: 0 (Initial/Failure), 1 (Success)
+    zone_statuses = {} 
     
-    # NEW: Build the centralized configuration map
-    zone_to_neohub_map = build_zone_to_neohub_map(config)
+    neohub_reports = []
+    # Initialize overall_status to FAILURE as the default.
+    overall_status = "FAILURE" 
+    location_timezone = None # Initialize
     
-    # 2. Timezone and Rolling Window Calculation
-    location_timezone_name = os.environ.get("CHURCHSUITE_TIMEZONE", "Europe/London")
+    # --- CORE PROCESSING LOGIC (Wrapped in try/except for critical failure handling) ---
     try:
-        location_timezone = pytz.timezone(location_timezone_name)
-    except pytz.exceptions.UnknownTimeZoneError:
-        logging.error(
-            f"Timezone '{location_timezone_name}' is invalid. Defaulting to Europe/London."
-        )
-        location_timezone = pytz.timezone("Europe/London")
 
-    # The current moment, naive time in the location's timezone
-    now_naive = datetime.datetime.now(location_timezone).replace(tzinfo=None)
+        # 1. Configuration Validation
+        if config is None:
+            logging.error("Configuration not loaded. Exiting.")
+            overall_status = "CRITICAL_FAILURE"
+            raise Exception("Configuration not loaded.") 
+            
+        if not validate_config(config):
+            logging.error("Invalid configuration. Exiting.")
+            overall_status = "CRITICAL_FAILURE"
+            raise Exception("Invalid configuration.")
+        
+        # NEW: Build the centralized configuration map
+        zone_to_neohub_map = build_zone_to_neohub_map(config)
+        
+        # 2. Timezone and Rolling Window Calculation
+        location_timezone_name = os.environ.get("CHURCHSUITE_TIMEZONE", "Europe/London")
+        try:
+            location_timezone = pytz.timezone(location_timezone_name)
+        except pytz.exceptions.UnknownTimeZoneError:
+            logging.error(
+                f"Timezone '{location_timezone_name}' is invalid. Defaulting to Europe/London."
+            )
+            location_timezone = pytz.timezone("Europe/London")
 
-    # PROFILE 1: Covers the next 7 days (the current rolling week)
-    profile_1_end = now_naive + datetime.timedelta(days=7)
-    # PROFILE 2: Covers days 8 through 14
-    profile_2_end = now_naive + datetime.timedelta(days=14)
-    
-    logging.info(f"Current Date/Time: {now_naive.strftime('%Y-%m-%d %H:%M')}")
-    logging.info(f"Profile 1 (Current Week) Range: NOW to {profile_1_end.strftime('%Y-%m-%d %H:%M')}")
-    logging.info(f"Profile 2 (Next Week) Range: {profile_1_end.strftime('%Y-%m-%d %H:%M')} to {profile_2_end.strftime('%Y-%m-%d %H:%M')}")
+        # The current moment, naive time in the location's timezone
+        now_naive = datetime.datetime.now(location_timezone).replace(tzinfo=None)
+
+        # PROFILE 1: Covers the next 7 days (the current rolling week)
+        profile_1_end = now_naive + datetime.timedelta(days=7)
+        # PROFILE 2: Covers days 8 through 14
+        profile_2_end = now_naive + datetime.timedelta(days=14)
+        
+        logging.info(f"Current Date/Time: {now_naive.strftime('%Y-%m-%d %H:%M')}")
+        logging.info(f"Profile 1 (Current Week) Range: NOW to {profile_1_end.strftime('%Y-%m-%d %H:%M')}")
+        logging.info(f"Profile 2 (Next Week) Range: {profile_1_end.strftime('%Y-%m-%d %H:%M')} to {profile_2_end.strftime('%Y-%m-%d %H:%M')}")
 
 
-    # 3. Fetch Bookings and Resources
-    data = get_bookings_and_locations()
-    if data:
+        # 3. Fetch Bookings and Resources
+        data = get_bookings_and_locations()
+        if not data:
+            overall_status = "PARTIAL_FAILURE"
+            raise StopIteration("No data received from ChurchSuite.")
+
         booked_resources = data.get("booked_resources", [])
         resources = data.get("resources", [])
-        
+            
         logging.info(f"Fetched {len(booked_resources)} total bookings and {len(resources)} resources from ChurchSuite.")
 
         if not booked_resources:
-            logging.info("No bookings to process. Exiting schedule update early.")
-            return
+            overall_status = "SUCCESS" # Successfully confirmed no actions needed
+            raise StopIteration("No bookings to process.")
 
         if not resources:
-            logging.error("No resources found. Cannot map bookings to locations. Exiting schedule update early.")
-            return
+            overall_status = "FAILURE" # Fail if bookings exist but we can't map them
+            raise Exception("No resources found.")
 
         # Create a map to resolve resource_id to location name
         resource_id_to_name = {r.get('id'): r.get('name') for r in resources if r.get('id') and r.get('name')}
         logging.debug(f"RESOURCE MAP: Created ID to Name map with {len(resource_id_to_name)} entries.")
-        
+            
         # 2. Filter Bookings by Rolling Window
         profile_1_bookings = []
         profile_2_bookings = []
@@ -1543,48 +1616,38 @@ async def update_heating_schedule() -> None:
             start_time_str = booking.get("starts_at")
             end_time_str = booking.get("ends_at")
             resource_id = booking.get("resource_id", "unknown")
-            
+                
             if start_time_str and end_time_str:
                 try:
                     # Parse all times to local naive time for comparison
                     start_dt_utc = dateutil.parser.parse(start_time_str)
                     end_dt_utc = dateutil.parser.parse(end_time_str)
-                    
+                        
                     # Convert to local time, remove TZ info
                     local_start_dt = start_dt_utc.astimezone(location_timezone).replace(tzinfo=None)
                     local_end_dt = end_dt_utc.astimezone(location_timezone).replace(tzinfo=None)
-                    
+                        
                     # CRITICAL: Lapsed Event Check
                     # If the event has already ENDED, we skip it. This prevents deleting an active schedule
                     # if the start time was in the past, but the end time is in the future.
                     if local_end_dt < now_naive:
                         logging.debug(f"Skipping booking ID {booking.get('id')}: Event finished at {local_end_dt}.")
                         continue
-                    
-                    # PROBE B (Filtering Check) - Renamed for clarity on the first event being processed
-                    if LOGGING_LEVEL == "DEBUG" and not (profile_1_bookings or profile_2_bookings):
-                        logging.debug(f"PROBE B (Filtering Check): First un-lapsed booking starts: {local_start_dt}. Ends: {local_end_dt}. Now: {now_naive}")
-
+                        
                     # PROFILE 1: Events that start in the next 7 days (or are currently running)
                     if local_start_dt < profile_1_end:
                         profile_1_bookings.append(booking)
-                    
+                        
                     # PROFILE 2: Events that start between day 7 and day 14
                     elif local_start_dt < profile_2_end:
                         profile_2_bookings.append(booking)
-                        
+                            
                 except dateutil.parser.ParserError as e:
                     logging.error(f"Failed to parse datetime for booking ID {booking.get('id', 'unknown')}: {e}")
             else:
                 logging.warning(f"Booking with resource ID {resource_id} has missing start/end time.")
 
         logging.info(f"Filtered Bookings: Profile 1 (Next 7 days): {len(profile_1_bookings)}, Profile 2 (Days 8-14): {len(profile_2_bookings)}")
-        
-        # PROBE C: Log the resulting lists
-        if LOGGING_LEVEL == "DEBUG":
-            logging.debug(f"PROBE C (Filtered): Profile 1 Bookings ({len(profile_1_bookings)}): {profile_1_bookings}")
-            logging.debug(f"PROBE C (Filtered): Profile 2 Bookings ({len(profile_2_bookings)}): {profile_2_bookings}")
-
 
         # 3. Get External Temperature
         external_temperature = get_external_temperature()
@@ -1598,7 +1661,7 @@ async def update_heating_schedule() -> None:
             resource_id_to_name
         )
         logging.info(f"AGGREGATION RESULT (Profile 1): {len(aggregated_p1_schedules)} final locations/zones scheduled.")
-        
+            
         aggregated_p2_schedules = create_aggregated_schedule(
             profile_2_bookings, 
             external_temperature, 
@@ -1607,25 +1670,117 @@ async def update_heating_schedule() -> None:
         )
         logging.info(f"AGGREGATION RESULT (Profile 2): {len(aggregated_p2_schedules)} final locations/zones scheduled.")
 
-        # PROBE D: Log the final aggregated schedules before application
-        if LOGGING_LEVEL == "DEBUG":
-            logging.debug(f"PROBE D (Final Aggregation): Profile 1: {aggregated_p1_schedules}")
-            logging.debug(f"PROBE D (Final Aggregation): Profile 2: {aggregated_p2_schedules}")
-
-
         # 5. APPLY AGGREGATED SCHEDULES
         # The profile names remain "Current Week" and "Next Week" for the NeoHub hardware
         await apply_aggregated_schedules(
-            aggregated_p1_schedules, "Current Week", config, zone_to_neohub_map
+            aggregated_p1_schedules, "Current Week", config, zone_to_neohub_map, zone_statuses
         )
         await apply_aggregated_schedules(
-            aggregated_p2_schedules, "Next Week", config, zone_to_neohub_map
+            aggregated_p2_schedules, "Next Week", config, zone_to_neohub_map, zone_statuses
         )
 
-    else:
-        logging.info("No data received from ChurchSuite.")
+    except StopIteration as e:
+        # Expected exit path for 'No bookings' or 'No data'. Status is set above.
+        logging.info(f"Graceful exit: {e}")
+        pass
+
+    except Exception as e:
+        # CRITICAL UNHANDLED ERROR
+        logging.critical(f"UNHANDLED CRITICAL ERROR during update_heating_schedule: {e}")
+        overall_status = "CRITICAL_FAILURE"
+
+        # --- 6. FINAL STATUS COMPILATION AND SAVING ---
     
-    logging.info("--- HEATING SCHEDULE UPDATE PROCESS COMPLETE ---")
+        # Only analyze the results if processing went through and wasn't immediately halted 
+        if overall_status == "FAILURE": 
+        
+            all_neohub_names = list(config["neohubs"].keys())
+            total_zones_processed = 0
+            successful_zones = 0
+
+            for neohub_name in all_neohub_names:
+                zone_results = zone_statuses.get(neohub_name, {})
+                zones_configured = config["neohubs"][neohub_name].get("zones", [])
+            
+                hub_total_zones = len(zones_configured)
+                hub_success_count = 0
+            
+                for zone_name in zones_configured:
+                    total_zones_processed += 1
+                
+                    # Retrieve status flags (default to 0 if key is missing/unprocessed)
+                    create_status = zone_results.get(zone_name, {}).get('CREATE_PROFILE', 0)
+                    aggregate_status = zone_results.get(zone_name, {}).get('AGGREGATE_PROFILE', 0)
+                    post_status = zone_results.get(zone_name, {}).get('POST_PROFILE', 0)
+                    activate_status = zone_results.get(zone_name, {}).get('ACTIVATE_PROFILE', 0)
+                
+                    # Zone is successful ONLY if ALL FOUR stages succeeded (1).
+                    if (create_status == 1 and 
+                        aggregate_status == 1 and
+                        post_status == 1 and 
+                        activate_status == 1):
+                    
+                        successful_zones += 1
+                        hub_success_count += 1
+
+                # Determine hub-level status
+                if hub_total_zones == 0:
+                    hub_status = "SUCCESS" 
+                    message = "No zones configured for this NeoHub."
+                elif hub_success_count == hub_total_zones:
+                    hub_status = "SUCCESS"
+                    message = f"Updated {hub_success_count} of {hub_total_zones} zones."
+                elif hub_success_count > 0:
+                    hub_status = "PARTIAL_FAILURE"
+                    message = f"Partial update: {hub_success_count} of {hub_total_zones} zones updated."
+                else:
+                    hub_status = "FAILURE" 
+                    message = f"Failed to update all {hub_total_zones} zones."
+
+                neohub_reports.append({
+                    "name": neohub_name,
+                    "hub_status": hub_status,
+                    "zones_updated": hub_success_count,
+                    "zones_total": hub_total_zones,
+                    "message": message
+                })
+
+            # --- Determine Overall System Status (Promotion from FAILURE) ---
+            if total_zones_processed > 0:
+                if successful_zones == total_zones_processed:
+                    overall_status = "SUCCESS"
+                elif successful_zones > 0:
+                    overall_status = "PARTIAL_FAILURE"
+                else:
+                    pass 
+            else:
+                overall_status = "SUCCESS" 
+
+        # Final metadata and status file creation
+        if location_timezone is None:
+            location_timezone = pytz.timezone("UTC")
+            
+        last_run_time = datetime.datetime.now(location_timezone).strftime("%Y-%m-%d %H:%M:%S %Z")
+        
+        # Ensure a report exists for critical failure
+        if overall_status == "CRITICAL_FAILURE" and not neohub_reports:
+            neohub_reports.append({
+                "name": "N/A",
+                "hub_status": overall_status,
+                "zones_updated": 0,
+                "zones_total": 0,
+                "message": "A critical error occurred before zone processing could start."
+            })
+
+        status_data = {
+            "last_run_time": last_run_time,
+            "overall_status": overall_status,
+            "neohub_reports": neohub_reports
+        }
+        
+        write_status_file(status_data)
+        
+        logging.info("--- HEATING SCHEDULE UPDATE PROCESS COMPLETE ---")
 
 async def run_scheduler_forever(scheduler):
     """Starts the scheduler and keeps the asyncio loop running indefinitely."""

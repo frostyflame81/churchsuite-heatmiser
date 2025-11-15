@@ -18,11 +18,41 @@
 <body>
     <h1>ChurchSuite Heating Scheduler</h1>
 
-    <div class="status-box status-ok">
+    {% set overall_class = 'status-ok' if scheduler_status.overall_status == 'SUCCESS' else ('status-partial' if scheduler_status.overall_status == 'PARTIAL_FAILURE' else 'status-error') %}
+
+    <div class="status-box {{ overall_class }}">
         <h2>System Health</h2>
         <p>Scheduler Status: RUNNING (PID: {{ scheduler_pid }})</p>
-        <p>Last Successful Run: (Feature to be implemented)</p>
+        <p>Last Update Run Time: <strong>{{ scheduler_status.last_run_time }}</strong></p>
+        <p>Overall Status: <strong>{{ scheduler_status.overall_status }}</strong></p>
     </div>
+
+    {% if scheduler_status.neohub_reports %}
+    <h2>NeoHub Update Status</h2>
+    <table class="status-table">
+        <thead>
+            <tr>
+                <th>NeoHub Name</th>
+                <th>Status Message</th>
+                <th>Zones Updated</th>
+                <th>Hub Status</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for report in scheduler_status.neohub_reports %}
+                {% set hub_class = 'status-ok' if report.hub_status == 'SUCCESS' else ('status-partial' if report.hub_status == 'PARTIAL_FAILURE' else 'status-error') %}
+                <tr>
+                    <td>{{ report.name }}</td>
+                    <td>{{ report.message }}</td>
+                    <td>{{ report.zones_updated }} / {{ report.zones_total }}</td>
+                    <td class="{{ hub_class }}"><strong>{{ report.hub_status }}</strong></td>
+                </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p>No NeoHub reports available yet. Run a manual update or wait for the hourly schedule.</p>
+    {% endif %}
 
     <h2>Manual Controls</h2>
     <p>Use these controls to manage the scheduling process:</p>
