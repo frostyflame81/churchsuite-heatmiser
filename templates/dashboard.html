@@ -66,10 +66,10 @@
                     <td class="{{ status_class }}">{{ report.status }}</td>
                     
                     <!-- Granular Status Flags -->
-                    <td><span class="flag-status flag-{{ report.flags.CREATE_PROFILE }}">CREATE_PROFILE: {{ report.flags.CREATE_PROFILE }}</span></td>
-                    <td><span class="flag-status flag-{{ report.flags.AGGREGATE_PROFILE }}">AGGREGATE_PROFILE: {{ report.flags.AGGREGATE_PROFILE }}</span></td>
-                    <td><span class="flag-status flag-{{ report.flags.POST_PROFILE }}">POST_PROFILE: {{ report.flags.POST_PROFILE }}</span></td>
-                    <td><span class="flag-status flag-{{ report.flags.ACTIVATE_PROFILE }}">ACTIVATE_PROFILE: {{ report.flags.ACTIVATE_PROFILE }}</span></td>
+                    <td><span class="flag-status flag-{{ report.CREATE_PROFILE }}">CREATE_PROFILE: {{ report.CREATE_PROFILE }}</span></td>
+                    <td><span class="flag-status flag-{{ report.AGGREGATE_PROFILE }}">AGGREGATE_PROFILE: {{ report.AGGREGATE_PROFILE }}</span></td>
+                    <td><span class="flag-status flag-{{ report.POST_PROFILE }}">POST_PROFILE: {{ report.POST_PROFILE }}</span></td>
+                    <td><span class="flag-status flag-{{ report.ACTIVATE_PROFILE }}">ACTIVATE_PROFILE: {{ report.ACTIVATE_PROFILE }}</span></td>
                     
                     <td>{{ report.message }}</td>
                 </tr>
