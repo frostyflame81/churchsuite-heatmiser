@@ -1494,6 +1494,13 @@ async def apply_aggregated_schedules(
             )
         )
 
+# CRITICAL FIX: Await all gathered tasks before exiting the function
+    if tasks:
+        logging.info(f"Applying {len(tasks)} zone profiles for {profile_prefix} in parallel.")
+        await asyncio.gather(*tasks) # <--- THIS IS THE FIX
+    else:
+        logging.info(f"No profiles to apply for {profile_prefix}.")
+
 async def activate_profile_on_zones(neohub_name: str, profile_id: int, zone_name: str, zone_statuses: dict) -> bool:
     """
     Activates a specific profile ID on one or more heating zones using the 
