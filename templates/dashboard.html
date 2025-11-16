@@ -69,7 +69,6 @@
                 </tr>
                 
                 {% if hub_report.zones is defined and hub_report.zones | length > 0 %}
-                    <tr class="debug-row"><td colspan="7">DEBUG: Processing {{ hub_report.zones | length }} zones for {{ hub_report.name }}...</td></tr> 
                     
                     {% for zone_report in hub_report.zones %}
                         <tr>
