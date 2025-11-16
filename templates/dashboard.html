@@ -68,44 +68,46 @@
                     </td>
                 </tr>
                 
-                {% if hub_report.zones | length == 0 %}
+                {% if hub_report.zones is defined and hub_report.zones | length > 0 %}
+                    
+                    {% for zone_report in hub_report.zones %}
+                        <tr>
+                            <td></td> 
+                            
+                            <td>{{ zone_report.zone_name }}</td>
+                            <td>{{ zone_report.profile_status }}</td>
+                            
+                            {% set flags = zone_report.status_flags %}
+                            
+                            <td class="flag-column">
+                                <span class="flag-status flag-{{ flags.AGGREGATE_PROFILE }}">
+                                    {{ flags.AGGREGATE_PROFILE }}
+                                </span>
+                            </td>
+                            <td class="flag-column">
+                                <span class="flag-status flag-{{ flags.CREATE_PROFILE }}">
+                                    {{ flags.CREATE_PROFILE }}
+                                </span>
+                            </td>
+                            <td class="flag-column">
+                                <span class="flag-status flag-{{ flags.POST_PROFILE }}">
+                                    {{ flags.POST_PROFILE }}
+                                </span>
+                            </td>
+                            <td class="flag-column">
+                                <span class="flag-status flag-{{ flags.ACTIVATE_PROFILE }}">
+                                    {{ flags.ACTIVATE_PROFILE }}
+                                </span>
+                            </td>
+                        </tr>
+                    {% endfor %}
+                    
+                {% else %}
                     <tr>
                         <td colspan="7" class="no-zones-message">
                             {{ hub_report.message }}
                         </td>
                     </tr>
-                {% else %}
-                    {% for zone_report in hub_report.zones %}
-                    <tr>
-                        <td></td> 
-                        
-                        <td>{{ zone_report.zone_name }}</td>
-                        <td>{{ zone_report.profile_status }}</td>
-                        
-                        {% set flags = zone_report.status_flags %}
-                        
-                        <td class="flag-column">
-                            <span class="flag-status flag-{{ flags.AGGREGATE_PROFILE }}">
-                                {{ flags.AGGREGATE_PROFILE }}
-                            </span>
-                        </td>
-                        <td class="flag-column">
-                            <span class="flag-status flag-{{ flags.CREATE_PROFILE }}">
-                                {{ flags.CREATE_PROFILE }}
-                            </span>
-                        </td>
-                        <td class="flag-column">
-                            <span class="flag-status flag-{{ flags.POST_PROFILE }}">
-                                {{ flags.POST_PROFILE }}
-                            </span>
-                        </td>
-                        <td class="flag-column">
-                            <span class="flag-status flag-{{ flags.ACTIVATE_PROFILE }}">
-                                {{ flags.ACTIVATE_PROFILE }}
-                            </span>
-                        </td>
-                    </tr>
-                    {% endfor %}
                 {% endif %}
             {% endfor %}
         </tbody>
