@@ -42,41 +42,72 @@
 
     <!-- NEW SECTION: Detailed Status Reports -->
     <h2>Status Reports ({{ scheduler_status.neohub_reports | length if scheduler_status.neohub_reports else 0 }} Zones Processed)</h2>
-    
+
     <table class="report-table">
         <thead>
             <tr>
-                <th>Zone</th>
-                <th>Hub</th>
-                <th>Final Status</th>
-                <th>Profile Creation</th>
-                <th>Aggregation</th>
-                <th>Post Profile</th>
-                <th>Activation</th>
-                <th>Message</th>
+                <th rowspan="2">NeoHub Name</th>
+                <th rowspan="2">Zone Name</th>
+                <th rowspan="2">Profile Status</th>
+                <th colspan="4" class="status-group-header">Schedule Processing Status (Flags)</th>
+            </tr>
+            <tr>
+                <th>AGGREGATE</th>
+                <th>CREATE</th>
+                <th>POST</th>
+                <th>ACTIVATE</th>
             </tr>
         </thead>
         <tbody>
-        {% if scheduler_status.neohub_reports %}
-            {% for report in scheduler_status.neohub_reports %}
-                {% set status_class = 'status-ok' if report.status == 'SUCCESS' else 'status-error' %}
-                <tr>
-                    <td><strong>{{ report.zone_name }}</strong></td>
-                    <td>{{ report.neohub_name }}</td>
-                    <td class="{{ status_class }}">{{ report.status }}</td>
-                    
-                    <!-- Granular Status Flags -->
-                    <td><span class="flag-status flag-{{ report.CREATE_PROFILE }}">CREATE_PROFILE: {{ report.CREATE_PROFILE }}</span></td>
-                    <td><span class="flag-status flag-{{ report.AGGREGATE_PROFILE }}">AGGREGATE_PROFILE: {{ report.AGGREGATE_PROFILE }}</span></td>
-                    <td><span class="flag-status flag-{{ report.POST_PROFILE }}">POST_PROFILE: {{ report.POST_PROFILE }}</span></td>
-                    <td><span class="flag-status flag-{{ report.ACTIVATE_PROFILE }}">ACTIVATE_PROFILE: {{ report.ACTIVATE_PROFILE }}</span></td>
-                    
-                    <td>{{ report.message }}</td>
+            {% for hub_report in neohub_reports %}
+                <tr class="hub-status-summary">
+                    <td colspan="7">
+                        <strong>{{ hub_report.name }}</strong> | Status: 
+                        <span class="hub-status status-{{ hub_report.hub_status | lower }}">{{ hub_report.hub_status }}</span> 
+                        ({{ hub_report.message }})
+                    </td>
                 </tr>
+                
+                {% if hub_report.zones | length == 0 %}
+                    <tr>
+                        <td colspan="7" class="no-zones-message">
+                            {{ hub_report.message }}
+                        </td>
+                    </tr>
+                {% else %}
+                    {% for zone_report in hub_report.zones %}
+                    <tr>
+                        <td></td> 
+                        
+                        <td>{{ zone_report.zone_name }}</td>
+                        <td>{{ zone_report.profile_status }}</td>
+                        
+                        {% set flags = zone_report.status_flags %}
+                        
+                        <td class="flag-column">
+                            <span class="flag-status flag-{{ flags.AGGREGATE_PROFILE }}">
+                                {{ flags.AGGREGATE_PROFILE }}
+                            </span>
+                        </td>
+                        <td class="flag-column">
+                            <span class="flag-status flag-{{ flags.CREATE_PROFILE }}">
+                                {{ flags.CREATE_PROFILE }}
+                            </span>
+                        </td>
+                        <td class="flag-column">
+                            <span class="flag-status flag-{{ flags.POST_PROFILE }}">
+                                {{ flags.POST_PROFILE }}
+                            </span>
+                        </td>
+                        <td class="flag-column">
+                            <span class="flag-status flag-{{ flags.ACTIVATE_PROFILE }}">
+                                {{ flags.ACTIVATE_PROFILE }}
+                            </span>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                {% endif %}
             {% endfor %}
-        {% else %}
-            <tr><td colspan="8">No detailed status reports available yet.</td></tr>
-        {% endif %}
         </tbody>
     </table>
     
