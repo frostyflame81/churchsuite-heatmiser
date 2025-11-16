@@ -582,6 +582,84 @@ def _validate_neohub_profile(
             
     return True, "Profile is compliant."
 
+def generate_neohub_reports(zone_statuses, hub_connectivity_status, zone_to_neohub_map):
+    """
+    Converts the raw zone_statuses and hub_connectivity_status into the final 
+    structured report list (neohub_reports) for the JSON file.
+    """
+    neohub_reports = {}
+    
+    # 1. Group all zones by their NeoHub
+    for zone_name, neohub_name in zone_to_neohub_map.items():
+        if neohub_name not in neohub_reports:
+            # Initialize the hub report entry
+            neohub_reports[neohub_name] = {
+                "name": neohub_name,
+                "hub_status": hub_connectivity_status.get(neohub_name, "UNKNOWN"),
+                "zones": [], # List to hold detailed zone reports
+                "zones_updated": 0,
+                "zones_total": 0,
+                "message": "",
+            }
+        
+        hub_report = neohub_reports[neohub_name]
+        hub_report["zones_total"] += 1
+        
+        # 2. Extract and format the detailed zone status flags
+        zone_data = zone_statuses.get(neohub_name, {}).get(zone_name, {})
+        
+        # Determine the overall zone status based on flags (e.g., if POST_PROFILE is 1)
+        # We assume AGGREGATE_PROFILE=1 means the zone was processed successfully.
+        is_updated = zone_data.get('AGGREGATE_PROFILE', 0) == 1
+        
+        if is_updated:
+            hub_report["zones_updated"] += 1
+
+        # Create the detailed zone report (This is what your HTML expects to display)
+        detailed_zone_report = {
+            "zone_name": zone_name,
+            "status_flags": zone_data, # This is the dictionary: {'CREATE_PROFILE': 1, 'POST_PROFILE': 0, ...}
+            "profile_status": "PROCESSED" if is_updated else "SKIPPED/FAILED"
+        }
+        
+        hub_report["zones"].append(detailed_zone_report)
+
+    # 3. Finalize messages and convert to a list
+    final_reports_list = []
+    for neohub_name, report in neohub_reports.items():
+        if report["hub_status"] == "FAILED":
+            report["hub_status"] = "CRITICAL_FAILURE"
+            report["message"] = f"Connection and compatibility check FAILED."
+        elif report["hub_status"] == "UNKNOWN":
+            report["message"] = "No attempt made to connect during this run."
+        elif not report["zones"]:
+            report["hub_status"] = "SUCCESS" # Hub itself connected, but no zones were found to process.
+            report["message"] = "No zones configured for this NeoHub."
+        else:
+            report["hub_status"] = "SUCCESS" # Overall hub status is good
+            report["message"] = f"{report['zones_updated']} of {report['zones_total']} zones processed."
+        
+        final_reports_list.append(report)
+        
+    # 4. Handle hubs that have no zones mapped but are in the connectivity status (e.g., 'church_hall')
+    # This prevents the report from losing status for failed hubs that have no zones in the current run's data.
+    all_hubs = set(hub_connectivity_status.keys())
+    hubs_in_report = set(r['name'] for r in final_reports_list)
+
+    for missing_hub_name in all_hubs - hubs_in_report:
+        status = hub_connectivity_status[missing_hub_name]
+        if status == "FAILED":
+             final_reports_list.append({
+                "name": missing_hub_name,
+                "hub_status": "CRITICAL_FAILURE",
+                "zones": [],
+                "zones_updated": 0,
+                "zones_total": 0,
+                "message": "Hub failed compatibility check and has no mapped zones."
+            })
+
+    return final_reports_list
+
 async def check_ipc_flags():
     """Checks for IPC flag files created by the web GUI process."""
     if os.path.exists(CONFIG_RELOAD_FLAG):
@@ -1836,6 +1914,12 @@ async def update_heating_schedule() -> None:
             
         last_run_time = datetime.datetime.now(location_timezone).strftime("%Y-%m-%d %H:%M:%S %Z")
         
+        neohub_reports = generate_neohub_reports(
+            zone_statuses, 
+            hub_connectivity_status, 
+            zone_to_neohub_map
+        )
+
         status_data = {
             "last_run_time": last_run_time,
             "overall_status": overall_status,
