@@ -12,6 +12,7 @@ logging.basicConfig(level=logging.INFO)
 MANUAL_RUN_FLAG = '/tmp/manual_run_flag'
 CONFIG_RELOAD_FLAG = '/tmp/config_reload_flag'
 SCHEDULER_STATUS_FILE = '/tmp/scheduler_status.json'
+CONFIG_FILE = '/config/config.json'
 
 # --------------------------------------------------------------------------
 # 1. FLASK SETUP
@@ -22,12 +23,49 @@ app = Flask(__name__)
 # 2. HELPER FUNCTIONS
 # --------------------------------------------------------------------------
 
-def get_env_config() -> Dict[str, Any]:
-    """Retrieves relevant config variables from the environment."""
-    # Filter the environment variables to only show relevant config items
-    return {k: v for k, v in os.environ.items() if any(
-        k.startswith(prefix) for prefix in ['CHURCHSUITE', 'OPENWEATHERMAP', 'PREHEAT', 'DEFAULT', 'ECO', 'NEOHUB']
-    )}
+def get_structured_config() -> Dict[str, Any]:
+    """Reads the structured config.json file, ensuring global_settings are present."""
+    default_global_settings = {
+        "PREHEAT_TIME_MINUTES": 30,
+        "DEFAULT_TEMPERATURE": 18,
+        "ECO_TEMPERATURE": 12,
+        "TEMPERATURE_SENSITIVITY": 10,
+        "PREHEAT_ADJUSTMENT_MINUTES_PER_DEGREE": 5
+    }
+
+    try:
+        # Load the existing config file
+        with open(CONFIG_FILE, 'r') as f:
+            config = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        # Create a base structure if the file is missing or corrupt
+        logging.warning(f"Config file {CONFIG_FILE} not found or corrupted. Creating base structure.")
+        config = {"locations": {}}
+
+    # 1. Ensure 'global_settings' key exists and merge defaults
+    if 'global_settings' not in config or not isinstance(config['global_settings'], dict):
+        config['global_settings'] = {}
+    
+    # Merge existing global settings with any new defaults defined in the code
+    config['global_settings'] = {**default_global_settings, **config['global_settings']}
+        
+    # 2. Ensure 'locations' key exists
+    if 'locations' not in config:
+         config['locations'] = {}
+            
+    return config
+
+
+def write_structured_config(config_data: Dict[str, Any]) -> bool:
+    """Writes the updated configuration data back to config.json."""
+    try:
+        with open(CONFIG_FILE, 'w') as f:
+            # Use indent=4 for a human-readable config file
+            json.dump(config_data, f, indent=4) 
+        return True
+    except Exception as e:
+        logging.error(f"Failed to write structured config file: {e}")
+        return False
 
 def get_scheduler_status() -> Dict[str, Any]:
     """Reads the status file created by app.py."""
@@ -74,7 +112,7 @@ def reload_config_in_scheduler() -> bool:
 @app.route('/')
 def dashboard():
     """Renders the main dashboard and config view."""
-    config_data = get_env_config()
+    config_data = get_structured_config()
     scheduler_pid = os.getppid()
     scheduler_status = get_scheduler_status()
 
@@ -93,6 +131,27 @@ def api_trigger_manual():
         return jsonify({"success": True, "message": "Manual run signal sent to scheduler."}), 200
     else:
         return jsonify({"success": False, "message": "Failed to send manual run signal."}), 500
+
+@app.route('/api/config/update', methods=['POST'])
+def api_config_update():
+    """API endpoint to receive and update structured configuration settings."""
+    try:
+        updated_config_data = request.json
+        # Basic validation: ensure the primary keys are present
+        if not updated_config_data or 'global_settings' not in updated_config_data or 'locations' not in updated_config_data:
+            return jsonify({"success": False, "message": "Invalid configuration payload. Missing global_settings or locations."}), 400
+
+        # Write to the file located at /config/config.json
+        if write_structured_config(updated_config_data):
+            # After writing the file, signal the scheduler to reload the config
+            reload_config_in_scheduler() 
+            return jsonify({"success": True, "message": "Config updated and scheduler signaled to reload."}), 200
+        else:
+            return jsonify({"success": False, "message": "Failed to update configuration file."}), 500
+
+    except Exception as e:
+        logging.error(f"Error processing structured config update: {e}")
+        return jsonify({"success": False, "message": f"Server error: {e}"}), 500
 
 @app.route('/api/config/reload', methods=['POST'])
 def api_config_reload():

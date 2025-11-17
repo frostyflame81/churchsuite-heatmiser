@@ -27,6 +27,23 @@
         }
         .flag-1 { background-color: #d4edda; color: #155724; } /* Green for Success (1) */
         .flag-0 { background-color: #f8d7da; color: #721c24; } /* Red for Failure (0) */
+        .location-card {
+            border: 1px solid #ccc;
+            padding: 15px;
+            margin-bottom: 20px;
+            border-radius: 5px;
+            background-color: #f9f9f9;
+        }
+        .location-card h3 {
+            margin-top: 0;
+            border-bottom: 1px solid #eee;
+            padding-bottom: 10px;
+        }
+        .location-data td[contenteditable="true"] {
+            background-color: #fffacd; /* Light yellow to highlight editable areas */
+            border: 1px dashed #ccc;
+            cursor: text;
+        }
     </style>
 </head>
 <body>
@@ -117,15 +134,50 @@
     <button class="control-btn" onclick="triggerRun()">Trigger Manual Update Now</button>
     <button class="control-btn" onclick="reloadConfig()">Reload Configuration</button>
 
-    <h2>Current Configuration (From Environment)</h2>
-    <table class="config-table">
-        {% for key, value in config.items() %}
-        <tr>
-            <th>{{ key }}</th>
-            <td>{{ value }}</td>
-        </tr>
-        {% endfor %}
+    <h2>2. Global Scheduler Configuration</h2>
+    <p>These settings affect all heating zones in the system.</p>
+
+    <table class="config-table" id="global-config-table">
+        <thead>
+            <tr><th>Setting</th><th>Value</th></tr>
+        </thead>
+        <tbody>
+            {% for k, v in config.global_settings.items() %}
+            <tr>
+                <th>{{ k | replace('_', ' ') | title }}</th>
+                <td contenteditable="true" data-key="{{ k }}">{{ v }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
     </table>
+
+    <button class="control-btn" onclick="saveConfig()">✏️ Save Config Changes</button>
+    <button class="control-btn" onclick="reloadConfig()">🔄 Reload Config (Scheduler)</button>
+    <hr>
+
+
+    <h2>3. Location Configuration (Heating Zones)</h2>
+    <p>
+        Configure which ChurchSuite locations map to NeoHub zones, along with location-specific heating factors.
+        Use the <strong>NeoHub Name</strong> and <strong>Zone Name</strong> fields to map the location.
+    </p>
+
+    <div id="locations-container">
+        {% for key, location in config.locations.items() %}
+        <div class="location-card" data-key="{{ key }}">
+            <h3>{{ key | replace('_', ' ') | title }}</h3> <table class="config-table location-data">
+                <tr><th>NeoHub Name</th><td contenteditable="true" data-key="neohub">{{ location.neohub }}</td></tr>
+                <tr><th>Zone Name (CSV)</th><td contenteditable="true" data-key="zones">{{ location.zones | join(', ') }}</td></tr>
+                <tr><th>Heat Loss Factor</th><td contenteditable="true" data-key="heat_loss_factor">{{ location.heat_loss_factor }}</td></tr>
+                <tr><th>Min External Temp</th><td contenteditable="true" data-key="min_external_temp">{{ location.min_external_temp }}</td></tr>
+            </table>
+            <button class="control-btn" onclick="removeLocation('{{ key }}')">🗑️ Remove Location</button>
+        </div>
+        {% endfor %}
+    </div>
+
+    <button class="control-btn" onclick="addNewLocation()">➕ Add New Location</button>
+    <hr>
 
     <script>
         // Use a simple, non-blocking notification instead of alert/confirm
@@ -159,6 +211,116 @@
                 .then(response => response.json())
                 .then(data => showNotification('Config Reload Status: ' + data.message))
                 .catch(error => showNotification('Error reloading config.'));
+        }
+        // Helper to generate a unique location key from a friendly name
+        function generateLocationKey(name) {
+            return name.toLowerCase().replace(/[^a-z0-9]+/g, '_').substring(0, 50);
+        }
+
+        function collectConfigData() {
+            const configData = {
+                global_settings: {},
+                locations: {}
+            };
+            
+            // 1. Collect Global Settings
+            const globalCells = document.querySelectorAll('#global-config-table td[contenteditable="true"]');
+            globalCells.forEach(cell => {
+                const key = cell.getAttribute('data-key');
+                const value = cell.textContent.trim();
+                // Attempt to cast numerical values back to Number
+                configData.global_settings[key] = isNaN(value) || value === '' ? value : Number(value);
+            });
+
+            // 2. Collect Location Settings
+            document.querySelectorAll('.location-card').forEach(card => {
+                const locationKey = card.getAttribute('data-key');
+                const location = {};
+
+                card.querySelectorAll('.location-data td[contenteditable="true"]').forEach(cell => {
+                    const key = cell.getAttribute('data-key');
+                    let value = cell.textContent.trim();
+                    
+                    if (key === 'zones') {
+                        // Zones must be saved as a list, split by comma
+                        location[key] = value.split(',').map(s => s.trim()).filter(s => s.length > 0);
+                    } else if (key === 'neohub') {
+                        location[key] = value;
+                    } else {
+                        // Cast numerical values (factors, temps) back to Number
+                        location[key] = isNaN(value) || value === '' ? value : Number(value);
+                    }
+                });
+                
+                // Ensure all location keys required by the scheduler are present
+                if (location.neohub && location.zones.length > 0) {
+                     configData.locations[locationKey] = location;
+                } else {
+                    showNotification(`Warning: Location ${locationKey} skipped (missing NeoHub or Zone).`);
+                }
+            });
+
+            return configData;
+        }
+
+        function saveConfig() {
+            const payload = collectConfigData();
+            
+            showNotification('Saving configuration changes...');
+            
+            fetch('/api/config/update', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(payload)
+            })
+            .then(response => response.json())
+            .then(data => {
+                showNotification(data.message);
+                if (data.success) {
+                    // Reload the page to display the newly saved and loaded configuration
+                    setTimeout(() => window.location.reload(), 1500); 
+                }
+            })
+            .catch(error => showNotification('Error saving config: ' + error));
+        }
+
+        function addNewLocation() {
+            const locationName = prompt("Enter a friendly name for the new location (e.g., Small Hall Office):");
+            if (!locationName) return;
+
+            const key = generateLocationKey(locationName);
+            if (document.querySelector(`.location-card[data-key="${key}"]`)) {
+                alert("A location with that key already exists. Please choose another name.");
+                return;
+            }
+            
+            // Generate a simple, editable HTML structure for the new location
+            const newLocationHtml = `
+                <div class="location-card" data-key="${key}">
+                    <h3>${locationName} (Key: ${key})</h3>
+                    <table class="config-table location-data">
+                        <tr><th>NeoHub Name</th><td contenteditable="true" data-key="neohub">Example_Hub</td></tr>
+                        <tr><th>Zone Name (CSV)</th><td contenteditable="true" data-key="zones">Zone 1, Zone 2</td></tr>
+                        <tr><th>Heat Loss Factor</th><td contenteditable="true" data-key="heat_loss_factor">1.0</td></tr>
+                        <tr><th>Min External Temp</th><td contenteditable="true" data-key="min_external_temp">5</td></tr>
+                    </table>
+                    <button class="control-btn" onclick="removeLocation('${key}')">🗑️ Remove Location</button>
+                </div>
+            `;
+            document.getElementById('locations-container').insertAdjacentHTML('beforeend', newLocationHtml);
+            showNotification(`New location '${locationName}' added. Click 'Save Config' to finalize.`);
+        }
+        
+        function removeLocation(key) {
+            if (confirm(`Are you sure you want to remove the location with key: ${key}? This will be permanent after you click 'Save Config'.`)) {
+                const card = document.querySelector(`.location-card[data-key="${key}"]`);
+                if (card) {
+                    card.remove();
+                    showNotification(`Location ${key} marked for removal. Click 'Save Config' to finalize.`);
+                }
+            }
         }
     </script>
 </body>
