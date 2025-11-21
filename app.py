@@ -357,20 +357,31 @@ def create_aggregated_schedule(
             preheat_time_str = preheat_start_dt_local.strftime("%H:%M")
             end_time_str = end_dt_local.strftime("%H:%M")
 
-            # --- Add Setpoints (The raw data) ---
+# --- Add Setpoints (The raw data) ---
             for zone_name in zone_names:
-                # Heat ON setpoint
-                zone_schedule[zone_name][start_day_of_week].append({
+                
+                # 1. Heat ON setpoint (at the calculated preheat start time)
+                zone_schedule[zone_name][preheat_start_dt_local.weekday()].append({
                     "time": preheat_time_str, "temp": target_temp
                 })
                 
-                # ECO OFF setpoint (on the END day)
+                # 2. ECO OFF setpoint (at the event end time)
                 zone_schedule[zone_name][end_day_of_week].append({
                     "time": end_time_str, "temp": ECO_TEMPERATURE
                 })
-                if start_day_of_week != end_day_of_week:
-                    logging.debug(f"PROBE G (Cross-Midnight): Booking ID {booking_id} spans midnight. ECO setpoint added to Day {end_day_of_week}.")
-
+                
+                # CRITICAL FIX: Explicitly ensure high temperature state is carried over to the next day.
+                if preheat_start_dt_local.day != start_dt_local.day:
+                    # Inject a 00:00 setpoint on the event day (Sunday) to maintain the preheat target.
+                    zone_schedule[zone_name][start_day_of_week].append({
+                        "time": "00:00", 
+                        "temp": target_temp 
+                    })
+                    logging.debug(
+                        f"PROBE H (Cross-Midnight Preheat Fix): Zone '{zone_name}' Day {start_day_of_week}: "
+                        f"Added 00:00 setpoint to maintain preheat from prior day."
+                    )
+                    
         except (KeyError, ValueError, TypeError) as e:
             logging.error(f"Error processing booking for {location_name} (ID {booking_id}): {e}.", exc_info=True)
             continue
