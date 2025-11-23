@@ -434,41 +434,42 @@ def create_aggregated_schedule(
                 optimized_setpoints.append({"time": "00:00", "temp": ECO_TEMPERATURE})
                 logging.debug(f"OPTIMIZATION: Zone '{zone}' Day {day}: Added default 00:00 ECO (No events).")
             
-            # --- 5. Slot Limiting (Max 6) - Prioritize Comfort ---
+# --- 5. Slot Limiting (Max 6) - Prioritize Comfort ---
             final_setpoints = optimized_setpoints
             
             if len(final_setpoints) > 6:
                 num_to_remove = len(final_setpoints) - 6
-                indices_to_remove = []
+                indices_to_remove = set() # Use a set for safe removal indexing
                 
-                # We need to remove intermediate ECO setpoints to bridge comfort periods (heat ON).
-                # Find all intermediate ECO points: those that are NOT the first point AND NOT the last point.
-                intermediate_eco_indices = [i for i, sp in enumerate(final_setpoints) 
-                                            if sp['temp'] == ECO_TEMPERATURE and 0 < i < len(final_setpoints) - 1]
+                # --- PROTECTION LAYER ---
+                # Find ALL ECO points that are NOT the FIRST or LAST point.
+                # These are the candidates for removal (intermediate ECO points).
+                intermediate_eco_candidates = [i for i, sp in enumerate(final_setpoints) 
+                                                 if sp['temp'] == ECO_TEMPERATURE and 0 < i < len(final_setpoints) - 1]
                 
-                # Remove intermediate ECO points first (Prioritizing the Heat ON state)
-                for i in intermediate_eco_indices:
+                # 1. Prioritize removing the intermediate ECO points to join comfort periods
+                for i in intermediate_eco_candidates:
                     if len(indices_to_remove) < num_to_remove:
-                        # Check if removing this ECO point bridges two comfort periods (ON -> OFF -> ON becomes ON -> ON)
-                        # We are actually looking for (ON -> OFF) -> ON. Removing OFF leaves ON -> ON
-                        if final_setpoints[i-1]['temp'] > ECO_TEMPERATURE and final_setpoints[i+1]['temp'] > ECO_TEMPERATURE:
-                            indices_to_remove.append(i)
-                        elif final_setpoints[i-1]['temp'] > ECO_TEMPERATURE: # If the previous point was heat ON, remove this OFF point to extend ON time
-                            indices_to_remove.append(i)
+                        # Check if this ECO point is followed by a comfort temp point
+                        # This ensures we don't accidentally remove the ONLY ECO point between two long comfort periods
+                        if final_setpoints[i+1]['temp'] > ECO_TEMPERATURE:
+                            indices_to_remove.add(i)
                     else:
                         break
 
-                # If we still need to remove more, remove ECO points near the start.
+                # 2. If we still need to remove more, remove other ECO points
                 if len(indices_to_remove) < num_to_remove:
-                    # Remove the remaining needed points from the top, favoring the removal of ECO points
-                    all_eco_indices = [i for i, sp in enumerate(final_setpoints) if sp['temp'] == ECO_TEMPERATURE and i not in indices_to_remove]
+                    all_eco_indices = [i for i, sp in enumerate(final_setpoints) 
+                                       if sp['temp'] == ECO_TEMPERATURE and i not in indices_to_remove]
                     
+                    # We remove the oldest, non-final ECO points first.
                     for i in all_eco_indices:
-                        if len(indices_to_remove) < num_to_remove:
-                            indices_to_remove.append(i)
-                        else:
-                            break
-
+                        if i != len(final_setpoints) - 1: # NEVER remove the last setpoint (the final ECO)
+                            if len(indices_to_remove) < num_to_remove:
+                                indices_to_remove.add(i)
+                            else:
+                                break
+                
                 # Rebuild the list without the marked indices
                 final_setpoints = [sp for i, sp in enumerate(optimized_setpoints) if i not in indices_to_remove]
                 
