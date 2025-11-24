@@ -609,26 +609,41 @@ def create_aggregated_schedule(
                         logging.error("Consolidation failed: Could not find required first Comfort or last ECO setpoints.")
                         final_setpoints = optimized_setpoints 
 
-                # --- 6. Final De-Duplication and Assignment (Cleanup) ---
-                # This cleans up the final list for the NeoHub profile structure (wake/level1/level2/etc.)
-                final_final_setpoints = []
-                prev_temp = None
-                
-                for sp in final_setpoints:
-                    current_temp = float(sp["temp"]) 
-                    # Only add the setpoint if it changes the temperature state
-                    if current_temp != prev_temp:
-                        final_final_setpoints.append(sp)
-                        prev_temp = current_temp
-                
-                # Truncate to the maximum of 6 slots if necessary (the system should send 6 points, but only 
-                # the first 6 *unique* temperature changes matter)
-                zone_schedule[zone][day] = final_final_setpoints[:6]
-                
-            if final_setpoints:
-                # PROBE E (Final Merged Schedule)
-                logging.debug(f"PROBE E (Final Merged Schedule): Zone '{zone}' Day {day}: {final_setpoints}")
-    
+                    # 6. Final De-Duplication and Assignment (Cleanup)
+                    final_final_setpoints = []
+                    prev_temp = None
+
+                    for sp in final_setpoints: # 'final_setpoints' is the output of Step 5.C
+                        current_temp = float(sp["temp"]) 
+                        if current_temp != prev_temp:
+                            final_final_setpoints.append(sp)
+                            prev_temp = current_temp
+                        
+                    # Truncate to the maximum of 6 slots if necessary
+                    final_final_setpoints = final_final_setpoints[:6]
+
+
+                    # --- 🚨 REQUIRED FIX: PADDING TO 6 SLOTS ---
+                    # The NeoHub API requires exactly 6 setpoints (wake, level1..sleep)
+                    if len(final_final_setpoints) < 6:
+                        if not final_final_setpoints:
+                            # Fallback for an absolutely empty schedule (should not happen with 00:00 ECO default)
+                            last_sp = {'time': '00:00', 'temp': ECO_TEMPERATURE} 
+                        else:
+                            # The last setpoint in the cleaned list should be used to fill the remaining slots
+                            last_sp = final_final_setpoints[-1]
+
+                        # Pad the list until it reaches length 6 by repeating the last setpoint
+                        while len(final_final_setpoints) < 6:
+                            final_final_setpoints.append(last_sp)
+                            
+                    # ----------------------------------------------
+
+
+                    # Now assign the guaranteed 6-point list back to the schedule structure
+                    # This is where your code likely performs the conversion and assignment:
+                    zone_schedule[zone][day] = final_final_setpoints
+
     logging.info(f"AGGREGATION END: Successfully generated schedules for {len(zone_schedule)} NeoHub zones.")
     return zone_schedule
 
