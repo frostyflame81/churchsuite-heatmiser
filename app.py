@@ -335,8 +335,8 @@ def create_aggregated_schedule(
         resource_id = booking.get("resource_id")
         location_name = resource_id_to_name.get(resource_id)
         if not location_name or location_name not in config["locations"]:
-             continue
-             
+            continue
+            
         location_config = config["locations"][location_name]
         
         # Calculate preheat for this single location
@@ -345,7 +345,7 @@ def create_aggregated_schedule(
 
         # Update the max preheat time for all associated zones
         for zone_name in zone_names:
-             max_preheat_per_zone[zone_name] = max(max_preheat_per_zone[zone_name], required_preheat_minutes)
+            max_preheat_per_zone[zone_name] = max(max_preheat_per_zone[zone_name], required_preheat_minutes)
     
     # PROBE A: Log Max Preheats
     logging.info(f"Calculated Max Preheats per Zone: {max_preheat_per_zone}") 
@@ -366,7 +366,7 @@ def create_aggregated_schedule(
         if location_name not in config["locations"]:
             location_config = None
             for cfg_name, cfg in config["locations"].items():
-                 if location_name == cfg_name or location_name in cfg.get("aliases", []):
+                if location_name == cfg_name or location_name in cfg.get("aliases", []):
                     location_config = cfg
                     location_name = cfg_name
                     break
@@ -392,17 +392,17 @@ def create_aggregated_schedule(
             end_day_of_week = end_dt_local.weekday()
             target_temp = location_config.get("default_temp", DEFAULT_TEMPERATURE)
             
-            # CRITICAL FIX 1: Use the MAX pre-heat time for the current zone, 
-            # calculated in the new first pass.
-            # Note: This is inside the zone_name loop to use the correct zone's max value.
-            preheat_to_use = max_preheat_per_zone.get(zone_name, required_preheat_minutes)
-                
-            preheat_start_dt_local = start_dt_local - datetime.timedelta(minutes=preheat_to_use)
-            preheat_time_str = preheat_start_dt_local.strftime("%H:%M")
             end_time_str = end_dt_local.strftime("%H:%M")
             
             # --- Add Setpoints (The raw data) ---
             for zone_name in zone_names:
+                
+                # CRITICAL FIX 1: Use the MAX pre-heat time for the current zone, 
+                # calculated in the new first pass. MOVED INSIDE ZONE LOOP.
+                preheat_to_use = max_preheat_per_zone.get(zone_name, required_preheat_minutes)
+                    
+                preheat_start_dt_local = start_dt_local - datetime.timedelta(minutes=preheat_to_use)
+                preheat_time_str = preheat_start_dt_local.strftime("%H:%M")
                 
                 # 1. Heat ON setpoint (at the calculated preheat start time)
                 zone_schedule[zone_name][preheat_start_dt_local.weekday()].append({
@@ -443,7 +443,7 @@ def create_aggregated_schedule(
                 # CRITICAL FIX 2: Ensure temp is float for safe comparison and storage
                 temp = float(sp["temp"]) 
 
-                 # Cast stored value to float for comparison if it exists
+                # Cast stored value to float for comparison if it exists
                 if time_str not in unique_setpoints or temp > float(unique_setpoints[time_str]):
                     unique_setpoints[time_str] = temp # Store the winning temperature as a float
 
@@ -567,38 +567,27 @@ def create_aggregated_schedule(
                         
                         # Find the time of the first ECO setpoint (E_first)
                         e_first = next((sp for sp in final_setpoints 
-                                        if float(sp['temp']) == ECO_TEMPERATURE and 
-                                        _time_string_to_minutes(sp['time']) > _time_string_to_minutes(c_first['time'])), 
-                                        None)
+                                         if float(sp['temp']) == ECO_TEMPERATURE and 
+                                         _time_string_to_minutes(sp['time']) > _time_string_to_minutes(c_first['time'])), 
+                                         None)
                         
                         # Find the time of the last Comfort setpoint (C_last)
                         c_last = next((sp for sp in reversed(final_setpoints) 
-                                        if float(sp['temp']) > ECO_TEMPERATURE and 
-                                        _time_string_to_minutes(sp['time']) < _time_string_to_minutes(e_last['time'])), 
-                                        None)
+                                         if float(sp['temp']) > ECO_TEMPERATURE and 
+                                         _time_string_to_minutes(sp['time']) < _time_string_to_minutes(e_last['time'])), 
+                                         None)
                         
                         # Ensure the essential four points exist to form a logical pattern
                         if e_first and c_last and c_first != e_last:
                             
-                            # The goal is to capture the two outer events (C_first/E_first and C_last/E_last)
-                            # and delete everything in between, leaving the heat on from E_first to C_last.
-                            
-                            # Simplified 4-setpoint structure:
-                            final_setpoints = [
-                                c_first,                            # 1. Start of the first event's heat
-                                e_last                              # 2. End of the final event's heat (Covers entire day)
-                            ]
-                            # If 4 points are required to match the profile template, we must force 4 events:
                             # The safest 4 points are the absolute boundaries of the two outermost events:
                             final_setpoints = [
-                                c_first,                                            # 1. First Heat ON
-                                e_first,                                            # 2. First ECO OFF
-                                c_last,                                             # 3. Last Heat ON
-                                e_last                                              # 4. Last ECO OFF
+                                c_first,    # 1. First Heat ON
+                                e_first,    # 2. First ECO OFF
+                                c_last,     # 3. Last Heat ON
+                                e_last      # 4. Last ECO OFF
                             ]
                             
-                            # Note: This 4-point model is better than the 2-point model as it maintains a minimum of two events,
-                            # which is a strong interpretation of "preserving the first and last events."
                             logging.warning(f"Fallback used: Reduced to 4 setpoints ({c_first['time']} to {e_last['time']}).")
                             
                         else:
@@ -638,10 +627,15 @@ def create_aggregated_schedule(
                             final_final_setpoints.append(last_sp)
                             
                     # ----------------------------------------------
+                    
+                    # --- 🚨 FINAL FIX: TIME SORTING ---
+                    # Ensure the final 6 setpoints are in chronological order for the NeoHub API
+                    final_final_setpoints.sort(key=lambda x: tuple(map(int, x["time"].split(':'))))
+                    logging.debug(f"OPTIMIZATION: Zone '{zone}' Day {day}: Final 6 setpoints sorted.")
+                    # -----------------------------------
 
 
                     # Now assign the guaranteed 6-point list back to the schedule structure
-                    # This is where your code likely performs the conversion and assignment:
                     zone_schedule[zone][day] = final_final_setpoints
 
     logging.info(f"AGGREGATION END: Successfully generated schedules for {len(zone_schedule)} NeoHub zones.")
