@@ -324,7 +324,6 @@ def create_aggregated_schedule(
     first_booking_id = bookings[0].get("id") if bookings else None
     
     # NEW STEP A: Determine the maximum required pre-heat time for every NeoHub Zone.
-    # This ensures that a zone is heated based on the event that requires the longest pre-heat.
     max_preheat_per_zone: Dict[str, int] = {}
     for location_name, location_config in config.get("locations", {}).items():
         for zone_name in location_config.get("zones", []):
@@ -482,8 +481,6 @@ def create_aggregated_schedule(
                 logging.debug(f"OPTIMIZATION: Zone '{zone}' Day {day}: Added default 00:00 ECO (No events).")
             
             # --- 5. Slot Limiting (Max 6) - Intelligent Consolidation ---
-            # Assuming 'optimized_setpoints' is the sorted list of all raw setpoints 
-            # (Comfort ON and ECO OFF points) before slot limiting.
             final_setpoints = optimized_setpoints
 
             if len(final_setpoints) > 6:
@@ -491,8 +488,6 @@ def create_aggregated_schedule(
                 indices_to_remove = set() 
                 
                 # --- 5.A. PRIORITY 1: Consolidate Shortest ECO Dips (C -> E -> C) ---
-                # Find all intermediate ECO points flanked by Comfort points.
-                # Sort by shortest duration (the length of the ECO dip).
                 eco_merger_candidates = [] # Stores: (duration_minutes, index)
                 
                 for i in range(1, len(final_setpoints) - 1):
@@ -531,8 +526,6 @@ def create_aggregated_schedule(
                     
                 
                 # --- 5.B. PRIORITY 2: Remove Redundant Comfort Points (Deduplication after Merge) ---
-                # This step specifically addresses the redundancy created by 5.A.
-                
                 temp_final_setpoints = []
                 
                 for i in range(len(intermediate_setpoints)):
@@ -544,8 +537,6 @@ def create_aggregated_schedule(
                         
                     last_sp = temp_final_setpoints[-1]
                     
-                    # If the current point is Comfort AND the previous retained point was also Comfort,
-                    # the current point is redundant and is now "wrapped" by the heating period.
                     if float(current_sp['temp']) > ECO_TEMPERATURE and float(last_sp['temp']) > ECO_TEMPERATURE:
                         continue # Skip this redundant Comfort point
                         
@@ -582,61 +573,66 @@ def create_aggregated_schedule(
                             
                             # The safest 4 points are the absolute boundaries of the two outermost events:
                             final_setpoints = [
-                                c_first,    # 1. First Heat ON
-                                e_first,    # 2. First ECO OFF
-                                c_last,     # 3. Last Heat ON
-                                e_last      # 4. Last ECO OFF
+                                c_first,        # 1. First Heat ON
+                                e_first,        # 2. First ECO OFF
+                                c_last,         # 3. Last Heat ON
+                                e_last          # 4. Last ECO OFF
                             ]
                             
-                            logging.warning(f"Fallback used: Reduced to 4 setpoints ({c_first['time']} to {e_last['time']}).")
+                            # 🚨 FIX 1: Enforce chronological sort here to fix non-ordered fallback list
+                            final_setpoints.sort(key=lambda x: tuple(map(int, x["time"].split(':'))))
+                            
+                            logging.warning(f"Fallback used: Reduced to 4 setpoints ({final_setpoints[0]['time']} to {final_setpoints[-1]['time']}).")
                             
                         else:
                             # If we cannot find all 4 points, we fail-safe by sending the smallest list possible:
                             final_setpoints = [c_first, e_last] if c_first and e_last else []
+                            # 🚨 FIX 2: Enforce chronological sort for the smallest list too
+                            final_setpoints.sort(key=lambda x: tuple(map(int, x["time"].split(':'))))
                     
                     else:
                         logging.error("Consolidation failed: Could not find required first Comfort or last ECO setpoints.")
-                        final_setpoints = optimized_setpoints 
-
-                    # 6. Final De-Duplication and Assignment (Cleanup)
-                    final_final_setpoints = []
-                    prev_temp = None
-
-                    for sp in final_setpoints: # 'final_setpoints' is the output of Step 5.C
-                        current_temp = float(sp["temp"]) 
-                        if current_temp != prev_temp:
-                            final_final_setpoints.append(sp)
-                            prev_temp = current_temp
+                        # final_setpoints remains optimized_setpoints if consolidation failed above
                         
-                    # Truncate to the maximum of 6 slots if necessary
-                    final_final_setpoints = final_final_setpoints[:6]
+                # 6. Final De-Duplication and Assignment (Cleanup) - Must be run again on the consolidated list
+                final_final_setpoints = []
+                prev_temp = None
 
-
-                    # --- 🚨 REQUIRED FIX: PADDING TO 6 SLOTS ---
-                    # The NeoHub API requires exactly 6 setpoints (wake, level1..sleep)
-                    if len(final_final_setpoints) < 6:
-                        if not final_final_setpoints:
-                            # Fallback for an absolutely empty schedule (should not happen with 00:00 ECO default)
-                            last_sp = {'time': '00:00', 'temp': ECO_TEMPERATURE} 
-                        else:
-                            # The last setpoint in the cleaned list should be used to fill the remaining slots
-                            last_sp = final_final_setpoints[-1]
-
-                        # Pad the list until it reaches length 6 by repeating the last setpoint
-                        while len(final_final_setpoints) < 6:
-                            final_final_setpoints.append(last_sp)
-                            
-                    # ----------------------------------------------
+                for sp in final_setpoints: # 'final_setpoints' is the output of Step 5.C
+                    current_temp = float(sp["temp"]) 
+                    if current_temp != prev_temp:
+                        final_final_setpoints.append(sp)
+                        prev_temp = current_temp
                     
-                    # --- 🚨 FINAL FIX: TIME SORTING ---
-                    # Ensure the final 6 setpoints are in chronological order for the NeoHub API
-                    final_final_setpoints.sort(key=lambda x: tuple(map(int, x["time"].split(':'))))
-                    logging.debug(f"OPTIMIZATION: Zone '{zone}' Day {day}: Final 6 setpoints sorted.")
-                    # -----------------------------------
+                # Truncate to the maximum of 6 slots if necessary
+                final_final_setpoints = final_final_setpoints[:6]
 
 
-                    # Now assign the guaranteed 6-point list back to the schedule structure
-                    zone_schedule[zone][day] = final_final_setpoints
+                # --- 🚨 REQUIRED FIX: PADDING TO 6 SLOTS ---
+                # The NeoHub API requires exactly 6 setpoints (wake, level1..sleep)
+                if len(final_final_setpoints) < 6:
+                    if not final_final_setpoints:
+                        # Fallback for an absolutely empty schedule (should not happen with 00:00 ECO default)
+                        last_sp = {'time': '00:00', 'temp': ECO_TEMPERATURE} 
+                    else:
+                        # The last setpoint in the cleaned list should be used to fill the remaining slots
+                        last_sp = final_final_setpoints[-1]
+
+                    # Pad the list until it reaches length 6 by repeating the last setpoint
+                    while len(final_final_setpoints) < 6:
+                        final_final_setpoints.append(last_sp)
+                        
+                # ----------------------------------------------
+                
+                # --- 🚨 FINAL FIX: TIME SORTING ---
+                # Ensure the final 6 setpoints are in chronological order for the NeoHub API
+                final_final_setpoints.sort(key=lambda x: tuple(map(int, x["time"].split(':'))))
+                logging.debug(f"OPTIMIZATION: Zone '{zone}' Day {day}: Final 6 setpoints sorted.")
+                # -----------------------------------
+
+
+                # Now assign the guaranteed 6-point list back to the schedule structure
+                zone_schedule[zone][day] = final_final_setpoints
 
     logging.info(f"AGGREGATION END: Successfully generated schedules for {len(zone_schedule)} NeoHub zones.")
     return zone_schedule
