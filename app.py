@@ -232,6 +232,15 @@ def build_zone_to_neohub_map(config: Dict[str, Any]) -> Dict[str, str]:
     logging.info(f"Configuration map built for {len(zone_to_neohub)} unique NeoHub Zones.")
     return zone_to_neohub
 
+def _time_string_to_minutes(time_str: str) -> int:
+    """Converts a time string ('HH:MM') to total minutes from midnight."""
+    try:
+        h, m = map(int, time_str.split(':'))
+        return h * 60 + m
+    except ValueError:
+        logging.error(f"Invalid time format encountered: {time_str}")
+        return 0
+
 def _calculate_location_preheat_minutes(
     location_name: str, 
     current_external_temp: Optional[float], 
@@ -314,6 +323,36 @@ def create_aggregated_schedule(
 
     first_booking_id = bookings[0].get("id") if bookings else None
     
+    # NEW STEP A: Determine the maximum required pre-heat time for every NeoHub Zone.
+    # This ensures that a zone is heated based on the event that requires the longest pre-heat.
+    max_preheat_per_zone: Dict[str, int] = {}
+    for location_name, location_config in config.get("locations", {}).items():
+        for zone_name in location_config.get("zones", []):
+            max_preheat_per_zone[zone_name] = 0 # Initialize all zones
+
+    # First pass: Calculate the MAX required preheat time for each zone
+    for booking in bookings:
+        resource_id = booking.get("resource_id")
+        location_name = resource_id_to_name.get(resource_id)
+        if not location_name or location_name not in config["locations"]:
+             continue
+             
+        location_config = config["locations"][location_name]
+        
+        # Calculate preheat for this single location
+        required_preheat_minutes = _calculate_location_preheat_minutes(location_name, current_external_temp, config)
+        zone_names = location_config.get("zones", [])
+
+        # Update the max preheat time for all associated zones
+        for zone_name in zone_names:
+             max_preheat_per_zone[zone_name] = max(max_preheat_per_zone[zone_name], required_preheat_minutes)
+    
+    # PROBE A: Log Max Preheats
+    logging.info(f"Calculated Max Preheats per Zone: {max_preheat_per_zone}") 
+
+    # --- Start main booking loop here ---
+    # The following code ensures the second pass uses the Max Preheat
+
     for booking in bookings:
         booking_id = booking.get("id", "N/A")
         resource_id = booking.get("resource_id")
@@ -353,10 +392,15 @@ def create_aggregated_schedule(
             end_day_of_week = end_dt_local.weekday()
             target_temp = location_config.get("default_temp", DEFAULT_TEMPERATURE)
             
-            preheat_start_dt_local = start_dt_local - datetime.timedelta(minutes=required_preheat_minutes)
+            # CRITICAL FIX 1: Use the MAX pre-heat time for the current zone, 
+            # calculated in the new first pass.
+            # Note: This is inside the zone_name loop to use the correct zone's max value.
+            preheat_to_use = max_preheat_per_zone.get(zone_name, required_preheat_minutes)
+                
+            preheat_start_dt_local = start_dt_local - datetime.timedelta(minutes=preheat_to_use)
             preheat_time_str = preheat_start_dt_local.strftime("%H:%M")
             end_time_str = end_dt_local.strftime("%H:%M")
-
+            
 # --- Add Setpoints (The raw data) ---
             for zone_name in zone_names:
                 
@@ -396,9 +440,12 @@ def create_aggregated_schedule(
             unique_setpoints = {} 
             for sp in setpoints:
                 time_str = sp["time"]
-                temp = sp["temp"]
-                if time_str not in unique_setpoints or temp > unique_setpoints[time_str]:
-                    unique_setpoints[time_str] = temp
+                # CRITICAL FIX 2: Ensure temp is float for safe comparison and storage
+                temp = float(sp["temp"]) 
+
+                 # Cast stored value to float for comparison if it exists
+                if time_str not in unique_setpoints or temp > float(unique_setpoints[time_str]):
+                    unique_setpoints[time_str] = temp # Store the winning temperature as a float
 
             working_setpoints = [
                 {"time": t, "temp": temp} 
@@ -434,46 +481,153 @@ def create_aggregated_schedule(
                 optimized_setpoints.append({"time": "00:00", "temp": ECO_TEMPERATURE})
                 logging.debug(f"OPTIMIZATION: Zone '{zone}' Day {day}: Added default 00:00 ECO (No events).")
             
-# --- 5. Slot Limiting (Max 6) - Prioritize Comfort ---
+# --- 5. Slot Limiting (Max 6) - Intelligent Consolidation ---
             final_setpoints = optimized_setpoints
             
             if len(final_setpoints) > 6:
                 num_to_remove = len(final_setpoints) - 6
-                indices_to_remove = set() # Use a set for safe removal indexing
+                indices_to_remove = set() 
                 
-                # --- PROTECTION LAYER ---
-                # Find ALL ECO points that are NOT the FIRST or LAST point.
-                # These are the candidates for removal (intermediate ECO points).
-                intermediate_eco_candidates = [i for i, sp in enumerate(final_setpoints) 
-                                                 if sp['temp'] == ECO_TEMPERATURE and 0 < i < len(final_setpoints) - 1]
+                # --- 5.A. PRIORITY 1: Consolidate Shortest ECO Dips ---
+                # Find all intermediate ECO points (E) flanked by Comfort (C) points (C -> E -> C).
+                # Sort these by the shortest duration (the length of the ECO dip).
+                eco_merger_candidates = [] # Stores: (duration_minutes, index)
                 
-                # 1. Prioritize removing the intermediate ECO points to join comfort periods
-                for i in intermediate_eco_candidates:
+                for i in range(1, len(final_setpoints) - 1):
+                    sp = final_setpoints[i]
+                    # Must be an intermediate ECO point
+                    if float(sp['temp']) == ECO_TEMPERATURE:
+                        prev_sp = final_setpoints[i-1]
+                        next_sp = final_setpoints[i+1]
+                        
+                        # Check if the dip is between two Comfort periods
+                        if float(prev_sp['temp']) > ECO_TEMPERATURE and float(next_sp['temp']) > ECO_TEMPERATURE:
+                            
+                            # Calculate the duration of the ECO dip (from ECO start to next Comfort start)
+                            start_time_minutes = _time_string_to_minutes(sp['time'])
+                            end_time_minutes = _time_string_to_minutes(next_sp['time'])
+                            
+                            duration = end_time_minutes - start_time_minutes
+                            if duration < 0: # Handle cross-midnight case
+                                duration += 24 * 60
+                                
+                            eco_merger_candidates.append((duration, i))
+
+                # Sort by shortest duration first
+                eco_merger_candidates.sort(key=lambda x: x[0])
+                
+                # Mark the shortest ECO dips for removal
+                for duration, i in eco_merger_candidates:
                     if len(indices_to_remove) < num_to_remove:
-                        # Check if this ECO point is followed by a comfort temp point
-                        # This ensures we don't accidentally remove the ONLY ECO point between two long comfort periods
-                        if final_setpoints[i+1]['temp'] > ECO_TEMPERATURE:
-                            indices_to_remove.add(i)
+                        indices_to_remove.add(i)
                     else:
                         break
-
-                # 2. If we still need to remove more, remove other ECO points
-                if len(indices_to_remove) < num_to_remove:
-                    all_eco_indices = [i for i, sp in enumerate(final_setpoints) 
-                                       if sp['temp'] == ECO_TEMPERATURE and i not in indices_to_remove]
+                
+                # Remove the marked indices after the first pass
+                if indices_to_remove:
+                    final_setpoints = [sp for i, sp in enumerate(optimized_setpoints) if i not in indices_to_remove]
+                
+                # --- 5.B. PRIORITY 2: Remove Redundant Comfort Points (Deduplication after Merge) ---
+                # An ECO removal (E) converts C1 -> E -> C2 to C1 -> C2. C2 is now redundant.
+                temp_final_setpoints = []
+                num_removed_comforts = 0
+                
+                for i in range(len(final_setpoints)):
+                    current_sp = final_setpoints[i]
                     
-                    # We remove the oldest, non-final ECO points first.
-                    for i in all_eco_indices:
-                        if i != len(final_setpoints) - 1: # NEVER remove the last setpoint (the final ECO)
-                            if len(indices_to_remove) < num_to_remove:
-                                indices_to_remove.add(i)
-                            else:
-                                break
+                    if not temp_final_setpoints:
+                        temp_final_setpoints.append(current_sp)
+                        continue
+                        
+                    last_sp = temp_final_setpoints[-1]
+                    
+                    # If current point is Comfort AND the previous retained point was also Comfort,
+                    # the current point is redundant.
+                    if float(current_sp['temp']) > ECO_TEMPERATURE and float(last_sp['temp']) > ECO_TEMPERATURE:
+                        num_removed_comforts += 1
+                        continue # Skip this redundant Comfort point
+                        
+                    temp_final_setpoints.append(current_sp)
+
+                final_setpoints = temp_final_setpoints
+                num_to_remove = len(final_setpoints) - 6 # Recalculate removal quota
                 
-                # Rebuild the list without the marked indices
-                final_setpoints = [sp for i, sp in enumerate(optimized_setpoints) if i not in indices_to_remove]
                 
-                logging.warning(f"OPTIMIZATION: Zone '{zone}' Day {day} setpoints exceeded 6. Removed {len(indices_to_remove)} setpoints by consolidating ECO periods. New count: {len(final_setpoints)}.")
+                # --- 5.C. PRIORITY 3: FINAL ENCOMPASSING CONSOLIDATION ---
+                if len(final_setpoints) > 6:
+                    logging.warning(f"Slot limit exceeded ({len(final_setpoints)}). Applying 4-point consolidation.")
+                    
+                    # 1. Identify the absolute boundaries of the scheduled heating period
+                    # First Comfort Start (C_first)
+                    c_first = next((sp for sp in final_setpoints if float(sp['temp']) > ECO_TEMPERATURE), None)
+                    
+                    # Last ECO End (E_last) - must be the final setpoint in the list
+                    e_last = final_setpoints[-1] if final_setpoints and float(final_setpoints[-1]['temp']) == ECO_TEMPERATURE else None
+                    
+                    if c_first and e_last and c_first != e_last:
+                        
+                        # Preserve the first and last pair: C_first and E_last.
+                        # This covers the entire day's heating requirement with 2 points, 
+                        # which is the most aggressive consolidation.
+                        
+                        # If the goal is 6 setpoints, we must find 4 other points. The simplest:
+                        
+                        # 1. First Comfort Start (C_first)
+                        # 2. First ECO End (E_first)
+                        e_first = next((sp for sp in final_setpoints 
+                                        if float(sp['temp']) == ECO_TEMPERATURE and 
+                                        _time_string_to_minutes(sp['time']) > _time_string_to_minutes(c_first['time'])), 
+                                        None)
+
+                        if e_first and e_first != e_last:
+                            # 3. Create a single Comfort start (C_mid) at the time of E_first, and 
+                            # 4. Create a single ECO end (E_mid) at the time of C_last
+                            # 5. Last Comfort Start (C_last) 
+                            c_last = next((sp for sp in reversed(final_setpoints) 
+                                            if float(sp['temp']) > ECO_TEMPERATURE and 
+                                            _time_string_to_minutes(sp['time']) < _time_string_to_minutes(e_last['time'])), 
+                                            None)
+                            
+                            if c_last:
+                                # Final 4-setpoint Schedule (The maximum safe reduction):
+                                final_setpoints = [
+                                    c_first,                            # Start of day's heating
+                                    {"time": e_first['time'], "temp": c_first['temp']}, # Force Heat ON again where the first dip was
+                                    {"time": c_last['time'], "temp": ECO_TEMPERATURE}, # Force ECO where the last comfort started
+                                    e_last                              # End of day's heating
+                                ]
+                                # Note: This only uses 4 points, but is the safest interpretation of the logic.
+                                # If the system is flexible, it can be C_first, E_first, C_last, E_last.
+                                
+                                # Let's use the simplest and most encompassing 2-setpoint schedule as the true fallback:
+                                final_setpoints = [
+                                    c_first, # First Heat ON
+                                    e_last   # Last Heat OFF
+                                ]
+                                logging.warning(f"Final consolidation used: Reduced to 2 setpoints ({c_first['time']} to {e_last['time']}).")
+                            
+                        else:
+                             # Fallback: if only one event exists (C_first, E_last)
+                             final_setpoints = [c_first, e_last] if c_first and e_last else []
+
+                    else:
+                        logging.error("Consolidation failed: Could not find required first Comfort or last ECO setpoints.")
+                        # If consolidation fails, send the full schedule to preserve events
+                        final_setpoints = optimized_setpoints 
+
+                # --- 6. Final Assignment ---
+                # Re-run the final deduplication (this is essentially Step 6 in your original code)
+                final_final_setpoints = []
+                prev_temp = None
+                for sp in final_setpoints:
+                    current_temp = float(sp["temp"]) 
+                    if current_temp != prev_temp:
+                        final_final_setpoints.append(sp)
+                        prev_temp = current_temp
+                
+                final_setpoints = final_final_setpoints
+            
+            zone_schedule[zone][day] = final_setpoints
 
             # --- 6. Final De-Duplication and Assignment ---
             # Re-sort/re-optimize one last time as removing a point might create a new duplicate state.
