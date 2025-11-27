@@ -232,15 +232,6 @@ def build_zone_to_neohub_map(config: Dict[str, Any]) -> Dict[str, str]:
     logging.info(f"Configuration map built for {len(zone_to_neohub)} unique NeoHub Zones.")
     return zone_to_neohub
 
-def _time_string_to_minutes(time_str: str) -> int:
-    """Converts a time string ('HH:MM') to total minutes from midnight."""
-    try:
-        h, m = map(int, time_str.split(':'))
-        return h * 60 + m
-    except ValueError:
-        logging.error(f"Invalid time format encountered: {time_str}")
-        return 0
-
 def _calculate_location_preheat_minutes(
     location_name: str, 
     current_external_temp: Optional[float], 
@@ -299,12 +290,73 @@ def create_aggregated_schedule(
 ) -> Dict[str, Dict[int, List[Dict[str, Union[str, float]]]]]:
     """
     Processes ChurchSuite bookings to create a single, aggregated heating schedule 
-    for each NeoHub Zone, incorporating setpoint optimization and slot limiting.
+    for each NeoHub Zone by consolidating overlapping periods.
     """
     
-    # Final schedule structure: { zone_name: { day_of_week_index: [setpoints] } }
+    # --- HELPER FUNCTIONS (Defined locally for robust time arithmetic) ---
+    def _time_string_to_minutes(time_str: str) -> int:
+        h, m = map(int, time_str.split(':'))
+        return h * 60 + m
+
+    def _minutes_to_time_string(minutes: int) -> str:
+        minutes %= (24 * 60)
+        h = minutes // 60
+        m = minutes % 60
+        return f"{h:02d}:{m:02d}"
+        
+    def _consolidate_periods(periods: List[Dict[str, Any]], eco_temp: float) -> List[Dict[str, Any]]:
+        """Consolidates a list of heating periods into a minimal, non-overlapping set."""
+        if not periods:
+            return []
+
+        # 1. Sort periods by start time
+        periods.sort(key=lambda p: _time_string_to_minutes(p["start"]))
+        
+        merged = []
+        
+        # Initialize the first merged period using minutes
+        current_start_min = _time_string_to_minutes(periods[0]["start"])
+        current_end_min = _time_string_to_minutes(periods[0]["end"])
+        current_temp = periods[0]["temp"]
+
+        for i in range(1, len(periods)):
+            next_period = periods[i]
+            next_start_min = _time_string_to_minutes(next_period["start"])
+            next_end_min = _time_string_to_minutes(next_period["end"])
+            
+            # Check for overlap or touch: next start is before or equal to current end
+            if next_start_min <= current_end_min:
+                # Overlap or touch: Merge them
+                current_end_min = max(current_end_min, next_end_min)
+                current_temp = max(current_temp, next_period["temp"]) # Take the highest required temp
+            else:
+                # Gap found: Finalize the current merged period
+                merged.append({
+                    "start": _minutes_to_time_string(current_start_min),
+                    "end": _minutes_to_time_string(current_end_min),
+                    "temp": current_temp
+                })
+                
+                # Start a new merged period
+                current_start_min = next_start_min
+                current_end_min = next_end_min
+                current_temp = next_period["temp"]
+                
+        # Add the last merged period
+        merged.append({
+            "start": _minutes_to_time_string(current_start_min),
+            "end": _minutes_to_time_string(current_end_min),
+            "temp": current_temp
+        })
+        
+        return merged
+    # --- END HELPER FUNCTIONS ---
+
+
+    # Schedule structure now holds Periods: { zone: { day: [ {start: str, end: str, temp: float} ] } }
     zone_schedule: Dict[str, Dict[int, List[Dict[str, Union[str, float]]]]] = {}
     
+    # ... (Initialization logic remains the same) ...
     logging.info(f"AGGREGATION START: Processing {len(bookings)} bookings.")
     
     # 1. Initialize schedule structure for all zones/days
@@ -313,279 +365,150 @@ def create_aggregated_schedule(
             if zone_name not in zone_schedule:
                 zone_schedule[zone_name] = {i: [] for i in range(7)}
     
+    # Handle empty bookings list
     if not bookings:
         logging.info("AGGREGATION END: Bookings list was empty. Returning fully optimized ECO default schedule.")
-        # If no bookings, we manually inject the 00:00 ECO to all days/zones for resilience
+        # Create a compliant 6-slot ECO schedule for all days/zones
+        eco_schedule = [{'time': '00:00', 'temp': ECO_TEMPERATURE}] * 6
         for zone, daily_schedule in zone_schedule.items():
             for day in range(7):
-                zone_schedule[zone][day].append({"time": "00:00", "temp": ECO_TEMPERATURE})
+                zone_schedule[zone][day] = eco_schedule
         return zone_schedule
 
-    first_booking_id = bookings[0].get("id") if bookings else None
-    
-    # NEW STEP A: Determine the maximum required pre-heat time for every NeoHub Zone.
+
+    # ... (Max preheat calculation logic remains the same) ...
     max_preheat_per_zone: Dict[str, int] = {}
     for location_name, location_config in config.get("locations", {}).items():
         for zone_name in location_config.get("zones", []):
-            max_preheat_per_zone[zone_name] = 0 # Initialize all zones
-
-    # First pass: Calculate the MAX required preheat time for each zone
+            max_preheat_per_zone[zone_name] = 0
+    
     for booking in bookings:
         resource_id = booking.get("resource_id")
         location_name = resource_id_to_name.get(resource_id)
         if not location_name or location_name not in config["locations"]:
             continue
-            
         location_config = config["locations"][location_name]
-        
-        # Calculate preheat for this single location
         required_preheat_minutes = _calculate_location_preheat_minutes(location_name, current_external_temp, config)
         zone_names = location_config.get("zones", [])
-
-        # Update the max preheat time for all associated zones
         for zone_name in zone_names:
             max_preheat_per_zone[zone_name] = max(max_preheat_per_zone[zone_name], required_preheat_minutes)
     
-    # PROBE A: Log Max Preheats
     logging.info(f"Calculated Max Preheats per Zone: {max_preheat_per_zone}") 
 
-    # --- Start main booking loop here ---
+    # --- Start main booking loop: GENERATE PERIODS ---
     for booking in bookings:
         booking_id = booking.get("id", "N/A")
         resource_id = booking.get("resource_id")
         
-        # ... (Unchanged pre-processing logic) ...
+        # ... (Unchanged pre-processing logic to get location, config, etc.) ...
         location_name = resource_id_to_name.get(resource_id)
-        if not location_name:
-            logging.warning(f"Skipping booking ID {booking_id}: Resource ID {resource_id} not found in the resource map. Check ChurchSuite data.")
+        if not location_name or location_name not in config["locations"]:
             continue
-        
-        if location_name not in config["locations"]:
-            location_config = None
-            for cfg_name, cfg in config["locations"].items():
-                if location_name == cfg_name or location_name in cfg.get("aliases", []):
-                    location_config = cfg
-                    location_name = cfg_name
-                    break
-            if not location_config:
-                logging.warning(f"Skipping booking ID {booking_id}: No config found for location '{location_name}'.")
-                continue
-        
         location_config = config["locations"][location_name]
-
-        required_preheat_minutes = _calculate_location_preheat_minutes(location_name, current_external_temp, config)
         zone_names = location_config.get("zones", [])
 
         try:
-            # CRITICAL TIME PARSING
             start_dt_utc = dateutil.parser.parse(booking["starts_at"])
             end_dt_utc = dateutil.parser.parse(booking["ends_at"])
             
             local_tz = pytz.timezone(TIMEZONE) 
             start_dt_local = start_dt_utc.astimezone(local_tz).replace(tzinfo=None)
             end_dt_local = end_dt_utc.astimezone(local_tz).replace(tzinfo=None)
-
-            start_day_of_week = start_dt_local.weekday()
-            end_day_of_week = end_dt_local.weekday()
             target_temp = location_config.get("default_temp", DEFAULT_TEMPERATURE)
             
-            end_time_str = end_dt_local.strftime("%H:%M")
-            
-            # --- Add Setpoints (The raw data) ---
             for zone_name in zone_names:
                 
-                # CRITICAL FIX 1: Use the MAX pre-heat time for the current zone
-                preheat_to_use = max_preheat_per_zone.get(zone_name, required_preheat_minutes)
-                    
+                preheat_to_use = max_preheat_per_zone.get(zone_name, 0)
                 preheat_start_dt_local = start_dt_local - datetime.timedelta(minutes=preheat_to_use)
-                preheat_time_str = preheat_start_dt_local.strftime("%H:%M")
                 
-                # 1. Heat ON setpoint (at the calculated preheat start time)
-                zone_schedule[zone_name][preheat_start_dt_local.weekday()].append({
-                    "time": preheat_time_str, "temp": target_temp
-                })
+                # --- CRITICAL: PERIOD GENERATION (Handles Midnight Spanning) ---
                 
-                # 2. ECO OFF setpoint (at the event end time)
-                zone_schedule[zone_name][end_day_of_week].append({
-                    "time": end_time_str, "temp": ECO_TEMPERATURE
-                })
+                preheat_start_day = preheat_start_dt_local.weekday()
+                event_end_day = end_dt_local.weekday()
                 
-                # CRITICAL FIX: Explicitly ensure high temperature state is carried over to the next day.
-                if preheat_start_dt_local.day != start_dt_local.day:
-                    # Inject a 00:00 setpoint on the event day (Sunday) to maintain the preheat target.
-                    zone_schedule[zone_name][start_day_of_week].append({
-                        "time": "00:00", 
-                        "temp": target_temp 
-                    })
-                    logging.debug(
-                        f"PROBE H (Cross-Midnight Preheat Fix): Zone '{zone_name}' Day {start_day_of_week}: "
-                        f"Added 00:00 setpoint to maintain preheat from prior day."
-                    )
+                # Case 1: Period starts and ends on the same calendar day
+                if preheat_start_dt_local.date() == end_dt_local.date():
                     
+                    period = {
+                        "start": preheat_start_dt_local.strftime("%H:%M"),
+                        "end": end_dt_local.strftime("%H:%M"),
+                        "temp": target_temp
+                    }
+                    zone_schedule[zone_name][preheat_start_day].append(period)
+
+                # Case 2: Period spans midnight (starts on one day, ends on the next)
+                else:
+                    # Period 1: Start time until 23:59 on the start day
+                    period_1 = {
+                        "start": preheat_start_dt_local.strftime("%H:%M"),
+                        "end": "23:59", # Using 23:59 is safer than 00:00 for the end point of the day
+                        "temp": target_temp
+                    }
+                    zone_schedule[zone_name][preheat_start_day].append(period_1)
+
+                    # Period 2: 00:00 until end time on the end day
+                    period_2 = {
+                        "start": "00:00",
+                        "end": end_dt_local.strftime("%H:%M"),
+                        "temp": target_temp
+                    }
+                    zone_schedule[zone_name][event_end_day].append(period_2)
+                    
+                    logging.debug(
+                        f"PROBE H (Cross-Midnight Period): Zone '{zone_name}' ID {booking_id} split from "
+                        f"{period_1['start']} (Day {preheat_start_day}) to "
+                        f"{period_2['end']} (Day {event_end_day})."
+                    )
+
         except (KeyError, ValueError, TypeError) as e:
             logging.error(f"Error processing booking for {location_name} (ID {booking_id}): {e}.", exc_info=True)
             continue
             
-    # --- Post-processing: Sort, Merge, Optimize, and Limit ---
-    logging.info("POST-PROCESSING START: Sorting, merging, optimizing, and limiting setpoints.")
+    # --- Post-processing: CONSOLIDATE PERIODS & GENERATE FINAL SETPOINTS ---
+    logging.info("POST-PROCESSING START: Consolidating heating periods and generating setpoints.")
     
     for zone, daily_schedule in zone_schedule.items():
-        for day, setpoints in daily_schedule.items():
+        for day, periods in daily_schedule.items():
             
-            # 1. Merge and Sort (Unique setpoints, max temp priority)
-            unique_setpoints = {} 
-            for sp in setpoints:
-                time_str = sp["time"]
-                # CRITICAL FIX 2: Ensure temp is float for safe comparison and storage
-                temp = float(sp["temp"]) 
-
-                # Cast stored value to float for comparison if it exists
-                if time_str not in unique_setpoints or temp > float(unique_setpoints[time_str]):
-                    unique_setpoints[time_str] = temp # Store the winning temperature as a float
-
-            working_setpoints = [
-                {"time": t, "temp": temp} 
-                for t, temp in unique_setpoints.items()
-            ]
-            working_setpoints.sort(key=lambda x: _time_string_to_minutes(x["time"]))
-
-            # --- 2. Cross-Midnight 00:00 ECO Removal (CRITICAL FIX) ---
-            if len(working_setpoints) > 1 and \
-               working_setpoints[0]["time"] == "00:00" and \
-               working_setpoints[0]["temp"] == ECO_TEMPERATURE:
-                
-                working_setpoints.pop(0)
-                logging.debug(f"OPTIMIZATION: Zone '{zone}' Day {day}: Removed 00:00 ECO to preserve previous day's heating.")
-
-            # --- 3. De-Duplication Optimization (Remove redundant state changes) ---
-            optimized_setpoints = []
+            # 1. Consolidate all periods for the day
+            consolidated_periods = _consolidate_periods(periods, ECO_TEMPERATURE)
             
-            for sp in working_setpoints:
-                if not optimized_setpoints:
-                    optimized_setpoints.append(sp)
-                elif sp["temp"] != optimized_setpoints[-1]["temp"]:
-                    optimized_setpoints.append(sp)
+            # 2. Convert Consolidated Periods into a list of raw Setpoints (ON/OFF pairs)
+            raw_setpoints: List[Dict[str, Union[str, float]]] = []
             
-            # --- 4. Conditional 00:00 ECO Insertion (Resilience for empty days) ---
-            if not optimized_setpoints:
-                optimized_setpoints.append({"time": "00:00", "temp": ECO_TEMPERATURE})
-                logging.debug(f"OPTIMIZATION: Zone '{zone}' Day {day}: Added default 00:00 ECO (No events).")
+            # If the consolidated list is empty, just add a 00:00 ECO default
+            if not consolidated_periods:
+                raw_setpoints.append({"time": "00:00", "temp": ECO_TEMPERATURE})
             
-            # --- 5. Slot Limiting (Max 6) - Intelligent Consolidation ---
-            final_setpoints = optimized_setpoints
+            for p in consolidated_periods:
+                # Add Heat ON point
+                raw_setpoints.append({"time": p["start"], "temp": p["temp"]})
+                
+                # Add ECO OFF point (only if the end time is not 00:00 or 23:59)
+                # If end is 23:59, we rely on the next day's 00:00 being ECO, 
+                # or the consolidation process carrying the heat over.
+                if p["end"] != "23:59":
+                    raw_setpoints.append({"time": p["end"], "temp": ECO_TEMPERATURE})
 
-            if len(final_setpoints) > 6:
-                num_to_remove = len(final_setpoints) - 6
-                indices_to_remove = set() 
-                
-                # --- 5.A. PRIORITY 1: Consolidate Shortest ECO Dips (C -> E -> C) ---
-                eco_merger_candidates = [] # Stores: (duration_minutes, index)
-                
-                for i in range(1, len(final_setpoints) - 1):
-                    sp = final_setpoints[i]
-                    
-                    # Check for intermediate ECO point
-                    if float(sp['temp']) == ECO_TEMPERATURE:
-                        prev_sp = final_setpoints[i-1]
-                        next_sp = final_setpoints[i+1]
-                        
-                        if float(prev_sp['temp']) > ECO_TEMPERATURE and float(next_sp['temp']) > ECO_TEMPERATURE:
-                            
-                            start_time_minutes = _time_string_to_minutes(sp['time'])
-                            end_time_minutes = _time_string_to_minutes(next_sp['time'])
-                            duration = (end_time_minutes - start_time_minutes) % (24 * 60) # Modulo handles cross-midnight
-                                
-                            eco_merger_candidates.append((duration, i))
+            # --- 3. Final Compliance Steps (Deduplication, Padding, Sort) ---
 
-                eco_merger_candidates.sort(key=lambda x: x[0])
-                
-                for duration, i in eco_merger_candidates:
-                    if len(indices_to_remove) < num_to_remove:
-                        indices_to_remove.add(i)
-                    else:
-                        break
-
-                if indices_to_remove:
-                    intermediate_setpoints = [sp for i, sp in enumerate(optimized_setpoints) if i not in indices_to_remove]
-                else:
-                    intermediate_setpoints = final_setpoints
-                    
-                
-                # --- 5.B. PRIORITY 2: Remove Redundant Comfort Points (Deduplication after Merge) ---
-                temp_final_setpoints = []
-                
-                for i in range(len(intermediate_setpoints)):
-                    current_sp = intermediate_setpoints[i]
-                    
-                    if not temp_final_setpoints:
-                        temp_final_setpoints.append(current_sp)
-                        continue
-                        
-                    last_sp = temp_final_setpoints[-1]
-                    
-                    if float(current_sp['temp']) > ECO_TEMPERATURE and float(last_sp['temp']) > ECO_TEMPERATURE:
-                        continue
-                        
-                    temp_final_setpoints.append(current_sp)
-
-                final_setpoints = temp_final_setpoints
-                num_to_remove = len(final_setpoints) - 6 
-                
-                
-                # --- 5.C. PRIORITY 3: Preserve Boundaries and Encompass Central Events ---
-                if len(final_setpoints) > 6:
-                    logging.warning(f"Slot limit still exceeded ({len(final_setpoints)}). Applying 4-point consolidation fallback.")
-                    
-                    c_first = next((sp for sp in final_setpoints if float(sp['temp']) > ECO_TEMPERATURE), None)
-                    e_last = final_setpoints[-1] if final_setpoints and float(final_setpoints[-1]['temp']) == ECO_TEMPERATURE else None
-                    
-                    if c_first and e_last and c_first != e_last:
-                        
-                        e_first = next((sp for sp in final_setpoints 
-                                         if float(sp['temp']) == ECO_TEMPERATURE and 
-                                         _time_string_to_minutes(sp['time']) > _time_string_to_minutes(c_first['time'])), 
-                                         None)
-                        
-                        c_last = next((sp for sp in reversed(final_setpoints) 
-                                         if float(sp['temp']) > ECO_TEMPERATURE and 
-                                         _time_string_to_minutes(sp['time']) < _time_string_to_minutes(e_last['time'])), 
-                                         None)
-                        
-                        if e_first and c_last and c_first != e_last:
-                            
-                            final_setpoints = [c_first, e_first, c_last, e_last]
-                            
-                            # FIX 1: Enforce chronological sort here to fix non-ordered fallback list (Kept from last turn)
-                            final_setpoints.sort(key=lambda x: _time_string_to_minutes(x["time"]))
-                            
-                            logging.warning(f"Fallback used: Reduced to 4 setpoints ({final_setpoints[0]['time']} to {final_setpoints[-1]['time']}).")
-                            
-                        else:
-                            final_setpoints = [c_first, e_last] if c_first and e_last else []
-                            # FIX 2: Enforce chronological sort for the smallest list too (Kept from last turn)
-                            final_setpoints.sort(key=lambda x: _time_string_to_minutes(x["time"]))
-                    
-                    else:
-                        logging.error("Consolidation failed: Could not find required first Comfort or last ECO setpoints.")
-                        
-            # <--- 🚨 CRITICAL FIX: The logic below is now outside the 'if len(final_setpoints) > 6:' block. 🚨 --->
-            
-            # 6. Final De-Duplication (Cleanup)
+            # A. Final De-Duplication (Remove redundant state changes)
             final_final_setpoints = []
-            prev_temp = None
-
-            for sp in final_setpoints: # 'final_setpoints' is either optimized_setpoints or the consolidated list
-                current_temp = float(sp["temp"]) 
-                if current_temp != prev_temp:
+            
+            # First, sort the generated raw setpoints to handle points generated from the periods
+            raw_setpoints.sort(key=lambda x: _time_string_to_minutes(x["time"]))
+            
+            for sp in raw_setpoints:
+                if not final_final_setpoints:
                     final_final_setpoints.append(sp)
-                    prev_temp = current_temp
-                
-            # Truncate to the maximum of 6 slots
+                elif sp["temp"] != final_final_setpoints[-1]["temp"]:
+                    final_final_setpoints.append(sp)
+
+            # B. Truncate to the maximum of 6 slots
             final_final_setpoints = final_final_setpoints[:6]
 
 
-            # --- PADDING TO 6 SLOTS ---
-            # The NeoHub API requires exactly 6 setpoints (wake, level1..sleep)
+            # C. PADDING TO 6 SLOTS
             if len(final_final_setpoints) < 6:
                 if not final_final_setpoints:
                     last_sp = {'time': '00:00', 'temp': ECO_TEMPERATURE} 
@@ -595,18 +518,13 @@ def create_aggregated_schedule(
                 # Pad the list until it reaches length 6 by repeating the last setpoint
                 while len(final_final_setpoints) < 6:
                     final_final_setpoints.append(last_sp)
-                    
-            # ----------------------------------------------
-            
-            # --- FINAL TIME SORTING (The ultimate safety check for all schedules) ---
+                        
+            # D. FINAL TIME SORTING (The ultimate safety check)
             final_final_setpoints.sort(key=lambda x: _time_string_to_minutes(x["time"]))
             logging.debug(f"OPTIMIZATION: Zone '{zone}' Day {day}: Final 6 setpoints sorted.")
-            # -----------------------------------
 
-
-            # Now assign the guaranteed 6-point list back to the schedule structure
+            # Assign the guaranteed 6-point list back to the schedule structure
             zone_schedule[zone][day] = final_final_setpoints
-            # <--- 🚨 END OF CRITICAL FIX 🚨 --->
 
     logging.info(f"AGGREGATION END: Successfully generated schedules for {len(zone_schedule)} NeoHub zones.")
     return zone_schedule
