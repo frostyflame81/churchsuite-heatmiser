@@ -55,6 +55,52 @@ def get_structured_config() -> Dict[str, Any]:
             
     return config
 
+def _normalize_numbers_to_float(config_data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Ensures that specific configuration values are stored as floats (e.g., 3 becomes 3.0),
+    which guarantees the correct type is written to the JSON file.
+    """
+    
+    # Keys in global_settings that must be floats
+    GLOBAL_FLOAT_KEYS = [
+        "PREHEAT_TIME_MINUTES", 
+        "DEFAULT_TEMPERATURE", 
+        "ECO_TEMPERATURE", 
+        "TEMPERATURE_SENSITIVITY", 
+        "PREHEAT_ADJUSTMENT_MINUTES_PER_DEGREE"
+    ]
+    
+    # Keys in locations that must be floats
+    LOCATION_FLOAT_KEYS = [
+        "heat_loss_factor", 
+        "min_external_temp"
+    ]
+    
+    # --- 1. Process global_settings ---
+    global_settings = config_data.get("global_settings", {})
+    for key in GLOBAL_FLOAT_KEYS:
+        if key in global_settings:
+            try:
+                # Explicitly cast the value to float
+                global_settings[key] = float(global_settings[key])
+            except (ValueError, TypeError):
+                # Log error and ignore if conversion fails (e.g., if user enters text)
+                logging.warning(f"Failed to cast global setting '{key}' value '{global_settings[key]}' to float.")
+                pass 
+
+    # --- 2. Process locations ---
+    locations = config_data.get("locations", {})
+    for location_data in locations.values():
+        for key in LOCATION_FLOAT_KEYS:
+            if key in location_data:
+                try:
+                    # Explicitly cast the value to float
+                    location_data[key] = float(location_data[key])
+                except (ValueError, TypeError):
+                    logging.warning(f"Failed to cast location setting '{key}' value '{location_data[key]}' to float.")
+                    pass 
+
+    return config_data
 
 def write_structured_config(config_data: Dict[str, Any]) -> bool:
     """Writes the updated configuration data back to config.json."""
@@ -137,6 +183,8 @@ def api_config_update():
     """API endpoint to receive and update structured configuration settings."""
     try:
         updated_config_data = request.json
+        # Normalize numeric values to floats after json parsing
+        updated_config_data = _normalize_numbers_to_float(updated_config_data)
         # Basic validation: ensure the primary keys are present
         if not updated_config_data or 'global_settings' not in updated_config_data or 'locations' not in updated_config_data:
             return jsonify({"success": False, "message": "Invalid configuration payload. Missing global_settings or locations."}), 400
