@@ -128,15 +128,40 @@ def load_config(config_file: str) -> Optional[Dict[str, Any]]:
         return None
 
 def reload_config_from_disk():
-    """Reads configuration from the file path defined by CONFIG_FILE environment variable."""
+    """Reads configuration from the file path defined by CONFIG_FILE environment variable.
+    Preserves existing configuration keys (like NEOHUB details) that were originally 
+    loaded from environment variables and are not expected to be in the config file.
+    """
     global config
     config_file_path = os.environ.get("CONFIG_FILE")
+    
+    # 1. Safely store the existing, environment-derived configuration keys (e.g., 'neohubs').
+    existing_env_keys: Dict[str, Any] = {}
+    if config:
+        # Assuming 'locations' is the key users primarily edit in config.json.
+        # We store all other top-level keys, which hold the environment-derived secrets.
+        for key in list(config.keys()):
+            if key != 'locations':
+                existing_env_keys[key] = config[key]
+
     if config_file_path and os.path.exists(config_file_path):
         try:
             with open(config_file_path, 'r') as f:
-                new_config = json.load(f)
-                config = new_config # Update the global config dictionary
-                logging.info(f"Configuration successfully reloaded from {config_file_path}.")
+                new_config_data = json.load(f)
+                
+                # 2. Overwrite the global config with new data from the file (e.g., 'locations').
+                # We use clear() and update() to replace contents safely.
+                if config is None:
+                    config = {}
+                config.clear()
+                config.update(new_config_data)
+                
+                # 3. Restore the preserved, environment-derived configurations.
+                # This restores keys like 'neohubs' (which holds address/token) back into the config.
+                config.update(existing_env_keys)
+
+                logging.info(f"Configuration successfully reloaded and merged from {config_file_path}. Preserved keys: {list(existing_env_keys.keys())}")
+                
         except Exception as e:
             logging.error(f"Failed to reload config file {config_file_path}: {e}")
     else:
