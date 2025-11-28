@@ -634,10 +634,23 @@ def _validate_neohub_profile(
         # FIX: Reset the previous time for the start of *each* day
         prev_time_str = None 
         
-        # Check 3: Sequential Time Order
+        # Check 3: Sequential Time Order and Data Integrity
         for slot_name in expected_slots:
             try:
-                time_str = daily_schedule[slot_name][0]
+                slot_data = daily_schedule[slot_name]
+                
+                # --- ENHANCEMENT 1: Check required list length (e.g., 4 elements) ---
+                if len(slot_data) < 4:
+                    return False, f"Data structure error on day '{day_name}', slot '{slot_name}': Expected 4 items (time, temp, etc.) but found {len(slot_data)}."
+                
+                time_str = slot_data[0]
+                temp_value = slot_data[1]
+
+                # --- ENHANCEMENT 2: Check Temperature Type ---
+                if not isinstance(temp_value, (int, float)):
+                    return False, f"Data type error on day '{day_name}', slot '{slot_name}': Temperature value '{temp_value}' is not a valid number."
+                    
+                current_time = datetime.datetime.strptime(time_str, "%H:%M").time()
                 current_time = datetime.datetime.strptime(time_str, "%H:%M").time()
             except (KeyError, ValueError, IndexError) as e:
                 return False, f"Data structure error on day '{day_name}', slot '{slot_name}': {e}"
