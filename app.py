@@ -721,46 +721,6 @@ async def check_ipc_flags():
         await update_heating_schedule()
         os.remove(MANUAL_RUN_FLAG) # Clear the flag
 
-async def connect_neohub_with_retry(neohub_name: str, neohub_config: Dict[str, Any]) -> Optional[NeoHub]:
-    """
-    Attempts to instantiate and connect to the NeoHub with the defined retry mechanism.
-    Handles NeoHubConnectionError and unhandled exceptions (Traceroute).
-    Returns the connected NeoHub object if successful, otherwise None.
-    """
-    
-    hub_ip = neohub_config.get("ip")
-    hub_password = neohub_config.get("password")
-
-    # MAX_ATTEMPTS is 1 + len(RETRY_DELAYS)
-    for attempt in range(MAX_ATTEMPTS):
-        
-        # Calculate the delay before this attempt (0 for the first attempt)
-        delay = RETRY_DELAYS[attempt - 1] if attempt > 0 else 0
-        if delay > 0:
-            logging.info(f"Delaying {delay}s before retrying connection to {neohub_name}...")
-            await asyncio.sleep(delay)
-            
-        try:
-            logging.info(f"Attempting connection to {neohub_name} (Attempt {attempt + 1}/{MAX_ATTEMPTS})...")
-            
-            # Instantiates the hub object and attempts to connect, which includes the test command
-            hub = NeoHub(hub_ip, hub_password)
-            await hub.connect()
-            
-            logging.info(f"Successfully connected to NeoHub: {neohub_name}.")
-            return hub
-            
-        except NeoHubConnectionError as e:
-            # Handle expected connection failure (e.g., network issue, handshake, auth)
-            logging.warning(f"Connection failure to {neohub_name} on attempt {attempt + 1}: {e}")
-        except Exception as e:
-            # Handle unhandled exceptions that cause the 'Traceroute'
-            logging.error(f"UNHANDLED ERROR during connection to {neohub_name} on attempt {attempt + 1}: {type(e).__name__}: {e}")
-            
-    # If the loop finishes without returning, all attempts failed
-    logging.error(f"Failed to connect to {neohub_name} after {MAX_ATTEMPTS} attempts. Hub is OFFLINE.")
-    return None
-
 async def get_profile_id_by_name(neohub_object: NeoHub, neohub_name: str, profile_name: str) -> Optional[int]:
     """
     Retrieves the numerical profile ID for a given profile name using the GET_PROFILE command,
@@ -2081,22 +2041,10 @@ def main():
         logging.debug(f"Loaded config: {json.dumps(config, indent=2)}")
 
     for neohub_name, neohub_config in config["neohubs"].items():
-        # Run the new async helper function synchronously to check connection at startup
-        hub = asyncio.run(connect_neohub_with_retry(neohub_name, neohub_config))
-        
-        # If the helper returns None, the connection failed all retries.
-        if hub is None:
-            logging.error(f"Failed to connect to Neohub: {neohub_name} after {MAX_ATTEMPTS} attempts. Configuration requires all hubs to be online at startup. Exiting.")
+        if not connect_to_neohub(neohub_name, neohub_config):
+            logging.error(f"Failed to connect to Neohub: {neohub_name}. Exiting.")
             exit()
-        
-        # Optional: Close the temporary connection used for the test to free up resources
-        # This assumes the NeoHub class has a close() method.
-        try:
-            if hub:
-                asyncio.run(hub.close())
-        except Exception as e:
-            logging.warning(f"Error closing initial connection to {neohub_name}: {e}")
-            
+
     for neohub_name in config["neohubs"]:
         zones = asyncio.run(get_zones(neohub_name))
         if zones:
