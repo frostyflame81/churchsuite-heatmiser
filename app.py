@@ -1915,8 +1915,26 @@ async def update_heating_schedule() -> None:
                     hub_status = "PARTIAL_FAILURE"
                     message = f"Partial update: {hub_success_count} of {hub_total_zones} zones updated."
                 else:
-                    hub_status = "FAILURE" 
-                    message = f"Failed to update all {hub_total_zones} zones due to profile errors."
+                    # This block executes when hub_success_count is 0 (all zones failed to update/communicate).
+                    
+                    # NEW LOGIC: Check if any zone successfully aggregated to upgrade status.
+                    any_zone_aggregated = False
+                    
+                    # zone_results is the dictionary containing results for all zones on the current hub
+                    for zone_name in zone_results:
+                        # AGGREGATE_PROFILE is set to 1 if the schedule logic completed successfully.
+                        if zone_results.get(zone_name, {}).get('AGGREGATE_PROFILE', 0) == 1:
+                            any_zone_aggregated = True
+                            break
+                            
+                    if any_zone_aggregated:
+                        # Schedule logic worked, but communication/hub failed for all zones (Yellow status).
+                        hub_status = "PARTIAL_FAILURE" 
+                        message = f"Partial failure: Schedule aggregation succeeded, but profile update failed for all {hub_total_zones} zones. This often indicates a communication error or hub crash."
+                    else:
+                        # True failure (aggregation or basic configuration check failed for all zones) (Red status).
+                        hub_status = "FAILURE"
+                        message = f"Failed to update all {hub_total_zones} zones due to profile errors or logic failure."
 
                 neohub_reports.append({
                     "name": neohub_name,
