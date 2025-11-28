@@ -46,13 +46,6 @@ OPENWEATHERMAP_API_KEY = os.environ.get("OPENWEATHERMAP_API_KEY")
 OPENWEATHERMAP_CITY = os.environ.get("OPENWEATHERMAP_CITY")
 CHURCHSUITE_URL = os.environ.get("CHURCHSUITE_URL")
 TIMEZONE = os.environ.get("CHURCHSUITE_TIMEZONE", "Europe/London")
-PREHEAT_TIME_MINUTES = int(os.environ.get("PREHEAT_TIME_MINUTES", 30))
-DEFAULT_TEMPERATURE = float(os.environ.get("DEFAULT_TEMPERATURE", 19))
-ECO_TEMPERATURE = float(os.environ.get("ECO_TEMPERATURE", 12))
-TEMPERATURE_SENSITIVITY = int(os.environ.get("TEMPERATURE_SENSITIVITY", 10))
-PREHEAT_ADJUSTMENT_MINUTES_PER_DEGREE = float(
-    os.environ.get("PREHEAT_ADJUSTMENT_MINUTES_PER_DEGREE", 5)
-)
 CONFIG_FILE = os.environ.get("CONFIG_FILE", "config/config.json")
 MIN_FIRMWARE_VERSION = 2079
 REQUIRED_HEATING_LEVELS = 6
@@ -276,7 +269,9 @@ def _calculate_location_preheat_minutes(
     Returns:
         The dynamically calculated pre-heat time in minutes (integer) for this location.
     """
-    base_preheat = PREHEAT_TIME_MINUTES
+    base_preheat = config["global_settings"].get(
+    "PREHEAT_TIME_MINUTES", 30.0 # Default if missing
+    )
     
     location_config = _get_location_config(location_name, config)
     if not location_config:
@@ -284,7 +279,7 @@ def _calculate_location_preheat_minutes(
 
     # Get specific configuration values for this location, using defaults if keys are missing
     heat_loss_factor = location_config.get("heat_loss_factor", 1.0)
-    min_external_temp = location_config.get("min_external_temp", 5) 
+    min_external_temp = location_config.get("min_external_temp", 12.0) 
 
     if current_external_temp is None:
         logging.warning(f"External temperature is unknown. Using base preheat time ({base_preheat} min).")
@@ -295,7 +290,8 @@ def _calculate_location_preheat_minutes(
     temp_difference = max(0.0, min_external_temp - current_external_temp)
 
     # Calculate adjustment: temp_difference * adjustment_per_degree * heat_loss_factor
-    preheat_adjustment = temp_difference * PREHEAT_ADJUSTMENT_MINUTES_PER_DEGREE * heat_loss_factor
+    minutes_per_degree = config["global_settings"].get("PREHEAT_ADJUSTMENT_MINUTES_PER_DEGREE", 15.0)
+    preheat_adjustment = temp_difference * minutes_per_degree * heat_loss_factor
 
     total_preheat_minutes = int(round(base_preheat + preheat_adjustment))
 
@@ -380,7 +376,8 @@ def create_aggregated_schedule(
 
     # Schedule structure now holds Periods: { zone: { day: [ {start: str, end: str, temp: float} ] } }
     zone_schedule: Dict[str, Dict[int, List[Dict[str, Union[str, float]]]]] = {}
-    
+    # Fetch ECO_TEMPERATURE from global settings
+    eco_temp = config["global_settings"].get("ECO_TEMPERATURE", 12.0) # Default if missing
     # ... (Initialization logic remains the same) ...
     logging.info(f"AGGREGATION START: Processing {len(bookings)} bookings.")
     
@@ -394,7 +391,7 @@ def create_aggregated_schedule(
     if not bookings:
         logging.info("AGGREGATION END: Bookings list was empty. Returning fully optimized ECO default schedule.")
         # Create a compliant 6-slot ECO schedule for all days/zones
-        eco_schedule = [{'time': '00:00', 'temp': ECO_TEMPERATURE}] * 6
+        eco_schedule = [{'time': '00:00', 'temp': eco_temp}] * 6
         for zone, daily_schedule in zone_schedule.items():
             for day in range(7):
                 zone_schedule[zone][day] = eco_schedule
@@ -439,7 +436,9 @@ def create_aggregated_schedule(
             local_tz = pytz.timezone(TIMEZONE) 
             start_dt_local = start_dt_utc.astimezone(local_tz).replace(tzinfo=None)
             end_dt_local = end_dt_utc.astimezone(local_tz).replace(tzinfo=None)
-            target_temp = location_config.get("default_temp", DEFAULT_TEMPERATURE)
+            target_temp = location_config.get("default_temp", config["global_settings"].get
+                ("DEFAULT_TEMPERATURE", 18.0 # Default if missing
+                 ))
             
             for zone_name in zone_names:
                 
@@ -496,14 +495,14 @@ def create_aggregated_schedule(
         for day, periods in daily_schedule.items():
             
             # 1. Consolidate all periods for the day
-            consolidated_periods = _consolidate_periods(periods, ECO_TEMPERATURE)
+            consolidated_periods = _consolidate_periods(periods, eco_temp)
             
             # 2. Convert Consolidated Periods into a list of raw Setpoints (ON/OFF pairs)
             raw_setpoints: List[Dict[str, Union[str, float]]] = []
             
             # If the consolidated list is empty, just add a 00:00 ECO default
             if not consolidated_periods:
-                raw_setpoints.append({"time": "00:00", "temp": ECO_TEMPERATURE})
+                raw_setpoints.append({"time": "00:00", "temp": eco_temp})
             
             for p in consolidated_periods:
                 # Add Heat ON point
@@ -513,7 +512,7 @@ def create_aggregated_schedule(
                 # If end is 23:59, we rely on the next day's 00:00 being ECO, 
                 # or the consolidation process carrying the heat over.
                 if p["end"] != "23:59":
-                    raw_setpoints.append({"time": p["end"], "temp": ECO_TEMPERATURE})
+                    raw_setpoints.append({"time": p["end"], "temp": eco_temp})
 
             # --- 3. Final Compliance Steps (Deduplication, Padding, Sort) ---
 
@@ -536,7 +535,7 @@ def create_aggregated_schedule(
             # C. PADDING TO 6 SLOTS
             if len(final_final_setpoints) < 6:
                 if not final_final_setpoints:
-                    last_sp = {'time': '00:00', 'temp': ECO_TEMPERATURE} 
+                    last_sp = {'time': '00:00', 'temp': eco_temp} 
                 else:
                     last_sp = final_final_setpoints[-1]
 
@@ -561,7 +560,8 @@ def _format_setpoints_for_neohub(
     Takes the aggregated setpoints, pads them to exactly 6 levels, and formats them using the 
     correct NeoHub keys (wake, level1-level4, sleep) to resolve the empty profile issue.
     """
-    
+    # Fetch ECO_TEMPERATURE from global settings
+    eco_temp = config["global_settings"].get("ECO_TEMPERATURE", 12.0) # Default if missing
     # 1. Prepare setpoints (Max 6)
     setpoints_to_use = daily_setpoints[:len(NEOHUB_SLOTS)] # Ensure max 6 are used
     
@@ -570,8 +570,8 @@ def _format_setpoints_for_neohub(
         # Use the last valid setpoint (the final ECO time/temp) for padding.
         last_valid_sp = setpoints_to_use[-1] 
     else:
-        # Failsafe: Default to 00:00 @ ECO_TEMPERATURE if list is empty.
-        last_valid_sp = {"time": "00:00", "temp": ECO_TEMPERATURE}
+        # Failsafe: Default to 00:00 @ eco_temp if list is empty.
+        last_valid_sp = {"time": "00:00", "temp": eco_temp}
 
     # Pad until 6 setpoints are available. This guarantees the correct payload structure.
     while len(setpoints_to_use) < len(NEOHUB_SLOTS):
@@ -586,7 +586,7 @@ def _format_setpoints_for_neohub(
         neohub_schedule_dict[slot_name] = [
             sp["time"],
             float(f'{sp["temp"]:.1f}'),          # Ensure temperature is float, 1 decimal place
-            TEMPERATURE_SENSITIVITY,     
+            config["global_settings"].get("TEMPERATURE_SENSITIVITY", 10.0), # Default if missing
             True                         
         ]
         
@@ -2074,6 +2074,36 @@ def main():
     if config is None:
         logging.error("Failed to load configuration. Exiting.")
         return
+    
+    # Define all required global settings and their defaults (as floats)
+    DEFAULT_GLOBAL_SETTINGS = {
+        "PREHEAT_TIME_MINUTES": 30.0,
+        "DEFAULT_TEMPERATURE": 18.0,
+        "ECO_TEMPERATURE": 12.0,
+        "TEMPERATURE_SENSITIVITY": 10.0,
+        "PREHEAT_ADJUSTMENT_MINUTES_PER_DEGREE": 15.0
+    }
+    
+    # Ensure the 'global_settings' key exists in the config dictionary
+    if "global_settings" not in config:
+        config["global_settings"] = {}
+        
+    for key, default_value in DEFAULT_GLOBAL_SETTINGS.items():
+        current_value = config["global_settings"].get(key)
+        
+        if current_value is None:
+            # Value is missing (e.g., new config file), apply default
+            config["global_settings"][key] = default_value
+            logging.info(f"Applied default global setting for {key}: {default_value}")
+        else:
+            # Value exists, attempt to cast it to float to ensure '.0' is retained
+            try:
+                config["global_settings"][key] = float(current_value)
+            except (ValueError, TypeError):
+                # Value is invalid (e.g., text), apply default and log a warning
+                config["global_settings"][key] = default_value
+                logging.warning(f"Invalid value for global setting {key}: '{current_value}'. Using default: {default_value}")
+
     # Debug log to confirm config structure
     if LOGGING_LEVEL == "DEBUG":
         logging.debug(f"Loaded config: {json.dumps(config, indent=2)}")
