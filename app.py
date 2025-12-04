@@ -44,8 +44,10 @@ _command_id_counter = CommandIdManager(start_id=100)
 # Configuration
 OPENWEATHERMAP_API_KEY = os.environ.get("OPENWEATHERMAP_API_KEY")
 OPENWEATHERMAP_CITY = os.environ.get("OPENWEATHERMAP_CITY")
+WEATHER_FORECAST_API_URL = "https://api.openweathermap.org/data/2.5/forecast"
 CHURCHSUITE_URL = os.environ.get("CHURCHSUITE_URL")
 TIMEZONE = os.environ.get("CHURCHSUITE_TIMEZONE", "Europe/London")
+T_COLD_THRESHOLD = 10.0 # Threshold for scaling preheat time (10°C)
 CONFIG_FILE = os.environ.get("CONFIG_FILE", "config/config.json")
 MIN_FIRMWARE_VERSION = 2079
 REQUIRED_HEATING_LEVELS = 6
@@ -251,63 +253,41 @@ def build_zone_to_neohub_map(config: Dict[str, Any]) -> Dict[str, str]:
     return zone_to_neohub
 
 def _calculate_location_preheat_minutes(
-    location_name: str, 
-    current_external_temp: Optional[float], 
-    config: Dict[str, Any]
-) -> int:
+    neohub_name: str, 
+    zone_name: str, 
+    time_since_minutes: float, 
+    forecast_temp: float, 
+    event_temperature: float
+) -> Tuple[float, float]:
     """
-    Calculates the required pre-heat time in minutes for a single ChurchSuite location,
-    dynamically adjusting based on external temperature and location-specific config.
-    
-    This calculates the *requirement* that a heating zone must meet.
+    Calculates the required preheat minutes for a single zone/event based on 
+    simulated temperature decay and external forecast.
 
-    Args:
-        location_name: The name of the ChurchSuite location.
-        current_external_temp: The current external temperature in Celsius, or None if unavailable.
-        config: The main application configuration dictionary.
-
-    Returns:
-        The dynamically calculated pre-heat time in minutes (integer) for this location.
+    Returns: (preheat_minutes: float, T_start_simulated: float)
     """
-    base_preheat = config["global_settings"].get(
-    "PREHEAT_TIME_MINUTES", 30.0 # Default if missing
+    # 1. Calculate the simulated internal start temperature (T_start)
+    T_start_simulated = calculate_simulated_start_temp(
+        zone_name=zone_name,
+        neohub_name=neohub_name,
+        time_since_minutes=time_since_minutes,
+        forecast_temp=forecast_temp
+    )
+
+    # 2. Calculate the required preheat duration based on T_start and forecast
+    preheat_minutes = calculate_preheat_duration(
+        T_target=event_temperature,
+        T_start=T_start_simulated,
+        T_forecast=forecast_temp
     )
     
-    location_config = _get_location_config(location_name, config)
-    if not location_config:
-        return base_preheat
-
-    # Get specific configuration values for this location, using defaults if keys are missing
-    heat_loss_factor = location_config.get("heat_loss_factor", 1.0)
-    min_external_temp = location_config.get("min_external_temp", 12.0) 
-
-    if current_external_temp is None:
-        logging.warning(f"External temperature is unknown. Using base preheat time ({base_preheat} min).")
-        return base_preheat
-
-    # Calculate how far below the location's minimum external temperature the current temp is.
-    # The max(0.0, ...) ensures preheat adjustment is only added when it's colder than the threshold.
-    temp_difference = max(0.0, min_external_temp - current_external_temp)
-
-    # Calculate adjustment: temp_difference * adjustment_per_degree * heat_loss_factor
-    minutes_per_degree = config["global_settings"].get("PREHEAT_ADJUSTMENT_MINUTES_PER_DEGREE", 15.0)
-    preheat_adjustment = temp_difference * minutes_per_degree * heat_loss_factor
-
-    total_preheat_minutes = int(round(base_preheat + preheat_adjustment))
-
-    logging.debug(
-        f"Pre-heat for {location_name}: ExtTemp={current_external_temp:.1f}C, "
-        f"Diff={temp_difference:.1f}C, Total Preheat: {total_preheat_minutes} min."
-    )
-    
-    # Ensure preheat time is non-negative.
-    return max(0, total_preheat_minutes)
+    return preheat_minutes, T_start_simulated
 
 def create_aggregated_schedule(
-    bookings: List[Dict[str, Any]], 
-    current_external_temp: Optional[float], 
+    upcoming_events: List[Dict[str, Any]], 
+    external_temperature: Optional[float], # Renamed and kept for placeholder compatibility
     config: Dict[str, Any],
-    resource_id_to_name: Dict[int, str] 
+    resource_id_to_name: Dict[int, str],
+    zone_statuses: Dict[str, Dict[str, Dict[str, Union[int, float, str]]]] # NEW required parameter
 ) -> Dict[str, Dict[int, List[Dict[str, Union[str, float]]]]]:
     """
     Processes ChurchSuite bookings to create a single, aggregated heating schedule 
@@ -379,7 +359,7 @@ def create_aggregated_schedule(
     # Fetch ECO_TEMPERATURE from global settings
     eco_temp = config["global_settings"].get("ECO_TEMPERATURE", 12.0) # Default if missing
     # ... (Initialization logic remains the same) ...
-    logging.info(f"AGGREGATION START: Processing {len(bookings)} bookings.")
+    logging.info(f"AGGREGATION START: Processing {len(upcoming_events)} bookings.") # Changed 'bookings' to 'upcoming_events'
     
     # 1. Initialize schedule structure for all zones/days
     for location_name, location_config in config.get("locations", {}).items():
@@ -388,7 +368,7 @@ def create_aggregated_schedule(
                 zone_schedule[zone_name] = {i: [] for i in range(7)}
     
     # Handle empty bookings list
-    if not bookings:
+    if not upcoming_events:
         logging.info("AGGREGATION END: Bookings list was empty. Returning fully optimized ECO default schedule.")
         # Create a compliant 6-slot ECO schedule for all days/zones
         eco_schedule = [{'time': '00:00', 'temp': eco_temp}] * 6
@@ -396,29 +376,9 @@ def create_aggregated_schedule(
             for day in range(7):
                 zone_schedule[zone][day] = eco_schedule
         return zone_schedule
-
-
-    # ... (Max preheat calculation logic remains the same) ...
-    max_preheat_per_zone: Dict[str, int] = {}
-    for location_name, location_config in config.get("locations", {}).items():
-        for zone_name in location_config.get("zones", []):
-            max_preheat_per_zone[zone_name] = 0
     
-    for booking in bookings:
-        resource_id = booking.get("resource_id")
-        location_name = resource_id_to_name.get(resource_id)
-        if not location_name or location_name not in config["locations"]:
-            continue
-        location_config = config["locations"][location_name]
-        required_preheat_minutes = _calculate_location_preheat_minutes(location_name, current_external_temp, config)
-        zone_names = location_config.get("zones", [])
-        for zone_name in zone_names:
-            max_preheat_per_zone[zone_name] = max(max_preheat_per_zone[zone_name], required_preheat_minutes)
-    
-    logging.info(f"Calculated Max Preheats per Zone: {max_preheat_per_zone}") 
-
     # --- Start main booking loop: GENERATE PERIODS ---
-    for booking in bookings:
+    for booking in upcoming_events: # Changed 'bookings' to 'upcoming_events'
         booking_id = booking.get("id", "N/A")
         resource_id = booking.get("resource_id")
         
@@ -427,6 +387,7 @@ def create_aggregated_schedule(
         if not location_name or location_name not in config["locations"]:
             continue
         location_config = config["locations"][location_name]
+        neohub_name = location_config['neohub'] # Added for status reporting
         zone_names = location_config.get("zones", [])
 
         try:
@@ -438,11 +399,35 @@ def create_aggregated_schedule(
             end_dt_local = end_dt_utc.astimezone(local_tz).replace(tzinfo=None)
             target_temp = location_config.get("default_temp", config["global_settings"].get
                 ("DEFAULT_TEMPERATURE", 18.0 # Default if missing
-                 ))
+                    ))
             
             for zone_name in zone_names:
                 
-                preheat_to_use = max_preheat_per_zone.get(zone_name, 0)
+                # --- NEW LOGIC: DYNAMIC PREHEAT EXTRACTION AND REPORTING ---
+                zone_key_tuple = (neohub_name, zone_name)
+                decay_metrics = booking.get('decay_metrics', {}).get(zone_key_tuple)
+                
+                # Initialize reporting structure for this zone (required for both success and fail)
+                zone_statuses.setdefault(neohub_name, {}).setdefault(zone_name, {})
+                
+                if not decay_metrics:
+                    logging.warning(f"Decay metrics missing for {zone_name} in booking ID {booking_id}. Skipping dynamic preheat and using 0 minutes preheat.")
+                    preheat_to_use = 0.0
+                    
+                    # Update reporting for zones that fail to get decay metrics
+                    zone_statuses[neohub_name][zone_name]['AGGREGATE_PROFILE'] = 0
+                    zone_statuses[neohub_name][zone_name]['preheat_minutes'] = 0.0
+
+                else:
+                    preheat_to_use = decay_metrics.get("preheat_minutes", 0.0)
+                    T_start_simulated = decay_metrics.get("T_start_simulated")
+                    
+                    # CRITICAL REPORTING: Flag successful aggregation
+                    zone_statuses[neohub_name][zone_name]['AGGREGATE_PROFILE'] = 1
+                    zone_statuses[neohub_name][zone_name]['T_start_simulated'] = round(T_start_simulated, 1)
+                    zone_statuses[neohub_name][zone_name]['preheat_minutes'] = round(preheat_to_use, 1)
+
+                
                 preheat_start_dt_local = start_dt_local - datetime.timedelta(minutes=preheat_to_use)
                 
                 # --- CRITICAL: PERIOD GENERATION (Handles Midnight Spanning) ---
@@ -484,13 +469,16 @@ def create_aggregated_schedule(
                         f"{period_2['end']} (Day {event_end_day})."
                     )
 
-        except (KeyError, ValueError, TypeError) as e:
+        except (KeyError, ValueError, TypeError, AttributeError) as e:
             logging.error(f"Error processing booking for {location_name} (ID {booking_id}): {e}.", exc_info=True)
             continue
             
     # --- Post-processing: CONSOLIDATE PERIODS & GENERATE FINAL SETPOINTS ---
     logging.info("POST-PROCESSING START: Consolidating heating periods and generating setpoints.")
     
+    # The remainder of the function handles consolidation,
+    # setpoint generation, deduplication, truncation, and padding to 6 slots.
+
     for zone, daily_schedule in zone_schedule.items():
         for day, periods in daily_schedule.items():
             
@@ -509,8 +497,6 @@ def create_aggregated_schedule(
                 raw_setpoints.append({"time": p["start"], "temp": p["temp"]})
                 
                 # Add ECO OFF point (only if the end time is not 00:00 or 23:59)
-                # If end is 23:59, we rely on the next day's 00:00 being ECO, 
-                # or the consolidation process carrying the heat over.
                 if p["end"] != "23:59":
                     raw_setpoints.append({"time": p["end"], "temp": eco_temp})
 
@@ -1377,6 +1363,183 @@ async def get_neohub_firmware_version(neohub_name: str) -> Optional[int]:
         logger.error(f"An unexpected error occurred: {e}")
         return None
 
+async def get_forecast_temperature(target_datetime: datetime.datetime) -> Optional[float]:
+    """
+    Fetches the predicted external temperature for a specific future datetime 
+    from OpenWeatherMap.
+    
+    Returns the temperature in Celsius.
+    """
+    global OPENWEATHERMAP_API_KEY
+    global OPENWEATHERMAP_CITY
+    
+    if not OPENWEATHERMAP_API_KEY:
+        logging.warning("OPENWEATHERMAP_API_KEY is missing. Cannot fetch weather forecast.")
+        return None
+
+    try:
+        WEATHER_FORECAST_API_URL = "https://api.openweathermap.org/data/2.5/forecast"
+        params = {
+            'q': OPENWEATHERMAP_CITY,
+            'appid': OPENWEATHERMAP_API_KEY,
+            'units': 'metric' # Request temperature in Celsius
+        }
+        
+        loop = asyncio.get_event_loop()
+        response = await loop.run_in_executor(
+            None, 
+            lambda: requests.get(WEATHER_FORECAST_API_URL, params=params, timeout=10)
+        )
+        response.raise_for_status()
+        
+        data = response.json()
+        
+        # 1. Convert the target datetime to UTC timestamp for comparison
+        target_ts = int(target_datetime.timestamp())
+
+        # 2. Find the closest forecast point (OpenWeatherMap uses 3-hour intervals)
+        closest_temp = None
+        min_time_diff = float('inf')
+        
+        for item in data.get('list', []):
+            forecast_ts = item.get('dt')
+            if forecast_ts is not None:
+                time_diff = abs(forecast_ts - target_ts)
+                
+                if time_diff < min_time_diff:
+                    min_time_diff = time_diff
+                    closest_temp = item.get('main', {}).get('temp')
+
+        if closest_temp is not None:
+            temp = float(closest_temp)
+            logging.info(f"Forecast for {target_datetime.strftime('%Y-%m-%d %H:%M')}: {temp}°C (Diff: {min_time_diff // 60} min)")
+            return temp
+        
+        logging.warning(f"No valid forecast data found for {OPENWEATHERMAP_CITY}.")
+        return None
+
+    except requests.exceptions.RequestException as e:
+        logging.error(f"Error fetching weather forecast for {OPENWEATHERMAP_CITY}: {e}")
+        return None
+    
+def calculate_simulated_start_temp(
+    zone_name: str, 
+    neohub_name: str, 
+    time_since_minutes: float,
+    forecast_temp: float
+) -> float:
+    """
+    Calculates the predicted internal start temperature (T_start) for a zone
+    by simulating heat decay from T_target over the given time_since_minutes,
+    dynamically adjusted for the external temperature forecast.
+    
+    The rate of decay is proportional to the temperature differential.
+    """
+    global config
+    
+    # 1. Fetch relevant config values with safe fallbacks
+    hub_config = config.get("hubs_settings", {}).get(neohub_name, {})
+    zone_props = config.get("zones_properties", {}).get(zone_name, {})
+    global_settings = config.get("global_settings", {})
+    
+    T_target = global_settings.get("DEFAULT_TEMPERATURE", 18.0)
+    T_eco = global_settings.get("ECO_TEMPERATURE", 12.0)
+    
+    # Hub-specific base inertia (from hubs_settings)
+    HEAT_LOSS_CONSTANT = hub_config.get("HEAT_LOSS_CONSTANT", 100.0)
+    # Zone-specific modifier (from zones_properties)
+    heat_loss_factor = zone_props.get("heat_loss_factor", 1.0)
+    
+    # Safety guard for extremely long breaks
+    if time_since_minutes >= 60 * 24 * 7:
+        logging.info(f"Time since heat for {zone_name} exceeds 7 days. Assuming T_start = T_eco.")
+        return T_eco
+    
+    # 2. Calculate Heat Loss Rate and Drop
+    
+    # Temperature differential driving the heat loss (T_target is the high-water mark)
+    temp_differential = T_target - forecast_temp 
+    
+    # If forecast temp is higher than T_target, assume no decay below T_target.
+    if temp_differential < 0:
+        temp_differential = 0.0
+    
+    # Effective Thermal Mass: Hub constant * Zone factor. Higher value means slower decay.
+    effective_thermal_mass = HEAT_LOSS_CONSTANT * heat_loss_factor
+    
+    if effective_thermal_mass <= 0:
+        logging.error(f"Effective thermal mass for {zone_name} is non-positive. Using default T_eco.")
+        return T_eco
+        
+    # Dynamic Decay Rate (Degrees lost per minute)
+    decay_rate_per_min = temp_differential / effective_thermal_mass
+    
+    # Total Temp Drop over the elapsed time
+    temp_drop = time_since_minutes * decay_rate_per_min
+    
+    # 3. Determine the Final Starting Temperature
+    simulated_temp = T_target - temp_drop
+    T_start = max(simulated_temp, T_eco)
+    
+    logging.debug(
+        f"Decay for {zone_name}: T_target={T_target:.1f}, T_forecast={forecast_temp:.1f}. "
+        f"Differential={temp_differential:.1f}°C. Time since: {time_since_minutes:.1f} min. "
+        f"Rate: {decay_rate_per_min:.3f}°C/min. Total Drop: {temp_drop:.2f}°C. T_start: {T_start:.2f}°C."
+    )
+    
+    return T_start
+
+def calculate_preheat_duration(
+    neohub_name: str, 
+    zone_name: str,
+    T_target: float, 
+    T_start: float, 
+    T_forecast: float
+) -> float:
+    """
+    Calculates the required pre-heat duration in minutes, scaled by zone factor 
+    and dynamically scaled for cold external temperatures.
+    """
+    global config
+    global_settings = config.get("global_settings", {})
+    zone_props = config.get("zones_properties", {}).get(zone_name, {}) # NEW: Fetch zone properties
+
+    # 1. Required Temperature Rise
+    T_rise_required = T_target - T_start
+    if T_rise_required <= 0:
+        return 0.0 
+        
+    # 2. Base Preheat Calculation (NOW MODIFIED)
+    
+    # Retrieve the global constant and the zone's heat loss factor
+    ADJ_MIN_PER_DEGREE = global_settings.get("PREHEAT_ADJUSTMENT_MINUTES_PER_DEGREE", 15.0)
+    heat_loss_factor = zone_props.get("heat_loss_factor", 1.0) # NEW: Get zone factor
+    
+    # Base Preheat is now scaled by the zone's factor: a higher factor (like 3.0 for Nave) 
+    # means it takes 3 times longer to heat up, aligning with its thermal mass.
+    base_preheat = T_rise_required * ADJ_MIN_PER_DEGREE * heat_loss_factor 
+    
+    # 3. Dynamic Cold Weather Scaling (This part remains the same)
+    MAX_MULTIPLIER = global_settings.get("HEAT_LOSS_MULTIPLIER_MAX", 2.0)
+    
+    if T_forecast < T_COLD_THRESHOLD:
+        T_RANGE = T_COLD_THRESHOLD 
+        
+        coldness_ratio = (T_COLD_THRESHOLD - T_forecast) / T_RANGE
+        coldness_ratio = max(0.0, min(1.0, coldness_ratio))
+        
+        multiplier = 1.0 + (coldness_ratio * (MAX_MULTIPLIER - 1.0))
+        
+        preheat_minutes = base_preheat * multiplier
+        logging.debug(
+            f"Cold scaling applied: T_forecast={T_forecast:.1f}, Multiplier={multiplier:.2f}. "
+            f"Base preheat {base_preheat:.1f}m -> {preheat_minutes:.1f}m."
+        )
+    else:
+        preheat_minutes = base_preheat
+
+    return preheat_minutes
+
 def get_external_temperature() -> Optional[float]:
     """Gets the current external temperature."""
     try:
@@ -1433,6 +1596,106 @@ def get_bookings_and_locations() -> Optional[Dict[str, List[Dict[str, Any]]]]:
     except json.JSONDecodeError as e:
         logging.error(f"Failed to parse ChurchSuite response as JSON: {e}")
         return None
+
+async def calculate_decay_metrics_and_attach(
+    booked_resources: List[Dict[str, Any]], 
+    config: Dict[str, Any]
+) -> List[Dict[str, Any]]:
+    """
+    Calculates sequential temperature decay metrics (T_start, T_forecast, etc.)
+    for each event in the booked_resources list and attaches the results to the event dictionary.
+    
+    This replaces the single, global external temperature fetch by fetching
+    a specific forecast for each event's start time, essential for dynamic pre-heat.
+    
+    NOTE: Assumes existence of get_forecast_temperature and calculate_simulated_start_temp.
+    """
+    
+    if not booked_resources:
+        return []
+
+    # Sort all events globally by start time. This is CRITICAL for sequential decay calculation.
+    try:
+        # Use dateutil.parser.parse for robust parsing and then astimezone(pytz.utc) for comparison
+        sorted_events = sorted(
+            booked_resources, 
+            key=lambda x: dateutil.parser.parse(x.get('starts_at')).astimezone(pytz.utc)
+        )
+    except Exception as e:
+        logging.error(f"Failed to sort events by start time: {e}. Skipping decay calculation.")
+        return booked_resources
+
+    # --- Decay State Tracking Initialization ---
+    # Key: (neohub_name, zone_name), Value: last heating end time (datetime object, UTC)
+    last_end_times: Dict[Tuple[str, str], datetime.datetime] = {}
+    
+    # Get config constants
+    T_DEFAULT = config["global_settings"].get("DEFAULT_TEMPERATURE", 18.0)
+    # Initialize the default last end time far in the past (e.g., system start)
+    DEFAULT_LAST_END = datetime.datetime.min.replace(tzinfo=pytz.utc)
+    
+    # Get the global mapping from location name to config settings
+    location_configs = config.get('locations', {})
+
+    # 2. Sequential Calculation Loop
+    for event in sorted_events:
+        location_name = event.get('location_name')
+        event_start_iso = event.get('starts_at') 
+        event_end_iso = event.get('ends_at')
+
+        location_config = location_configs.get(location_name)
+        if not location_config:
+            continue
+            
+        neohub_name = location_config['neohub']
+        
+        try:
+            start_dt = dateutil.parser.parse(event_start_iso).astimezone(pytz.utc)
+            end_dt = dateutil.parser.parse(event_end_iso).astimezone(pytz.utc)
+        except Exception:
+            logging.error(f"Failed to parse time for event at '{location_name}'. Skipping decay calculation.")
+            continue
+            
+        # Pre-fetch the weather forecast once per event (requires get_forecast_temperature to exist)
+        forecast_temp = await get_forecast_temperature(start_dt)
+        if forecast_temp is None:
+            logging.warning(f"Could not get forecast for {location_name} at {start_dt}. Using fallback 0.0°C.")
+            forecast_temp = 0.0
+
+        # Now, apply to all affected zones and update decay state
+        for zone_name in location_config['zones']:
+            zone_key = (neohub_name, zone_name)
+
+            # --- A. Determine Time Since Last Heat ---
+            last_end_time = last_end_times.get(zone_key, DEFAULT_LAST_END)
+            
+            if start_dt <= last_end_time:
+                time_since_minutes = 0.0
+            else:
+                time_since = start_dt - last_end_time
+                time_since_minutes = time_since.total_seconds() / 60
+
+            # --- B. Calculate Simulated Start Temp (T_start) ---
+            T_start = calculate_simulated_start_temp(
+                zone_name=zone_name, 
+                neohub_name=neohub_name, 
+                time_since_minutes=time_since_minutes,
+                forecast_temp=forecast_temp
+            )
+            
+            # --- C. Attach results and Update Decay State ---
+            # Attach the calculated metrics to the event object
+            event.setdefault('decay_metrics', {})
+            event['decay_metrics'][zone_key] = {
+                "time_since_minutes": round(time_since_minutes, 1),
+                "T_forecast": round(forecast_temp, 1),
+                "T_start_simulated": round(T_start, 1)
+            }
+            
+            # Update the last heat end time for this zone for the NEXT event.
+            last_end_times[zone_key] = end_dt
+
+    return sorted_events
 
 async def log_existing_profile(neohub_name: str, profile_name: str) -> None:
     """
@@ -1785,7 +2048,7 @@ async def update_heating_schedule() -> None:
 
 
         # 3. Fetch Bookings and Resources
-        data = get_bookings_and_locations()
+        data = await get_bookings_and_locations()
         if not data:
             overall_status = "PARTIAL_FAILURE"
             raise StopIteration("No data received from ChurchSuite.")
@@ -1806,7 +2069,12 @@ async def update_heating_schedule() -> None:
         # Create a map to resolve resource_id to location name
         resource_id_to_name = {r.get('id'): r.get('name') for r in resources if r.get('id') and r.get('name')}
         logging.debug(f"RESOURCE MAP: Created ID to Name map with {len(resource_id_to_name)} entries.")
-            
+        
+        # NEW STEP: Calculate Decay States and Attach Metrics
+        logging.info("Calculating sequential temperature decay states and fetching per-event forecasts...")
+        booked_resources = await calculate_decay_metrics_and_attach(booked_resources, config)
+        logging.info("Decay calculation complete.")            
+        
         # 2. Filter Bookings by Rolling Window
         profile_1_bookings = []
         profile_2_bookings = []
@@ -1848,16 +2116,17 @@ async def update_heating_schedule() -> None:
 
         logging.info(f"Filtered Bookings: Profile 1 (Next 7 days): {len(profile_1_bookings)}, Profile 2 (Days 8-14): {len(profile_2_bookings)}")
 
-        # 3. Get External Temperature
-        external_temperature = get_external_temperature()
-        logging.info(f"Fetched external temperature: {external_temperature}°C")
+        # 3. Get External Temperature (REMOVED: Now handled per-event in decay calculation)
+        external_temperature = 0.0 # Placeholder value for legacy function signature compatibility
+        logging.info("External temperature fetch skipped; using per-event forecasts for decay calculation.")
 
         # 4. AGGREGATE SCHEDULES BY ZONE (The Critical Step)
         aggregated_p1_schedules = create_aggregated_schedule(
             profile_1_bookings, 
             external_temperature, 
             config,
-            resource_id_to_name
+            resource_id_to_name,
+            zone_statuses
         )
         logging.info(f"AGGREGATION RESULT (Profile 1): {len(aggregated_p1_schedules)} final locations/zones scheduled.")
             
@@ -1865,7 +2134,8 @@ async def update_heating_schedule() -> None:
             profile_2_bookings, 
             external_temperature, 
             config,
-            resource_id_to_name
+            resource_id_to_name,
+            zone_statuses
         )
         logging.info(f"AGGREGATION RESULT (Profile 2): {len(aggregated_p2_schedules)} final locations/zones scheduled.")
 
@@ -2081,28 +2351,55 @@ def main():
         "DEFAULT_TEMPERATURE": 18.0,
         "ECO_TEMPERATURE": 12.0,
         "TEMPERATURE_SENSITIVITY": 10.0,
-        "PREHEAT_ADJUSTMENT_MINUTES_PER_DEGREE": 15.0
+        "PREHEAT_ADJUSTMENT_MINUTES_PER_DEGREE": 15.0,
+        "HEAT_LOSS_MULTIPLIER_MAX": 2.0             # New float default for cold weather scaling
     }
     
-    # Ensure the 'global_settings' key exists in the config dictionary
+    # Ensure the 'global_settings' key exists
     if "global_settings" not in config:
         config["global_settings"] = {}
         
     for key, default_value in DEFAULT_GLOBAL_SETTINGS.items():
         current_value = config["global_settings"].get(key)
         
+        # Check if value is missing or needs type casting
         if current_value is None:
-            # Value is missing (e.g., new config file), apply default
             config["global_settings"][key] = default_value
-            logging.info(f"Applied default global setting for {key}: {default_value}")
         else:
-            # Value exists, attempt to cast it to float to ensure '.0' is retained
             try:
+                # Ensure all global settings are floats
                 config["global_settings"][key] = float(current_value)
             except (ValueError, TypeError):
-                # Value is invalid (e.g., text), apply default and log a warning
                 config["global_settings"][key] = default_value
-                logging.warning(f"Invalid value for global setting {key}: '{current_value}'. Using default: {default_value}")
+                logging.warning(f"Invalid float value for global setting '{key}'. Using default: {default_value}")
+    
+    # 2. Ensure 'hubs_settings' exists and has defaults for known hubs
+    if "hubs_settings" not in config:
+        config["hubs_settings"] = {}
+        
+    # Iterate over all defined NeoHubs to ensure they have a HEAT_LOSS_CONSTANT
+    for neohub_name in config.get("neohubs", {}).keys():
+        if neohub_name not in config["hubs_settings"]:
+            config["hubs_settings"][neohub_name] = {}
+        
+        hub_settings = config["hubs_settings"][neohub_name]
+        
+        # Apply default for HEAT_LOSS_CONSTANT (Building-specific thermal inertia)
+        h_l_c = hub_settings.get("HEAT_LOSS_CONSTANT")
+        if h_l_c is None:
+            hub_settings["HEAT_LOSS_CONSTANT"] = 100.0
+            logging.info(f"Applied default HEAT_LOSS_CONSTANT to hub '{neohub_name}': 100.0")
+        else:
+            try:
+                # Ensure value is float
+                hub_settings["HEAT_LOSS_CONSTANT"] = float(h_l_c)
+            except (ValueError, TypeError):
+                 hub_settings["HEAT_LOSS_CONSTANT"] = 100.0
+                 logging.warning(f"Invalid float value for HEAT_LOSS_CONSTANT on hub '{neohub_name}'. Using default: 100.0")
+            
+    # 3. Ensure 'zones_properties' exists (content will be validated elsewhere/manually added)
+    if "zones_properties" not in config:
+        config["zones_properties"] = {}
 
     # Debug log to confirm config structure
     if LOGGING_LEVEL == "DEBUG":
