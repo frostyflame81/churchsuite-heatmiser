@@ -404,22 +404,24 @@ def create_aggregated_schedule(
             for zone_name in zone_names:
                 
                 # --- NEW LOGIC: DYNAMIC PREHEAT EXTRACTION AND REPORTING ---
-                zone_key_tuple = (neohub_name, zone_name)
-                decay_metrics = booking.get('decay_metrics', {}).get(zone_key_tuple)
+                decay_metrics = booking.get('decay_metrics', {}).get(zone_name)
                 
                 # Initialize reporting structure for this zone (required for both success and fail)
                 zone_statuses.setdefault(neohub_name, {}).setdefault(zone_name, {})
                 
+                min_preheat = config["global_settings"].get("PREHEAT_TIME_MINUTES", 30.0)
+
                 if not decay_metrics:
-                    logging.warning(f"Decay metrics missing for {zone_name} in booking ID {booking_id}. Skipping dynamic preheat and using 0 minutes preheat.")
-                    preheat_to_use = 0.0
+                    # Use the minimum safe preheat time as a fallback
+                    logging.warning(f"Decay metrics missing for {zone_name} in booking ID {booking_id}. Falling back to default {min_preheat} minutes preheat.")
+                    preheat_to_use = min_preheat
                     
                     # Update reporting for zones that fail to get decay metrics
                     zone_statuses[neohub_name][zone_name]['AGGREGATE_PROFILE'] = 0
-                    zone_statuses[neohub_name][zone_name]['preheat_minutes'] = 0.0
+                    zone_statuses[neohub_name][zone_name]['preheat_minutes'] = min_preheat
 
                 else:
-                    preheat_to_use = decay_metrics.get("preheat_minutes", 0.0)
+                    preheat_to_use = decay_metrics.get("preheat_minutes", min_preheat)
                     T_start_simulated = decay_metrics.get("T_start_simulated")
                     
                     # CRITICAL REPORTING: Flag successful aggregation
