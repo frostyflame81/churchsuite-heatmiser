@@ -2048,7 +2048,7 @@ async def update_heating_schedule() -> None:
 
 
         # 3. Fetch Bookings and Resources
-        data = await get_bookings_and_locations()
+        data = get_bookings_and_locations()
         if not data:
             overall_status = "PARTIAL_FAILURE"
             raise StopIteration("No data received from ChurchSuite.")
