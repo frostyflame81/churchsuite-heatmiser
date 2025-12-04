@@ -2070,6 +2070,24 @@ async def update_heating_schedule() -> None:
         resource_id_to_name = {r.get('id'): r.get('name') for r in resources if r.get('id') and r.get('name')}
         logging.debug(f"RESOURCE MAP: Created ID to Name map with {len(resource_id_to_name)} entries.")
         
+        logging.info("Attaching location names to booked resources for configuration lookup.")
+        processed_bookings = []
+        for booking in booked_resources:
+            resource_id = booking.get("resource_id")
+            # CRITICAL: Attach the name derived from the resource map
+            if resource_id in resource_id_to_name:
+                location_name = resource_id_to_name[resource_id]
+                booking['location_name'] = location_name 
+                # Optional: Add a check that the location name is configured
+                if location_name not in config.get('locations', {}):
+                    logging.warning(f"Booking location '{location_name}' is not found in config['locations']. Skipping decay calculation.")
+                    continue
+                processed_bookings.append(booking)
+            else:
+                logging.warning(f"Booking ID {booking.get('id')} has unknown resource ID {resource_id}. Skipping decay calculation.")
+
+        booked_resources = processed_bookings # Use the new, cleaned list for the next step
+
         # NEW STEP: Calculate Decay States and Attach Metrics
         logging.info("Calculating sequential temperature decay states and fetching per-event forecasts...")
         booked_resources = await calculate_decay_metrics_and_attach(booked_resources, config)
