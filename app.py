@@ -1604,13 +1604,8 @@ async def calculate_decay_metrics_and_attach(
     config: Dict[str, Any]
 ) -> List[Dict[str, Any]]:
     """
-    Calculates sequential temperature decay metrics (T_start, T_forecast, etc.)
+    Calculates sequential temperature decay metrics (T_start, T_forecast, preheat_minutes, etc.)
     for each event in the booked_resources list and attaches the results to the event dictionary.
-    
-    This replaces the single, global external temperature fetch by fetching
-    a specific forecast for each event's start time, essential for dynamic pre-heat.
-    
-    NOTE: Assumes existence of get_forecast_temperature and calculate_simulated_start_temp.
     """
     
     if not booked_resources:
@@ -1618,7 +1613,6 @@ async def calculate_decay_metrics_and_attach(
 
     # Sort all events globally by start time. This is CRITICAL for sequential decay calculation.
     try:
-        # Use dateutil.parser.parse for robust parsing and then astimezone(pytz.utc) for comparison
         sorted_events = sorted(
             booked_resources, 
             key=lambda x: dateutil.parser.parse(x.get('starts_at')).astimezone(pytz.utc)
@@ -1633,6 +1627,9 @@ async def calculate_decay_metrics_and_attach(
     
     # Get config constants
     T_DEFAULT = config["global_settings"].get("DEFAULT_TEMPERATURE", 18.0)
+    MIN_PREHEAT = config["global_settings"].get("PREHEAT_TIME_MINUTES", 30.0)
+    MINUTES_PER_DEGREE = config["global_settings"].get("PREHEAT_ADJUSTMENT_MINUTES_PER_DEGREE", 15.0)
+    
     # Initialize the default last end time far in the past (e.g., system start)
     DEFAULT_LAST_END = datetime.datetime.min.replace(tzinfo=pytz.utc)
     
@@ -1658,7 +1655,7 @@ async def calculate_decay_metrics_and_attach(
             logging.error(f"Failed to parse time for event at '{location_name}'. Skipping decay calculation.")
             continue
             
-        # Pre-fetch the weather forecast once per event (requires get_forecast_temperature to exist)
+        # Pre-fetch the weather forecast once per event
         forecast_temp = await get_forecast_temperature(start_dt)
         if forecast_temp is None:
             logging.warning(f"Could not get forecast for {location_name} at {start_dt}. Using fallback 0.0°C.")
@@ -1666,10 +1663,12 @@ async def calculate_decay_metrics_and_attach(
 
         # Now, apply to all affected zones and update decay state
         for zone_name in location_config['zones']:
-            zone_key = (neohub_name, zone_name)
+            
+            # Use the unique tuple key for decay state tracking
+            decay_tracking_key = (neohub_name, zone_name)
 
             # --- A. Determine Time Since Last Heat ---
-            last_end_time = last_end_times.get(zone_key, DEFAULT_LAST_END)
+            last_end_time = last_end_times.get(decay_tracking_key, DEFAULT_LAST_END)
             
             if start_dt <= last_end_time:
                 time_since_minutes = 0.0
@@ -1685,17 +1684,34 @@ async def calculate_decay_metrics_and_attach(
                 forecast_temp=forecast_temp
             )
             
-            # --- C. Attach results and Update Decay State ---
-            # Attach the calculated metrics to the event object
+            # --- C. Calculate Preheat Time (T_required_rise and final_preheat_minutes) ---
+            
+            # FIX: Retrieve location-specific heat_loss_factor, default to 3.0
+            HEAT_LOSS_FACTOR = location_config.get("heat_loss_factor", 3.0) 
+            
+            T_required_rise = T_DEFAULT - T_start
+            
+            # Calculate dynamic preheat
+            # The formula is: T_rise * (Minutes_Per_Degree / Heat_Loss_Factor)
+            dynamic_preheat_minutes = max(0.0, T_required_rise * (MINUTES_PER_DEGREE / HEAT_LOSS_FACTOR))
+            
+            # Apply the safety minimum preheat time
+            final_preheat_minutes = max(dynamic_preheat_minutes, MIN_PREHEAT)
+
+            # --- D. Attach results and Update Decay State ---
+            # IMPORTANT: Attach metrics using the simple string key (zone_name)
             event.setdefault('decay_metrics', {})
-            event['decay_metrics'][zone_key] = {
+            event['decay_metrics'][zone_name] = { 
                 "time_since_minutes": round(time_since_minutes, 1),
                 "T_forecast": round(forecast_temp, 1),
-                "T_start_simulated": round(T_start, 1)
+                "T_start_simulated": round(T_start, 1),
+                "preheat_minutes": round(final_preheat_minutes, 1) # CRITICAL
             }
             
+            logging.debug(f"Decay for {zone_name} in event {event.get('id')}: T_start={T_start:.1f}C, Rise={T_required_rise:.1f}C, Preheat={final_preheat_minutes:.1f}min.")
+            
             # Update the last heat end time for this zone for the NEXT event.
-            last_end_times[zone_key] = end_dt
+            last_end_times[decay_tracking_key] = end_dt
 
     return sorted_events
 
