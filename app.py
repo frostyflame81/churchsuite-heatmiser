@@ -1542,6 +1542,23 @@ def calculate_preheat_duration(
 
     return preheat_minutes
 
+def calculate_cold_multiplier(forecast_temp: float) -> float:
+    """Calculates the cold multiplier, scaling 2.0 at -5C to 1.0 at 12C."""
+    T_WARM = 12.0 
+    T_COLD = -5.0
+    
+    # Clamp the temperature within the range [-5.0, 12.0]
+    clamped_temp = max(T_COLD, min(forecast_temp, T_WARM))
+    
+    # Calculate the ratio (0 at T_COLD, 1 at T_WARM)
+    temp_range = T_WARM - T_COLD # 17.0
+    ratio = (clamped_temp - T_COLD) / temp_range
+    
+    # Scale the multiplier from 2.0 down to 1.0 (inverted ratio)
+    multiplier = 2.0 - (ratio * 1.0)
+    
+    return multiplier
+
 def get_external_temperature() -> Optional[float]:
     """Gets the current external temperature."""
     try:
@@ -1660,6 +1677,8 @@ async def calculate_decay_metrics_and_attach(
         if forecast_temp is None:
             logging.warning(f"Could not get forecast for {location_name} at {start_dt}. Using fallback 0.0°C.")
             forecast_temp = 0.0
+        # ⚠️ NEW STEP: Calculate the dynamic cold multiplier
+        COLD_MULTIPLIER = calculate_cold_multiplier(forecast_temp)
 
         # Now, apply to all affected zones and update decay state
         for zone_name in location_config['zones']:
@@ -1692,9 +1711,11 @@ async def calculate_decay_metrics_and_attach(
             T_required_rise = T_DEFAULT - T_start
             
             # Calculate dynamic preheat
-            # The formula is: T_rise * (Minutes_Per_Degree / Heat_Loss_Factor)
-            dynamic_preheat_minutes = max(0.0, T_required_rise * (MINUTES_PER_DEGREE / HEAT_LOSS_FACTOR))
-            
+            # Dynamic Preheat = Rise * MPD * HLF * Cold_Multiplier
+            dynamic_preheat_minutes = max(
+                0.0, 
+                T_required_rise * MINUTES_PER_DEGREE * HEAT_LOSS_FACTOR * COLD_MULTIPLIER
+            )
             # Apply the safety minimum preheat time
             final_preheat_minutes = max(dynamic_preheat_minutes, MIN_PREHEAT)
 
@@ -1705,6 +1726,7 @@ async def calculate_decay_metrics_and_attach(
                 "time_since_minutes": round(time_since_minutes, 1),
                 "T_forecast": round(forecast_temp, 1),
                 "T_start_simulated": round(T_start, 1),
+                "cold_multiplier": round(COLD_MULTIPLIER, 2),
                 "preheat_minutes": round(final_preheat_minutes, 1) # CRITICAL
             }
             
