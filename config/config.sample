@@ -1,25 +1,67 @@
 {
+    "global_settings": {
+    "PREHEAT_TIME_MINUTES": 30.0,
+    "DEFAULT_TEMPERATURE": 18.0,
+    "ECO_TEMPERATURE": 12.0,
+    "TEMPERATURE_SENSITIVITY": 10.0,
+    "PREHEAT_ADJUSTMENT_MINUTES_PER_DEGREE": 15.0
+        },
+    "hub_settings": {
+        "main_church": {
+            "HEAT_LOSS_CONSTANT": 1500.0
+        },
+        "church_hall": {
+            "HEAT_LOSS_CONSTANT": 1000.0
+        }
+    },
+
     "locations": {
         "Main Church - Small Room": {
-            "neohub": "main_church",
-            "zones": ["Small Room corridor and toilets"]
+                "neohub": "main_church",
+            "zones": ["Small Room corridor and toilets"],
+            "heat_loss_factor": 3.0,
+            "min_external_temp": 14
         },
         "Main Church - Chancel": {
             "neohub": "main_church",
-            "zones": ["Main Church", "Small Room corridor and toilets"]
+            "zones": ["Main Church", "Small Room corridor and toilets"],
+            "heat_loss_factor": 3.0,
+            "min_external_temp": 14
+        },
+        "Main Church - Nave worship area": {
+            "neohub": "main_church",
+            "zones": ["Main Church", "Small Room corridor and toilets"],
+            "heat_loss_factor": 3.0,
+            "min_external_temp": 14
         },
         "Church Hall": {
             "neohub": "church_hall",
-            "zones": ["Main Hall", "Meeting Room 1", "Kitchen"]
+            "zones": ["Main Hall", "Meeting Room 1", "Kitchen"],
+            "heat_loss_factor": 2.0,
+            "min_external_temp": 7
         },
-        "Meeting Room 2": {
+        "Meeting Room 1": {
             "neohub": "church_hall",
-            "zones": ["Room 1"]
+            "zones": ["Meeting Room 1"],
+            "heat_loss_factor": 2.0,
+            "min_external_temp": 7
         }
     },
-    "preheat_time_minutes": 30,
-    "default_temperature": 20,
-    "eco_temperature": 16,
-    "temperature_sensitivity": 10,
-    "preheat_adjustment_minutes_per_degree": 5
+    "zone_properties": {
+        "Main Church": {
+            "heat_loss_factor": 3.0
+        },
+        "Small Room corridor and toilets": {
+            "heat_loss_factor": 3.0
+        },
+        "Kitchen": {
+            "heat_loss_factor": 1.5
+        },
+        "Meeting Room 1": {
+            "heat_loss_factor": 2.0
+        },
+        "Main Hall": {
+            "heat_loss_factor": 2.5
+        }
+    }
 }
