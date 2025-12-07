@@ -23,6 +23,22 @@ app = Flask(__name__)
 # 2. HELPER FUNCTIONS
 # --------------------------------------------------------------------------
 
+def full_status_prep(raw_data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Formats the raw scheduler status into the complete dictionary used by both the template and the API.
+    Returns: The 'full_status' dictionary.
+    """
+    overall_status = raw_data.get("overall_status", "UNAVAILABLE")
+    
+    # The returned dictionary is the 'full_status'
+    full_status = {
+        "overall_status": overall_status,
+        "display": map_status_to_display(overall_status),
+        "timestamp": raw_data.get("timestamp", "N/A"),
+        "neohub_reports": raw_data.get("neohub_reports", [])
+    }
+    return full_status
+
 def get_structured_config() -> Dict[str, Any]:
     """Reads the structured config.json file, ensuring global_settings are present."""
     default_global_settings = {
@@ -114,14 +130,31 @@ def write_structured_config(config_data: Dict[str, Any]) -> bool:
         return False
 
 def get_scheduler_status() -> Dict[str, Any]:
-    """Reads the scheduler status from the JSON file."""
+    """Reads the detailed scheduler status from the temporary JSON file.
+
+    Includes comprehensive error handling and logging for robustness.
+    """
+    SCHEDULER_STATUS_FILE = '/tmp/scheduler_status.json'
+    # Define a default status to return in case of any failure
+    default_status = {"overall_status": "UNAVAILABLE", "timestamp": "N/A", "details": {}, "summary": "Scheduler status file is unavailable."}
+    
     try:
         with open(SCHEDULER_STATUS_FILE, 'r') as f:
             status = json.load(f)
             return status
-    except (FileNotFoundError, json.JSONDecodeError):
-        # Default status if file is not found or corrupted
-        return {"overall_status": "UNAVAILABLE", "timestamp": "N/A", "neohub_reports": []}
+    except FileNotFoundError:
+        # File not existing is often expected (e.g., scheduler hasn't run yet).
+        # We can log this as an info/warning rather than an error.
+        logging.info(f"Scheduler status file not yet found at {SCHEDULER_STATUS_FILE}.")
+        return default_status
+    except json.JSONDecodeError as e:
+        # The file exists but is corrupted (not valid JSON). This is a fault.
+        logging.error(f"Scheduler status file corrupted ({SCHEDULER_STATUS_FILE}). JSON Decode Error: {e}")
+        return default_status
+    except Exception as e:
+        # Catch all other I/O errors (e.g., PermissionError, IOError)
+        logging.error(f"An unexpected error occurred while reading scheduler status file {SCHEDULER_STATUS_FILE}: {e}")
+        return default_status
 
 def map_status_to_display(overall_status: str) -> Dict[str, str]:
     """Helper function to map the status string to display text and color."""
@@ -174,19 +207,19 @@ def reload_config_in_scheduler() -> bool:
 
 @app.route('/')
 def dashboard():
-    """Renders the main dashboard and config view."""
+    """
+    Renders the main dashboard page, gathering all necessary data (config, PID, and scheduler status).
+    Uses the unified full_status object for clean status reporting.
+    """
     config_data = get_structured_config()
-    scheduler_pid = os.getppid()
-    status_data = get_scheduler_status()
-    overall_status = status_data.get("overall_status", "UNAVAILABLE")
-    status_display = map_status_to_display(overall_status)
-
+    scheduler_pid = os.getppid() 
+    full_status = full_status_prep(get_scheduler_status())
+    
     return render_template(
-        'dashboard.html',
-        config=config_data,
+        'dashboard.html', 
+        config=config_data, 
         scheduler_pid=scheduler_pid,
-        status=status_data,
-        status_display=status_display 
+        status=full_status # Pass the unified status object
     )
 
 @app.route('/api/trigger-manual', methods=['POST'])
@@ -230,17 +263,11 @@ def api_config_reload():
 
 @app.route('/api/status', methods=['GET'])
 def api_status():
-    """Returns the current scheduler status for AJAX polling."""
-    scheduler_status = get_scheduler_status()
-    overall_status = scheduler_status.get("overall_status", "UNAVAILABLE")
-    
-    response = {
-        "overall_status": overall_status,
-        "display": map_status_to_display(overall_status),
-        "timestamp": scheduler_status.get("timestamp", "N/A")
-    }
-    
-    return jsonify(response)
+    """
+    Returns the current scheduler status for AJAX polling.
+    """
+    full_status = full_status_prep(get_scheduler_status())
+    return jsonify(full_status)
 
 # This line is not executed when using Gunicorn, but useful for testing
 if __name__ == '__main__':
