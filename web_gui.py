@@ -207,15 +207,15 @@ def dashboard():
     """Renders the main dashboard and config view."""
     config_data = get_structured_config()
     scheduler_pid = os.getppid()
-    scheduler_status = get_scheduler_status()
-    overall_status = scheduler_status.get("overall_status", "UNAVAILABLE")
+    status_data = get_scheduler_status()
+    overall_status = status_data.get("overall_status", "UNAVAILABLE")
     status_display = map_status_to_display(overall_status)
 
     return render_template(
         'dashboard.html',
         config=config_data,
         scheduler_pid=scheduler_pid,
-        status=scheduler_status,
+        status=status_data,
         status_display=status_display 
     )
 
