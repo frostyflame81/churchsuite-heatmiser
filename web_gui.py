@@ -177,7 +177,9 @@ def dashboard():
     """Renders the main dashboard and config view."""
     config_data = get_structured_config()
     scheduler_pid = os.getppid()
-   
+    
+    status_data = {"overall_status": "UNAVAILABLE", "timestamp": "N/A", "neohub_reports": []}
+
     try:
         status_data = get_scheduler_status()
     except Exception as e:
