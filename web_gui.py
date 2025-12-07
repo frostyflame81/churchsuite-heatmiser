@@ -114,20 +114,46 @@ def write_structured_config(config_data: Dict[str, Any]) -> bool:
         return False
 
 def get_scheduler_status() -> Dict[str, Any]:
-    """Reads the status file created by app.py."""
+    """Reads the current scheduler status from the status file and calculates overall status."""
+    default_status = {
+        "last_run_success": False, 
+        "timestamp": "N/A", 
+        "overall_status": "UNAVAILABLE", # <-- CHANGE 1: Default to UNAVAILABLE
+        "component_statuses": []
+    }
+    
     try:
         with open(SCHEDULER_STATUS_FILE, 'r') as f:
-            return json.load(f)
-    except FileNotFoundError:
-        return {"overall_status": "UNAVAILABLE", "last_run_time": "N/A", "neohub_reports": []}
-    except Exception as e:
-        logging.error(f"Error reading status file: {e}")
-        return {"overall_status": "ERROR", "last_run_time": "N/A", "neohub_reports": []}
-    
-# Placeholder functions for interaction with the app.py process.
-# IMPORTANT: Since app.py is a separate process, these stubs must be
-# replaced with inter-process communication (IPC) logic (e.g., writing
-# a flag file or using signals/Queues) to communicate with app.py's process.
+            status = json.load(f)
+            
+            # --- STATUS CALCULATION LOGIC ---
+            component_statuses = status.get("component_statuses", [])
+            
+            if not component_statuses:
+                # Fallback: If no detailed component status, use the old 'last_run_success' key
+                status["overall_status"] = "SUCCESS" if status.get("last_run_success") is True else "FAILURE"
+            else:
+                num_components = len(component_statuses)
+                
+                # Count the number of hubs that reported a successful connection
+                successful_components = sum(
+                    1 for component in component_statuses if component.get('status') == 'SUCCESS'
+                )
+                
+                if successful_components == num_components:
+                    status["overall_status"] = "SUCCESS"
+                elif successful_components == 0:
+                    status["overall_status"] = "FAILURE" # All hubs failed (Red)
+                else:
+                    status["overall_status"] = "PARTIAL_FAILURE" # Some succeeded (Yellow)
+            
+            # If the file loaded successfully, the status is not UNAVAILABLE.
+            # We explicitly ensure overall_status is calculated above.
+            return status
+            
+    except (FileNotFoundError, json.JSONDecodeError):
+        # File not found or corrupt, return the default UNAVAILABLE state
+        return default_status
 
 def trigger_manual_run_in_scheduler() -> bool:
     """Creates a flag file that app.py monitors to trigger a manual run."""
@@ -150,6 +176,27 @@ def reload_config_in_scheduler() -> bool:
     except Exception as e:
         logging.error(f"Failed to create config reload flag: {e}")
         return False
+
+def map_status_to_display(overall_status: str) -> Dict[str, str]:
+    """Helper function to map the status string to display text and color."""
+    
+    status_display = {
+        "text": "TOTAL FAILURE",
+        "color": "bg-danger" 
+    }
+    
+    if overall_status == "SUCCESS":
+        status_display = {"text": "SUCCESS", "color": "bg-success"}
+    elif overall_status == "PARTIAL_FAILURE":
+        status_display = {"text": "PARTIAL FAILURE", "color": "bg-warning"}
+    elif overall_status == "FAILURE":
+        status_display = {"text": "TOTAL FAILURE", "color": "bg-danger"}
+    elif overall_status == "UNAVAILABLE":
+        # New UNAVAILABLE status mapping
+        # Use 'bg-white' for the background and 'text-dark' to ensure text is visible
+        status_display = {"text": "UNAVAILABLE", "color": "bg-white text-dark"}
+    
+    return status_display
 
 # --------------------------------------------------------------------------
 # 3. FLASK ROUTES (API & Views)
@@ -208,6 +255,21 @@ def api_config_reload():
         return jsonify({"success": True, "message": "Config reload signal sent to scheduler."}), 200
     else:
         return jsonify({"success": False, "message": "Failed to send config reload signal."}), 500
+
+@app.route('/api/status', methods=['GET'])
+def api_status():
+    """Returns the current scheduler status for AJAX polling."""
+    scheduler_status = get_scheduler_status()
+    overall_status = scheduler_status.get("overall_status", "UNAVAILABLE")
+    
+    response = {
+        "overall_status": overall_status,
+        # Use the helper function here
+        "display": map_status_to_display(overall_status),
+        "timestamp": scheduler_status.get("timestamp", "N/A")
+    }
+    
+    return jsonify(response)
 
 # This line is not executed when using Gunicorn, but useful for testing
 if __name__ == '__main__':
