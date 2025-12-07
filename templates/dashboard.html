@@ -43,12 +43,6 @@
             border-bottom: 1px solid var(--bs-border-color-translucent);
             padding-bottom: 10px;
         }
-        .location-data td[contenteditable="true"] {
-            /* OLD: background-color: #fffacd; */
-            background-color: var(--bs-light); /* Use Bootstrap light color for editable highlight */
-            border: 1px dashed var(--bs-secondary); /* Use a semantic color for the border */
-            cursor: text;
-        }
     </style>
 </head>
 <body>
@@ -162,7 +156,7 @@
             {% for k, v in config.global_settings.items() %}
             <tr>
                 <th>{{ k | replace('_', ' ') | title }}</th>
-                <td contenteditable="true" data-key="{{ k }}">{{ v }}</td>
+                <td contenteditable="true" data-key="{{ k }}" class="form-control">{{ v }}</td>
             </tr>
             {% endfor %}
         </tbody>
@@ -183,10 +177,10 @@
         {% for key, location in config.locations.items() %}
         <div class="location-card" data-key="{{ key }}">
             <h3>{{ key | replace('_', ' ') | title }}</h3> <table class="config-table location-data">
-                <tr><th>NeoHub Name</th><td contenteditable="true" data-key="neohub">{{ location.neohub }}</td></tr>
-                <tr><th>Zone Name (CSV)</th><td contenteditable="true" data-key="zones">{{ location.zones | join(', ') }}</td></tr>
-                <tr><th>Heat Loss Factor</th><td contenteditable="true" data-key="heat_loss_factor">{{ location.heat_loss_factor }}</td></tr>
-                <tr><th>Min External Temp</th><td contenteditable="true" data-key="min_external_temp">{{ location.min_external_temp }}</td></tr>
+                <tr><th>NeoHub Name</th><td contenteditable="true" data-key="neohub" class="form-control">{{ location.neohub }}</td></tr>
+                <tr><th>Zone Name (CSV)</th><td contenteditable="true" data-key="zones" class="form-control">{{ location.zones | join(', ') }}</td></tr>
+                <tr><th>Heat Loss Factor</th><td contenteditable="true" data-key="heat_loss_factor" class="form-control">{{ location.heat_loss_factor }}</td></tr>
+                <tr><th>Min External Temp</th><td contenteditable="true" data-key="min_external_temp" class="form-control">{{ location.min_external_temp }}</td></tr>
             </table>
             <button class="btn btn-secondary me-2" onclick="removeLocation('{{ key }}')">🗑️ Remove Location</button>
         </div>
