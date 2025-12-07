@@ -177,15 +177,9 @@ def dashboard():
     """Renders the main dashboard and config view."""
     config_data = get_structured_config()
     scheduler_pid = os.getppid()
-    
-    status_data = {"overall_status": "UNAVAILABLE", "timestamp": "N/A", "neohub_reports": []}
-
-    try:
-        status_data = get_scheduler_status()
-    except Exception as e:
-        logging.error(f"Failed to get initial scheduler status: {e}")
-        overall_status = status_data.get("overall_status", "UNAVAILABLE")
-        status_display = map_status_to_display(overall_status)
+    status_data = get_scheduler_status()
+    overall_status = status_data.get("overall_status", "UNAVAILABLE")
+    status_display = map_status_to_display(overall_status)
 
     return render_template(
         'dashboard.html',
