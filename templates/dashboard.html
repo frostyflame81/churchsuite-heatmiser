@@ -61,14 +61,14 @@
     <h2>Scheduler Status (PID: {{ scheduler_pid }})</h2>
     <div 
         id="status-header" 
-        class="p-3 mb-4 rounded border {{ status_display.color }}"
+        class="p-3 mb-4 rounded border {{ status.display.color }}"
     >
-        System Status: <strong id="status-text">{{ status_display.text }}</strong>
+        System Status: <strong id="status-text">{{ status.display.text }}</strong>
         <small class="text-muted"> (Last run: <span id="status-timestamp">{{ status.timestamp }}</span>)</small>
     </div>
 
     <!-- NEW SECTION: Detailed Status Reports -->
-    <h2>Status Reports ({{ status.neohub_reports | length if status.neohub_reports else 0 }} Hubs Processed)</h2>
+    <h2 id="reports-header">Status Reports ({{ status.neohub_reports | length if status.neohub_reports else 0 }} Hubs Processed)</h2>
 
     <div id="status-reports-container"></div>
 
@@ -425,8 +425,9 @@
                     const text = document.getElementById('status-text');
                     const timestamp = document.getElementById('status-timestamp');
                     const reportsContainer = document.getElementById('status-reports-container');
+                    const reportsHeader = document.getElementById('reports-header');
 
-                    if (!header || !text || !timestamp || !reportsContainer) {
+                    if (!header || !text || !timestamp || !reportsContainer || !reportsHeader) {
                         console.error('One or more status elements not found in the DOM.');
                         return;
                     }
@@ -461,6 +462,8 @@
                         const reportHtml = generateReportTableHtml(reports);
                         reportsContainer.innerHTML = reportHtml;
                     }
+                    // 5. Update the Reports Header Count (NEW)
+                    reportsHeader.textContent = `Status Reports (${reports.length} Hubs Processed)`;
                 })
                 .catch(error => {
                     console.error('Error fetching status:', error);
