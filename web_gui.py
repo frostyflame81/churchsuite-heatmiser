@@ -34,7 +34,7 @@ def full_status_prep(raw_data: Dict[str, Any]) -> Dict[str, Any]:
     full_status = {
         "overall_status": overall_status,
         "display": map_status_to_display(overall_status),
-        "timestamp": raw_data.get("timestamp", "N/A"),
+        "timestamp": raw_data.get("last_run_time", "N/A"),
         "neohub_reports": raw_data.get("neohub_reports", [])
     }
     return full_status
