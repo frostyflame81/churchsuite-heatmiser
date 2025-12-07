@@ -70,76 +70,8 @@
     <!-- NEW SECTION: Detailed Status Reports -->
     <h2>Status Reports ({{ status.neohub_reports | length if status.neohub_reports else 0 }} Hubs Processed)</h2>
 
-    <table class="report-table">
-        <thead>
-            <tr>
-                <th rowspan="2">NeoHub Name</th>
-                <th rowspan="2">Zone Name</th>
-                <th rowspan="2">Profile Status</th>
-                <th colspan="4" class="status-group-header">Schedule Processing Status (Flags)</th>
-            </tr>
-            <tr>
-                <th>AGGREGATE</th>
-                <th>CREATE</th>
-                <th>POST</th>
-                <th>ACTIVATE</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for hub_report in status.neohub_reports %}
-                <tr class="hub-status-summary">
-                    <td colspan="7">
-                        <strong>{{ hub_report.name }}</strong> | Status: 
-                        <span class="hub-status status-{{ hub_report.hub_status | lower }}">{{ hub_report.hub_status }}</span> 
-                        ({{ hub_report.message }})
-                    </td>
-                </tr>
-                
-                {% if hub_report.zones is defined and hub_report.zones | length > 0 %}
-                    
-                    {% for zone_report in hub_report.zones %}
-                        <tr>
-                            <td></td> 
-                            
-                            <td>{{ zone_report.zone_name }}</td>
-                            <td>{{ zone_report.profile_status }}</td>
-                            
-                            {% set flags = zone_report.status_flags %}
-                            
-                            <td class="flag-column">
-                                <span class="flag-status flag-{{ flags.AGGREGATE_PROFILE }}">
-                                    {{ flags.AGGREGATE_PROFILE }}
-                                </span>
-                            </td>
-                            <td class="flag-column">
-                                <span class="flag-status flag-{{ flags.CREATE_PROFILE }}">
-                                    {{ flags.CREATE_PROFILE }}
-                                </span>
-                            </td>
-                            <td class="flag-column">
-                                <span class="flag-status flag-{{ flags.POST_PROFILE }}">
-                                    {{ flags.POST_PROFILE }}
-                                </span>
-                            </td>
-                            <td class="flag-column">
-                                <span class="flag-status flag-{{ flags.ACTIVATE_PROFILE }}">
-                                    {{ flags.ACTIVATE_PROFILE }}
-                                </span>
-                            </td>
-                        </tr>
-                    {% endfor %}
-                    
-                {% else %}
-                    <tr>
-                        <td colspan="7" class="no-zones-message">
-                            {{ hub_report.message }}
-                        </td>
-                    </tr>
-                {% endif %}
-            {% endfor %}
-        </tbody>
-    </table>
-    
+    <div id="status-reports-container"></div>
+
     <p>Control the scheduling process:</p>
     <button class="btn btn-primary me-2" onclick="triggerRun()">Trigger Manual Update Now</button>
     <button class="btn btn-primary me-2" onclick="reloadConfig()">Reload Configuration</button>
@@ -393,6 +325,96 @@
                 }
             }
         }
+    
+        function generateReportTableHtml(neohub_reports) {
+            let html = `
+                <table class="report-table">
+                    <thead>
+                        <tr>
+                            <th rowspan="2">NeoHub Name</th>
+                            <th rowspan="2">Zone Name</th>
+                            <th rowspan="2">Profile Status</th>
+                            <th colspan="4" class="status-group-header">Schedule Processing Status (Flags)</th>
+                        </tr>
+                        <tr>
+                            <th>AGGREGATE</th>
+                            <th>CREATE</th>
+                            <th>POST</th>
+                            <th>ACTIVATE</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+            `;
+            
+            if (neohub_reports.length === 0) {
+                html += `<tr><td colspan="7" class="no-zones-message">No NeoHub reports available.</td></tr>`;
+            } else {
+                neohub_reports.forEach(hub_report => {
+                    // HUB Summary Row
+                    html += `
+                        <tr class="hub-status-summary">
+                            <td colspan="7">
+                                <strong>${hub_report.name}</strong> | Status: 
+                                <span class="hub-status status-${hub_report.hub_status.toLowerCase()}">${hub_report.hub_status}</span> 
+                                (${hub_report.message})
+                            </td>
+                        </tr>
+                    `;
+
+                    const zones = hub_report.zones || [];
+                    if (zones.length > 0) {
+                        // ZONE Detail Rows
+                        zones.forEach(zone_report => {
+                            const flags = zone_report.status_flags;
+                            html += `
+                                <tr>
+                                    <td></td> 
+                                    <td>${zone_report.zone_name}</td>
+                                    <td>${zone_report.profile_status}</td>
+                                    <td class="flag-column">
+                                        <span class="flag-status flag-${flags.AGGREGATE_PROFILE}">
+                                            ${flags.AGGREGATE_PROFILE}
+                                        </span>
+                                    </td>
+                                    <td class="flag-column">
+                                        <span class="flag-status flag-${flags.CREATE_PROFILE}">
+                                            ${flags.CREATE_PROFILE}
+                                        </span>
+                                    </td>
+                                    <td class="flag-column">
+                                        <span class="flag-status flag-${flags.POST_PROFILE}">
+                                            ${flags.POST_PROFILE}
+                                        </span>
+                                    </td>
+                                    <td class="flag-column">
+                                        <span class="flag-status flag-${flags.ACTIVATE_PROFILE}">
+                                            ${flags.ACTIVATE_PROFILE}
+                                        </span>
+                                    </td>
+                                </tr>
+                            `;
+                        });
+                    } else {
+                         // No Zones Message
+                         html += `
+                             <tr>
+                                 <td colspan="7" class="no-zones-message">
+                                     ${hub_report.message}
+                                 </td>
+                             </tr>
+                         `;
+                    }
+                });
+            }
+
+            html += `
+                    </tbody>
+                </table>
+            `;
+            
+            return html;
+        }
+
     </script>
     <script>
         function refreshStatus() {
@@ -424,6 +446,11 @@
 
                     // 3. Update Timestamp
                     timestamp.textContent = data.timestamp;
+
+                    // 4. Update the Detailed Reports Table (NEW)
+                    // The report table is complex, so we regenerate the whole block's content
+                    const reportHtml = generateReportTableHtml(data.neohub_reports || []);
+                    reportsContainer.innerHTML = reportHtml;
                 })
                 .catch(error => {
                     console.error('Error fetching status:', error);
