@@ -9,9 +9,6 @@
     <style>
         body { font-family: sans-serif; margin: 2em; }
         h1 { color: #333; }
-        .status-box { border: 1px solid #ccc; padding: 15px; margin-bottom: 20px; border-radius: 5px; }
-        .control-btn { padding: 10px 15px; margin-right: 10px; cursor: pointer; border-radius: 5px; border: 1px solid #555; background-color: #eee; }
-        .control-btn:hover { background-color: #ddd; }
         .config-table { width: 100%; border-collapse: collapse; margin-top: 15px; }
         .config-table th, .config-table td { border: 1px solid #ddd; padding: 8px; text-align: left; }
         
@@ -48,14 +45,11 @@
     </style>
 </head>
 <body>
-    <h1>ChurchSuite Heating Scheduler</h1>
-
-    {% set overall_class = 'status-ok' if scheduler_status.overall_status == 'SUCCESS' else ('status-error' if scheduler_status.overall_status == 'FAILED' else '') %}
-    
-<h2>Scheduler Status (PID: {{ scheduler_pid }})</h2>
+    <h1>ChurchSuite Heating Scheduler</h1>    
+    <h2>Scheduler Status (PID: {{ scheduler_pid }})</h2>
     <div 
         id="status-header" 
-        class="status-box {{ status_display.color }}" 
+        class="p-3 mb-4 rounded border {{ status_display.color }}"
     >
         System Status: <strong id="status-text">{{ status_display.text }}</strong>
         <small class="text-muted"> (Last run: <span id="status-timestamp">{{ status.timestamp }}</span>)</small>
@@ -135,8 +129,8 @@
     </table>
     
     <p>Control the scheduling process:</p>
-    <button class="control-btn" onclick="triggerRun()">Trigger Manual Update Now</button>
-    <button class="control-btn" onclick="reloadConfig()">Reload Configuration</button>
+    <button class="btn btn-primary me-2" onclick="triggerRun()">Trigger Manual Update Now</button>
+    <button class="btn btn-primary me-2" onclick="reloadConfig()">Reload Configuration</button>
 
     <h2>2. Global Scheduler Configuration</h2>
     <p>These settings affect all heating zones in the system.</p>
@@ -155,8 +149,8 @@
         </tbody>
     </table>
 
-    <button class="control-btn" onclick="saveConfig()">✏️ Save Config Changes</button>
-    <button class="control-btn" onclick="reloadConfig()">🔄 Reload Config (Scheduler)</button>
+    <button class="btn btn-primary me-2" onclick="saveConfig()">✏️ Save Config Changes</button>
+    <button class="btn btn-primary me-2" onclick="reloadConfig()">🔄 Reload Config (Scheduler)</button>
     <hr>
 
 
@@ -175,12 +169,12 @@
                 <tr><th>Heat Loss Factor</th><td contenteditable="true" data-key="heat_loss_factor">{{ location.heat_loss_factor }}</td></tr>
                 <tr><th>Min External Temp</th><td contenteditable="true" data-key="min_external_temp">{{ location.min_external_temp }}</td></tr>
             </table>
-            <button class="control-btn" onclick="removeLocation('{{ key }}')">🗑️ Remove Location</button>
+            <button class="btn btn-secondary me-2" onclick="removeLocation('{{ key }}')">🗑️ Remove Location</button>
         </div>
         {% endfor %}
     </div>
 
-    <button class="control-btn" onclick="addNewLocation()">➕ Add New Location</button>
+    <button class="btn btn-primary me-2" onclick="addNewLocation()">➕ Add New Location</button>
     <hr>
 
     <script>
@@ -310,7 +304,7 @@
                         <tr><th>Heat Loss Factor</th><td contenteditable="true" data-key="heat_loss_factor">1.0</td></tr>
                         <tr><th>Min External Temp</th><td contenteditable="true" data-key="min_external_temp">5</td></tr>
                     </table>
-                    <button class="control-btn" onclick="removeLocation('${key}')">🗑️ Remove Location</button>
+                    <button class="btn btn-primary me-2" onclick="removeLocation('${key}')">🗑️ Remove Location</button>
                 </div>
             `;
             document.getElementById('locations-container').insertAdjacentHTML('beforeend', newLocationHtml);
