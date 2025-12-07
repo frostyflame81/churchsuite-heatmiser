@@ -208,13 +208,15 @@ def dashboard():
     config_data = get_structured_config()
     scheduler_pid = os.getppid()
     scheduler_status = get_scheduler_status()
+    overall_status = scheduler_status.get("overall_status", "UNAVAILABLE")
+    status_display = map_status_to_display(overall_status)
 
-    # NEW: Render the external template
     return render_template(
-        'dashboard.html', # Reference the new file
+        'dashboard.html',
         config=config_data,
         scheduler_pid=scheduler_pid,
-        scheduler_status=scheduler_status
+        scheduler_status=scheduler_status,
+        status_display=status_display 
     )
 
 @app.route('/api/trigger-manual', methods=['POST'])
@@ -264,7 +266,6 @@ def api_status():
     
     response = {
         "overall_status": overall_status,
-        # Use the helper function here
         "display": map_status_to_display(overall_status),
         "timestamp": scheduler_status.get("timestamp", "N/A")
     }
