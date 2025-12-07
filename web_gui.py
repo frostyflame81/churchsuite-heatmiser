@@ -114,46 +114,37 @@ def write_structured_config(config_data: Dict[str, Any]) -> bool:
         return False
 
 def get_scheduler_status() -> Dict[str, Any]:
-    """Reads the current scheduler status from the status file and calculates overall status."""
-    default_status = {
-        "last_run_success": False, 
-        "timestamp": "N/A", 
-        "overall_status": "UNAVAILABLE", # <-- CHANGE 1: Default to UNAVAILABLE
-        "component_statuses": []
-    }
-    
+    """Reads the scheduler status from the JSON file."""
     try:
         with open(SCHEDULER_STATUS_FILE, 'r') as f:
             status = json.load(f)
-            
-            # --- STATUS CALCULATION LOGIC ---
-            component_statuses = status.get("component_statuses", [])
-            
-            if not component_statuses:
-                # Fallback: If no detailed component status, use the old 'last_run_success' key
-                status["overall_status"] = "SUCCESS" if status.get("last_run_success") is True else "FAILURE"
-            else:
-                num_components = len(component_statuses)
-                
-                # Count the number of hubs that reported a successful connection
-                successful_components = sum(
-                    1 for component in component_statuses if component.get('status') == 'SUCCESS'
-                )
-                
-                if successful_components == num_components:
-                    status["overall_status"] = "SUCCESS"
-                elif successful_components == 0:
-                    status["overall_status"] = "FAILURE" # All hubs failed (Red)
-                else:
-                    status["overall_status"] = "PARTIAL_FAILURE" # Some succeeded (Yellow)
-            
-            # If the file loaded successfully, the status is not UNAVAILABLE.
-            # We explicitly ensure overall_status is calculated above.
             return status
-            
     except (FileNotFoundError, json.JSONDecodeError):
-        # File not found or corrupt, return the default UNAVAILABLE state
-        return default_status
+        # Default status if file is not found or corrupted
+        return {"overall_status": "UNAVAILABLE", "timestamp": "N/A", "neohub_reports": []}
+
+def map_status_to_display(overall_status: str) -> Dict[str, str]:
+    """Helper function to map the status string to display text and color."""
+    
+    # Default to Total Failure for safety if status is unexpected
+    status_display = {
+        "text": "TOTAL FAILURE",
+        "color": "bg-danger" 
+    }
+    
+    if overall_status == "SUCCESS":
+        status_display = {"text": "SUCCESS", "color": "bg-success"}
+    elif overall_status == "PARTIAL_FAILURE":
+        status_display = {"text": "PARTIAL FAILURE", "color": "bg-warning"}
+    elif overall_status == "FAILURE":
+        status_display = {"text": "TOTAL FAILURE", "color": "bg-danger"}
+    
+    # FIX: Explicitly handle the UNAVAILABLE state
+    elif overall_status == "UNAVAILABLE":
+        # Neutral status when the scheduler hasn't run or file couldn't be read.
+        status_display = {"text": "UNAVAILABLE", "color": "bg-white text-dark"}
+        
+    return status_display
 
 def trigger_manual_run_in_scheduler() -> bool:
     """Creates a flag file that app.py monitors to trigger a manual run."""
@@ -177,27 +168,6 @@ def reload_config_in_scheduler() -> bool:
         logging.error(f"Failed to create config reload flag: {e}")
         return False
 
-def map_status_to_display(overall_status: str) -> Dict[str, str]:
-    """Helper function to map the status string to display text and color."""
-    
-    status_display = {
-        "text": "TOTAL FAILURE",
-        "color": "bg-danger" 
-    }
-    
-    if overall_status == "SUCCESS":
-        status_display = {"text": "SUCCESS", "color": "bg-success"}
-    elif overall_status == "PARTIAL_FAILURE":
-        status_display = {"text": "PARTIAL FAILURE", "color": "bg-warning"}
-    elif overall_status == "FAILURE":
-        status_display = {"text": "TOTAL FAILURE", "color": "bg-danger"}
-    elif overall_status == "UNAVAILABLE":
-        # New UNAVAILABLE status mapping
-        # Use 'bg-white' for the background and 'text-dark' to ensure text is visible
-        status_display = {"text": "UNAVAILABLE", "color": "bg-white text-dark"}
-    
-    return status_display
-
 # --------------------------------------------------------------------------
 # 3. FLASK ROUTES (API & Views)
 # --------------------------------------------------------------------------
@@ -207,9 +177,13 @@ def dashboard():
     """Renders the main dashboard and config view."""
     config_data = get_structured_config()
     scheduler_pid = os.getppid()
-    status_data = get_scheduler_status()
-    overall_status = status_data.get("overall_status", "UNAVAILABLE")
-    status_display = map_status_to_display(overall_status)
+   
+    try:
+        status_data = get_scheduler_status()
+    except Exception as e:
+        logging.error(f"Failed to get initial scheduler status: {e}")
+        overall_status = status_data.get("overall_status", "UNAVAILABLE")
+        status_display = map_status_to_display(overall_status)
 
     return render_template(
         'dashboard.html',
