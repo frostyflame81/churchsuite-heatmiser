@@ -333,12 +333,17 @@
                     if (!header || !text || !timestamp) return;
 
                     // 1. Update Header Color/Background
-                    // Remove all previous background classes (bg-*, text-dark)
-                    const allBgClasses = ['bg-success', 'bg-warning', 'bg-danger', 'bg-white', 'text-dark'];
-                    header.className = header.className.split(' ').filter(c => !allBgClasses.includes(c) && c !== 'status-box').join(' ');
-                    header.classList.add('status-box'); // Re-add the base style
+                    // Define ONLY the classes we want to remove (the color/text classes)
+                    const colorClassesToRemove = ['bg-success', 'bg-warning', 'bg-danger', 'bg-white', 'text-dark'];
 
-                    // Add the new color class and text-dark for white background visibility
+                    // Filter out ONLY the color/text classes from the existing class list
+                    const existingClasses = header.className.split(' ');
+                    const preservedClasses = existingClasses.filter(c => !colorClassesToRemove.includes(c));
+
+                    // Set the class name back to only the preserved base classes (p-3, mb-4, rounded, border)
+                    header.className = preservedClasses.join(' ');
+                    
+                    // Add the new color classes supplied by the API
                     data.display.color.split(' ').forEach(cls => header.classList.add(cls));
 
                     // 2. Update Status Text
@@ -349,13 +354,17 @@
                 })
                 .catch(error => {
                     console.error('Error fetching status:', error);
-                    // Handle network error by displaying a red error state
+                    // Handle network error by falling back to a red state
                     const header = document.getElementById('status-header');
                     const text = document.getElementById('status-text');
+                    
                     if (header && text) {
-                        header.classList.remove('bg-success', 'bg-warning', 'bg-white');
+                        // Keep base styling, but aggressively set error color/text
+                        header.classList.remove('bg-success', 'bg-warning', 'bg-white', 'text-dark');
                         header.classList.add('bg-danger');
-                        text.textContent = 'NETWORK ERROR';
+                        text.textContent = 'NETWORK ERROR (Check logs)';
+                        // Show a temporary notification for user feedback
+                        showNotification('Error fetching status data. Check console logs.', 'error');
                     }
                 });
         }
