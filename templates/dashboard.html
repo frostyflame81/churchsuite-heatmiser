@@ -56,7 +56,7 @@
     </div>
 
     <!-- NEW SECTION: Detailed Status Reports -->
-    <h2>Status Reports ({{ scheduler_status.neohub_reports | length if scheduler_status.neohub_reports else 0 }} Hubs Processed)</h2>
+    <h2>Status Reports ({{ status.neohub_reports | length if status.neohub_reports else 0 }} Hubs Processed)</h2>
 
     <table class="report-table">
         <thead>
@@ -74,7 +74,7 @@
             </tr>
         </thead>
         <tbody>
-            {% for hub_report in scheduler_status.neohub_reports %}
+            {% for hub_report in status.neohub_reports %}
                 <tr class="hub-status-summary">
                     <td colspan="7">
                         <strong>{{ hub_report.name }}</strong> | Status: 
