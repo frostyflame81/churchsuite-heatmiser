@@ -215,7 +215,7 @@ def dashboard():
         'dashboard.html',
         config=config_data,
         scheduler_pid=scheduler_pid,
-        scheduler_status=scheduler_status,
+        status=scheduler_status,
         status_display=status_display 
     )
 
