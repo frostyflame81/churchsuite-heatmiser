@@ -424,8 +424,12 @@
                     const header = document.getElementById('status-header');
                     const text = document.getElementById('status-text');
                     const timestamp = document.getElementById('status-timestamp');
-                    
-                    if (!header || !text || !timestamp) return;
+                    const reportsContainer = document.getElementById('status-reports-container');
+
+                    if (!header || !text || !timestamp || !reportsContainer) {
+                        console.error('One or more status elements not found in the DOM.');
+                        return;
+                    }
 
                     // 1. Update Header Color/Background
                     // Define ONLY the classes we want to remove (the color/text classes)
@@ -449,8 +453,14 @@
 
                     // 4. Update the Detailed Reports Table (NEW)
                     // The report table is complex, so we regenerate the whole block's content
-                    const reportHtml = generateReportTableHtml(data.neohub_reports || []);
-                    reportsContainer.innerHTML = reportHtml;
+                    // Ensure 'neohub_reports' is present in the data payload
+                    const reports = data.neohub_reports || [];
+                    
+                    // If the scheduler is still initializing, reports might be empty, but we still render the table with the 'No reports' message.
+                    if (reportsContainer) { 
+                        const reportHtml = generateReportTableHtml(reports);
+                        reportsContainer.innerHTML = reportHtml;
+                    }
                 })
                 .catch(error => {
                     console.error('Error fetching status:', error);
