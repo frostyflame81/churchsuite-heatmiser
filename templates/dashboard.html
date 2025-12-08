@@ -98,8 +98,26 @@
     <button class="btn btn-primary me-2" onclick="reloadConfig()">🔄 Reload Config (Scheduler)</button>
     <hr>
 
+    <h2>3. Hub Configuration (NeoHub Settings)</h2>
+    <p>These settings affect the entire NeoHub and are used for preheat calculations.</p>
 
-    <h2>3. Location Configuration (Heating Zones)</h2>
+    <div id="hubs-container">
+        {% for key, hub in config.hub_settings.items() %}
+        <div class="location-card" data-key="{{ key }}">
+            <h3>{{ key | replace('_', ' ') | title }}</h3> 
+            <table class="config-table hub-data">
+                <tr><th>Heat Loss Constant</th><td contenteditable="true" data-key="HEAT_LOSS_CONSTANT" class="form-control">{{ hub.HEAT_LOSS_CONSTANT }}</td></tr>
+            </table>
+            <button class="btn btn-secondary me-2" onclick="removeHub('{{ key }}')">🗑️ Remove Hub</button>
+        </div>
+        {% endfor %}
+    </div>
+
+    <button class="btn btn-primary me-2" onclick="addNewHub()">➕ Add New Hub</button>
+
+    <hr>
+
+    <h2>4. Location Configuration (Heating Zones)</h2>
     <p>
         Configure which ChurchSuite locations map to NeoHub zones, along with location-specific heating factors.
         Use the <strong>NeoHub Name</strong> and <strong>Zone Name</strong> fields to map the location.
@@ -223,6 +241,7 @@
         function collectConfigData() {
             const configData = {
                 global_settings: {},
+                hub_settings: {}, // NEW: Initialize hub_settings
                 locations: {}
             };
             
@@ -235,8 +254,28 @@
                 configData.global_settings[key] = isNaN(value) || value === '' ? value : Number(value);
             });
 
-            // 2. Collect Location Settings
-            document.querySelectorAll('.location-card').forEach(card => {
+            // 2. Collect Hub Settings (NEW SECTION)
+            document.querySelectorAll('.location-card[data-key]:has(.hub-data)').forEach(card => {
+                const hubKey = card.getAttribute('data-key');
+                const hub = {};
+
+                card.querySelectorAll('.hub-data td[contenteditable="true"]').forEach(cell => {
+                    const key = cell.getAttribute('data-key');
+                    let value = cell.textContent.trim();
+                    // Cast numerical values back to Number
+                    hub[key] = isNaN(value) || value === '' ? value : Number(value);
+                });
+                
+                if (Object.keys(hub).length > 0) {
+                    configData.hub_settings[hubKey] = hub;
+                } else {
+                    showNotification(`Warning: Hub ${hubKey} skipped (no settings found).`);
+                }
+            });
+
+
+            // 3. Collect Location Settings (Original Logic Restored)
+            document.querySelectorAll('.location-card[data-key]:has(.location-data)').forEach(card => {
                 const locationKey = card.getAttribute('data-key');
                 const location = {};
 
@@ -257,7 +296,7 @@
                 
                 // Ensure all location keys required by the scheduler are present
                 if (location.neohub && location.zones.length > 0) {
-                     configData.locations[locationKey] = location;
+                    configData.locations[locationKey] = location;
                 } else {
                     showNotification(`Warning: Location ${locationKey} skipped (missing NeoHub or Zone).`);
                 }
@@ -325,7 +364,42 @@
                 }
             }
         }
-    
+
+        function addNewHub() {
+            const hubName = prompt("Enter a friendly name for the new NeoHub (e.g., New Hub):");
+            if (!hubName) return;
+
+            const key = generateLocationKey(hubName); // Reuse helper for generating key
+            if (document.querySelector(`.location-card[data-key="${key}"]:has(.hub-data)`)) {
+                alert("A hub with that key already exists. Please choose another name.");
+                return;
+            }
+            
+            // Generate a simple, editable HTML structure for the new hub
+            const newHubHtml = `
+                <div class="location-card" data-key="${key}">
+                    <h3>${hubName} (Key: ${key})</h3>
+                    <table class="config-table hub-data">
+                        <tr><th>Heat Loss Constant</th><td contenteditable="true" data-key="HEAT_LOSS_CONSTANT">1000.0</td></tr>
+                    </table>
+                    <button class="btn btn-secondary me-2" onclick="removeHub('${key}')">🗑️ Remove Hub</button>
+                </div>
+            `;
+            document.getElementById('hubs-container').insertAdjacentHTML('beforeend', newHubHtml);
+            showNotification(`New hub '${hubName}' added. Click 'Save Config' to finalize.`);
+        }
+
+        function removeHub(key) {
+            if (confirm(`Are you sure you want to remove the NeoHub with key: ${key}? This will be permanent after you click 'Save Config'.`)) {
+                // Find the hub card using the hub-data class for distinction
+                const card = document.querySelector(`.location-card[data-key="${key}"]:has(.hub-data)`);
+                if (card) {
+                    card.remove();
+                    showNotification(`Hub ${key} marked for removal. Click 'Save Config' to finalize.`);
+                }
+            }
+        }        
+
         function generateReportTableHtml(neohub_reports) {
             let html = `
                 <table class="report-table">

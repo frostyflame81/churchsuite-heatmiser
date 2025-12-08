@@ -64,8 +64,12 @@ def get_structured_config() -> Dict[str, Any]:
     
     # Merge existing global settings with any new defaults defined in the code
     config['global_settings'] = {**default_global_settings, **config['global_settings']}
-        
-    # 2. Ensure 'locations' key exists
+
+    # 2. Ensure 'hub_settings' key exists (NEW)
+    if 'hub_settings' not in config:
+         config['hub_settings'] = {}
+
+    # 3. Ensure 'locations' key exists
     if 'locations' not in config:
          config['locations'] = {}
             
@@ -85,7 +89,12 @@ def _normalize_numbers_to_float(config_data: Dict[str, Any]) -> Dict[str, Any]:
         "TEMPERATURE_SENSITIVITY", 
         "PREHEAT_ADJUSTMENT_MINUTES_PER_DEGREE"
     ]
-    
+
+    # Keys in hub_settings that must be floats
+    HUB_FLOAT_KEYS = [
+        "HEAT_LOSS_CONSTANT"
+    ]
+
     # Keys in locations that must be floats
     LOCATION_FLOAT_KEYS = [
         "heat_loss_factor", 
@@ -104,7 +113,19 @@ def _normalize_numbers_to_float(config_data: Dict[str, Any]) -> Dict[str, Any]:
                 logging.warning(f"Failed to cast global setting '{key}' value '{global_settings[key]}' to float.")
                 pass 
 
-    # --- 2. Process locations ---
+    # --- 2. Process hub_settings ---
+    hub_settings = config_data.get("hub_settings", {})
+    for hub_data in hub_settings.values():
+        for key in HUB_FLOAT_KEYS:
+            if key in hub_data:
+                try:
+                    # Explicitly cast the value to float
+                    hub_data[key] = float(hub_data[key])
+                except (ValueError, TypeError):
+                    logging.warning(f"Failed to cast hub setting '{key}' value '{hub_data[key]}' to float.")
+                    pass
+
+    # --- 3. Process locations ---
     locations = config_data.get("locations", {})
     for location_data in locations.values():
         for key in LOCATION_FLOAT_KEYS:
@@ -238,9 +259,11 @@ def api_config_update():
         # Normalize numeric values to floats after json parsing
         updated_config_data = _normalize_numbers_to_float(updated_config_data)
         # Basic validation: ensure the primary keys are present
-        if not updated_config_data or 'global_settings' not in updated_config_data or 'locations' not in updated_config_data:
-            return jsonify({"success": False, "message": "Invalid configuration payload. Missing global_settings or locations."}), 400
-
+        if not updated_config_data or \
+            'global_settings' not in updated_config_data or \
+            'hub_settings' not in updated_config_data or \
+            'locations' not in updated_config_data:
+            return jsonify({"success": False, "message": "Invalid configuration payload. Missing global_settings, hub_settings, or locations."}), 400
         # Write to the file located at /config/config.json
         if write_structured_config(updated_config_data):
             # After writing the file, signal the scheduler to reload the config
