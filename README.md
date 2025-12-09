@@ -1,11 +1,13 @@
 # ChurchSuite Heatmiser Integration
 
 ## Status
-This product is in beta - it currently compiles and runs - the next phase is feature development.
+This project now has a stable release v1.0.0.0, there is a development branch for testing new features.
 
 ## Purpose
 
-This application automates the control of Heatmiser neo heating systems based on bookings in ChurchSuite. It fetches booking data from ChurchSuite and adjusts the heating schedule for your venue, ensuring rooms are heated only when needed.
+This application automates the control of Heatmiser neo heating systems based on bookings in ChurchSuite. It fetches booking data from ChurchSuite and adjusts the heating schedule for your venue, ensuring rooms are heated only when needed. It also includes a highly intuitive preheat calculation which is vastly superior
+to the original heatmiser technique and allows for the thermal dynamics of your particular building as well 
+as taking into account, the last event that the space was heated for. 
 
 ## Features
 
@@ -55,6 +57,22 @@ cd churchsuite-heatmiser
 
     ```json
     {
+        "global_settings": {
+        "PREHEAT_TIME_MINUTES": 30.0,
+        "DEFAULT_TEMPERATURE": 18.0,
+        "ECO_TEMPERATURE": 12.0,
+        "TEMPERATURE_SENSITIVITY": 10.0,
+        "PREHEAT_ADJUSTMENT_MINUTES_PER_DEGREE": 15.0,
+        "HEAT_LOSS_MULTIPLIER_MAX": 1.46,
+        "TEMP_WARM_THRESHOLD": 12.0,
+        "TEMP_COLD_THRESHOLD": -5.0
+            },
+        "hub_settings": {
+            "neohub_name": {
+                "HEAT_LOSS_CONSTANT": 5400.0
+            }
+        },
+
         "locations": {
             "Location Name in ChurchSuite": {
                 "neohub": "neohub_name",
@@ -63,11 +81,11 @@ cd churchsuite-heatmiser
                 "min_external_temp": 7
             }
         },
-        "preheat_time_minutes": 30,
-        "default_temperature": 20,
-        "eco_temperature": 16,
-        "temperature_sensitivity": 10,
-        "preheat_adjustment_minutes_per_degree": 5
+            "zone_properties": {
+            "Zone Name in Heatmiser": {
+                "heat_loss_factor": 6.7
+            }
+        }
     }
     ```
 * Edit the `config.json` file:
@@ -79,8 +97,10 @@ cd churchsuite-heatmiser
     * **`preheat_time_minutes`**: The default time in minutes to start heating a venue before a booking.
     * **`default_temperature`**: The target temperature in degrees Celsius when a room is occupied.
     * **`eco_temperature`**: The temperature to set when a room is not occupied.
-    * `temperature_sensitivity`: The outside temperature below which the preheat adjustment applies.
+    * `temperature_sensitivity`: A setting for future expansion that fills out the heatmiser profile.
     * `preheat_adjustment_minutes_per_degree`: Minutes added to preheat per degree below sensitivity, multiplied by heat\_loss\_factor.
+
+    Most of these values can now be adjusted from the gui available on port 5000
 
 ### 3. Set up Environment Variables
 
@@ -136,3 +156,8 @@ docker-compose up -d
 ```
 
 This will build the Docker image and start the container in detached mode. The application will now run in the background, automatically adjusting your heating schedule based on ChurchSuite bookings.
+
+To tweak the config or check the status of the program, connect to localhost:5000
+
+In the Gui you can add and remove zones and locations as well as match them up. 
+You can also push a manual sync and reload the config from changes made in the gui form. 

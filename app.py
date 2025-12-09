@@ -1542,20 +1542,31 @@ def calculate_preheat_duration(
 
     return preheat_minutes
 
-def calculate_cold_multiplier(forecast_temp: float) -> float:
-    """Calculates the cold multiplier, scaling 2.0 at -5C to 1.0 at 12C."""
-    T_WARM = 12.0 
-    T_COLD = -5.0
+def calculate_cold_multiplier(forecast_temp: float, config: Dict[str, Any]) -> float:
+    """Calculates the cold multiplier using configurable thresholds and maximums."""
     
-    # Clamp the temperature within the range [-5.0, 12.0]
+    # Read values from the global_settings section of the config
+    settings = config.get("global_settings", {})
+    
+    # Use .get with a default fallback (using the old hardcoded values) 
+    # for safety, in case the new parameters are missing from the config file.
+    T_WARM = settings.get("TEMP_WARM_THRESHOLD", 12.0)
+    T_COLD = settings.get("TEMP_COLD_THRESHOLD", -5.0)
+    HLM_MAX = settings.get("HEAT_LOSS_MULTIPLIER_MAX", 2.0)
+    
+    # The multiplier range (e.g., 1.0 to 1.46, so the range is 0.46)
+    multiplier_range = HLM_MAX - 1.0 
+    
+    # Clamp the temperature within the range [T_COLD, T_WARM]
     clamped_temp = max(T_COLD, min(forecast_temp, T_WARM))
     
     # Calculate the ratio (0 at T_COLD, 1 at T_WARM)
-    temp_range = T_WARM - T_COLD # 17.0
+    temp_range = T_WARM - T_COLD
     ratio = (clamped_temp - T_COLD) / temp_range
     
-    # Scale the multiplier from 2.0 down to 1.0 (inverted ratio)
-    multiplier = 2.0 - (ratio * 1.0)
+    # Scale the multiplier from HLM_MAX down to 1.0 (inverted ratio)
+    # This is equivalent to: HLM_MAX - (ratio * multiplier_range)
+    multiplier = HLM_MAX - (ratio * multiplier_range)
     
     return multiplier
 
