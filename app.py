@@ -2421,7 +2421,7 @@ def main():
         "ECO_TEMPERATURE": 12.0,
         "TEMPERATURE_SENSITIVITY": 10.0,
         "PREHEAT_ADJUSTMENT_MINUTES_PER_DEGREE": 15.0,
-        "HEAT_LOSS_MULTIPLIER_MAX": 2.0             # New float default for cold weather scaling
+        "HEAT_LOSS_MULTIPLIER_MAX": 1.46             # New float default for cold weather scaling
     }
     
     # Ensure the 'global_settings' key exists
@@ -2456,8 +2456,8 @@ def main():
         # Apply default for HEAT_LOSS_CONSTANT (Building-specific thermal inertia)
         h_l_c = hub_settings.get("HEAT_LOSS_CONSTANT")
         if h_l_c is None:
-            hub_settings["HEAT_LOSS_CONSTANT"] = 100.0
-            logging.info(f"Applied default HEAT_LOSS_CONSTANT to hub '{neohub_name}': 100.0")
+            hub_settings["HEAT_LOSS_CONSTANT"] = 5400.0
+            logging.info(f"Applied default HEAT_LOSS_CONSTANT to hub '{neohub_name}': 5400.0")
         else:
             try:
                 # Ensure value is float
