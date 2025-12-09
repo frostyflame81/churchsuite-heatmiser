@@ -1689,7 +1689,7 @@ async def calculate_decay_metrics_and_attach(
             logging.warning(f"Could not get forecast for {location_name} at {start_dt}. Using fallback 0.0°C.")
             forecast_temp = 0.0
         # ⚠️ NEW STEP: Calculate the dynamic cold multiplier
-        COLD_MULTIPLIER = calculate_cold_multiplier(forecast_temp)
+        COLD_MULTIPLIER = calculate_cold_multiplier(forecast_temp, config)
 
         # Now, apply to all affected zones and update decay state
         for zone_name in location_config['zones']:
