@@ -67,14 +67,13 @@
         <small class="text-muted"> (Last run: <span id="status-timestamp">{{ status.timestamp }}</span>)</small>
     </div>
 
-    <!-- NEW SECTION: Detailed Status Reports -->
     <h2 id="reports-header">Status Reports ({{ status.neohub_reports | length if status.neohub_reports else 0 }} Hubs Processed)</h2>
 
     <div id="status-reports-container"></div>
 
     <p>Control the scheduling process:</p>
-    <button class="btn btn-primary me-2" onclick="triggerRun()">Trigger Manual Update Now</button>
-    <button class="btn btn-primary me-2" onclick="reloadConfig()">Reload Configuration</button>
+    <button class="btn btn-primary me-2" id="trigger-run-btn">Trigger Manual Update Now</button>
+    <button class="btn btn-primary me-2" id="reload-config-control-btn">Reload Configuration</button>
     <hr>
 
     <h2>2. Global Scheduler Configuration</h2>
@@ -94,8 +93,8 @@
         </tbody>
     </table>
 
-    <button class="btn btn-primary me-2" onclick="saveConfig()">✏️ Save Config Changes</button>
-    <button class="btn btn-primary me-2" onclick="reloadConfig()">🔄 Reload Config (Scheduler)</button>
+    <button class="btn btn-primary me-2" id="save-config-btn">✏️ Save Config Changes</button>
+    <button class="btn btn-primary me-2" id="reload-config-scheduler-btn">🔄 Reload Config (Scheduler)</button>
     <hr>
 
     <h2>3. Hub Configuration (NeoHub Settings)</h2>
@@ -113,7 +112,7 @@
         {% endfor %}
     </div>
 
-    <button class="btn btn-primary me-2" onclick="addNewHub()">➕ Add New Hub</button>
+    <button class="btn btn-primary me-2" id="add-hub-btn">➕ Add New Hub</button>
 
     <hr>
 
@@ -137,8 +136,29 @@
         {% endfor %}
     </div>
 
-    <button class="btn btn-primary me-2" onclick="addNewLocation()">➕ Add New Location</button>
+    <button class="btn btn-primary me-2" id="add-location-btn">➕ Add New Location</button>
     <hr>
+
+    <h2>5. Zone Properties (Shared Heating Factors)</h2>
+    <p>
+        Define shared heating factors for common NeoHub zones. This prevents repeated data entry across multiple locations that use the same zone(s).
+    </p>
+
+    <div id="zone-properties-container">
+        {% for zone_name, props in config.zone_properties.items() %}
+        <div class="location-card" data-key="{{ zone_name }}">
+            <h3>{{ zone_name }}</h3> 
+            <table class="config-table zone-data">
+                <tr><th>Heat Loss Factor</th><td contenteditable="true" data-key="heat_loss_factor" class="form-control">{{ props.heat_loss_factor }}</td></tr>
+            </table>
+            <button class="btn btn-secondary me-2" onclick="removeZoneProperty('{{ zone_name }}')">🗑️ Remove Zone Property</button>
+        </div>
+        {% endfor %}
+    </div>
+
+    <button class="btn btn-primary me-2" id="add-zone-prop-btn">➕ Add New Zone Property</button>
+    <hr>
+    
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js" integrity="sha384-YvpcrYf0tY3lHB60NNkmXc5s9fDVZLESaAA55NDzOxhy9GkcIdslK1eN7N6jIeHz" crossorigin="anonymous"></script>
     <script>
         // Bootstrap 5.3+ Theme Toggler Logic
@@ -241,8 +261,9 @@
         function collectConfigData() {
             const configData = {
                 global_settings: {},
-                hub_settings: {}, // NEW: Initialize hub_settings
-                locations: {}
+                hub_settings: {}, 
+                locations: {},
+                zone_properties: {} // NEW: Initialize zone_properties
             };
             
             // 1. Collect Global Settings
@@ -254,7 +275,7 @@
                 configData.global_settings[key] = isNaN(value) || value === '' ? value : Number(value);
             });
 
-            // 2. Collect Hub Settings (NEW SECTION)
+            // 2. Collect Hub Settings
             document.querySelectorAll('.location-card[data-key]:has(.hub-data)').forEach(card => {
                 const hubKey = card.getAttribute('data-key');
                 const hub = {};
@@ -274,7 +295,7 @@
             });
 
 
-            // 3. Collect Location Settings (Original Logic Restored)
+            // 3. Collect Location Settings
             document.querySelectorAll('.location-card[data-key]:has(.location-data)').forEach(card => {
                 const locationKey = card.getAttribute('data-key');
                 const location = {};
@@ -301,6 +322,25 @@
                     showNotification(`Warning: Location ${locationKey} skipped (missing NeoHub or Zone).`);
                 }
             });
+            
+            // 4. Collect Zone Properties (NEW SECTION)
+            document.querySelectorAll('.location-card[data-key]:has(.zone-data)').forEach(card => {
+                const zoneKey = card.getAttribute('data-key');
+                const props = {};
+
+                card.querySelectorAll('.zone-data td[contenteditable="true"]').forEach(cell => {
+                    const key = cell.getAttribute('data-key');
+                    let value = cell.textContent.trim();
+                    // Cast numerical values back to Number
+                    props[key] = isNaN(value) || value === '' ? value : Number(value);
+                });
+                
+                if (Object.keys(props).length > 0) {
+                    configData.zone_properties[zoneKey] = props;
+                } else {
+                    showNotification(`Warning: Zone Property ${zoneKey} skipped (no settings found).`);
+                }
+            });
 
             return configData;
         }
@@ -320,10 +360,7 @@
             .then(response => response.json())
             .then(data => {
                 showNotification(data.message);
-                if (data.success) {
-                    // Reload the page to display the newly saved and loaded configuration
-                    setTimeout(() => window.location.reload(), 1500); 
-                }
+                // The original window.location.reload() has been REMOVED for consistent, notification-only feedback.
             })
             .catch(error => showNotification('Error saving config: ' + error));
         }
@@ -348,7 +385,7 @@
                         <tr><th>Heat Loss Factor</th><td contenteditable="true" data-key="heat_loss_factor">1.0</td></tr>
                         <tr><th>Min External Temp</th><td contenteditable="true" data-key="min_external_temp">5</td></tr>
                     </table>
-                    <button class="btn btn-primary me-2" onclick="removeLocation('${key}')">🗑️ Remove Location</button>
+                    <button class="btn btn-secondary me-2" onclick="removeLocation('${key}')">🗑️ Remove Location</button>
                 </div>
             `;
             document.getElementById('locations-container').insertAdjacentHTML('beforeend', newLocationHtml);
@@ -398,8 +435,43 @@
                     showNotification(`Hub ${key} marked for removal. Click 'Save Config' to finalize.`);
                 }
             }
-        }        
+        }
+        
+        function addNewZoneProperty() {
+            const zoneName = prompt("Enter the exact name of the NeoHub Zone (e.g., Main Hall):");
+            if (!zoneName) return;
 
+            // Use the zone name directly as the key
+            const key = zoneName; 
+            if (document.querySelector(`.location-card[data-key="${key}"]:has(.zone-data)`)) {
+                alert("A zone property with that name already exists.");
+                return;
+            }
+            
+            // Generate a simple, editable HTML structure for the new zone property
+            const newZonePropHtml = `
+                <div class="location-card" data-key="${key}">
+                    <h3>${zoneName}</h3>
+                    <table class="config-table zone-data">
+                        <tr><th>Heat Loss Factor</th><td contenteditable="true" data-key="heat_loss_factor">1.0</td></tr>
+                    </table>
+                    <button class="btn btn-secondary me-2" onclick="removeZoneProperty('${key}')">🗑️ Remove Zone Property</button>
+                </div>
+            `;
+            document.getElementById('zone-properties-container').insertAdjacentHTML('beforeend', newZonePropHtml);
+            showNotification(`New zone property '${zoneName}' added. Click 'Save Config' to finalize.`);
+        }
+        
+        function removeZoneProperty(key) {
+            if (confirm(`Are you sure you want to remove the zone property for: ${key}? This will be permanent after you click 'Save Config'.`)) {
+                const card = document.querySelector(`.location-card[data-key="${key}"]:has(.zone-data)`);
+                if (card) {
+                    card.remove();
+                    showNotification(`Zone Property ${key} marked for removal. Click 'Save Config' to finalize.`);
+                }
+            }
+        }
+        
         function generateReportTableHtml(neohub_reports) {
             let html = `
                 <table class="report-table">
@@ -560,6 +632,21 @@
         document.addEventListener('DOMContentLoaded', () => {
             refreshStatus();
             setInterval(refreshStatus, 5000); // Poll every 5 seconds
+            
+            // NEW: Event listeners for the main buttons, replacing onclick
+            document.getElementById('trigger-run-btn')?.addEventListener('click', triggerRun);
+            
+            // Both reload config buttons call the same function
+            document.getElementById('reload-config-control-btn')?.addEventListener('click', reloadConfig);
+            document.getElementById('reload-config-scheduler-btn')?.addEventListener('click', reloadConfig);
+            
+            document.getElementById('save-config-btn')?.addEventListener('click', saveConfig);
+            
+            document.getElementById('add-location-btn')?.addEventListener('click', addNewLocation);
+            document.getElementById('add-hub-btn')?.addEventListener('click', addNewHub);
+            
+            // NEW: Zone Property binding
+            document.getElementById('add-zone-prop-btn')?.addEventListener('click', addNewZoneProperty); 
         });
     </script>
 </body>

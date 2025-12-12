@@ -72,7 +72,11 @@ def get_structured_config() -> Dict[str, Any]:
     # 3. Ensure 'locations' key exists
     if 'locations' not in config:
          config['locations'] = {}
-            
+
+    # 4. Ensure 'zone_properties' key exists (NEW)
+    if 'zone_properties' not in config:
+        config['zone_properties'] = {}
+
     return config
 
 def _normalize_numbers_to_float(config_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -99,6 +103,11 @@ def _normalize_numbers_to_float(config_data: Dict[str, Any]) -> Dict[str, Any]:
     LOCATION_FLOAT_KEYS = [
         "heat_loss_factor", 
         "min_external_temp"
+    ]
+
+    # Keys in zone_properties that must be floats
+    ZONE_FLOAT_KEYS = [
+        "heat_loss_factor"
     ]
     
     # --- 1. Process global_settings ---
@@ -137,19 +146,49 @@ def _normalize_numbers_to_float(config_data: Dict[str, Any]) -> Dict[str, Any]:
                     logging.warning(f"Failed to cast location setting '{key}' value '{location_data[key]}' to float.")
                     pass 
 
+    # --- 4. Process zone_properties ---
+    zone_properties = config_data.get("zone_properties", {})
+    # Iterate over the zone names (keys) and their properties (values)
+    for zone_data in zone_properties.values():
+        for key in ZONE_FLOAT_KEYS:
+            if key in zone_data:
+                try:
+                    # Explicitly cast the value to float
+                    zone_data[key] = float(zone_data[key])
+                except (ValueError, TypeError):
+                    logging.warning(f"Failed to cast zone property '{key}' value '{zone_data[key]}' to float.")
+                    pass
+
     return config_data
 
-def write_structured_config(config_data: Dict[str, Any]) -> bool:
-    """Writes the updated configuration data back to config.json."""
+def write_structured_config(update_data: Dict[str, Any]) -> bool:
+    """
+    Writes the configuration data back to config.json by performing a
+    non-destructive merge with the current configuration (read via 
+    get_structured_config).
+    """
     try:
+        # 1. Read the current configuration from the file, ensuring defaults are applied
+        current_full_config = get_structured_config()
+
+        # 2. Perform the Non-Destructive Merge
+        # Start with the full, default-filled config
+        merged_config = current_full_config.copy()
+        
+        # Overwrite/add keys from the incoming update_data (e.g., 'zone_properties')
+        for key, value in update_data.items():
+            merged_config[key] = value
+
+        # 3. Write the merged configuration back to the file
         with open(CONFIG_FILE, 'w') as f:
             # Use indent=4 for a human-readable config file
-            json.dump(config_data, f, indent=4) 
+            json.dump(merged_config, f, indent=4) 
+        
         return True
     except Exception as e:
-        logging.error(f"Failed to write structured config file: {e}")
+        logging.error(f"Failed to write structured config file after merge: {e}")
         return False
-
+    
 def get_scheduler_status() -> Dict[str, Any]:
     """Reads the detailed scheduler status from the temporary JSON file.
 
@@ -253,18 +292,22 @@ def api_trigger_manual():
 
 @app.route('/api/config/update', methods=['POST'])
 def api_config_update():
-    """API endpoint to receive and update structured configuration settings."""
+    """
+    API endpoint to receive and update structured configuration settings.
+    Validation is now relaxed to allow partial updates (e.g., only zone_properties).
+    """
     try:
         updated_config_data = request.json
         # Normalize numeric values to floats after json parsing
         updated_config_data = _normalize_numbers_to_float(updated_config_data)
-        # Basic validation: ensure the primary keys are present
-        if not updated_config_data or \
-            'global_settings' not in updated_config_data or \
-            'hub_settings' not in updated_config_data or \
-            'locations' not in updated_config_data:
-            return jsonify({"success": False, "message": "Invalid configuration payload. Missing global_settings, hub_settings, or locations."}), 400
-        # Write to the file located at /config/config.json
+        
+        # --- MODIFIED VALIDATION ---
+        # Only check that the payload is not empty and is a dictionary
+        if not updated_config_data or not isinstance(updated_config_data, dict):
+             return jsonify({"success": False, "message": "Invalid configuration payload."}), 400
+        # ---------------------------
+
+        # The core merge logic is now handled inside write_structured_config(updated_config_data)
         if write_structured_config(updated_config_data):
             # After writing the file, signal the scheduler to reload the config
             reload_config_in_scheduler() 
@@ -275,7 +318,7 @@ def api_config_update():
     except Exception as e:
         logging.error(f"Error processing structured config update: {e}")
         return jsonify({"success": False, "message": f"Server error: {e}"}), 500
-
+    
 @app.route('/api/config/reload', methods=['POST'])
 def api_config_reload():
     """API endpoint to force the scheduler to reload its configuration."""
