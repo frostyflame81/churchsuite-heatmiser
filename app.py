@@ -1428,7 +1428,8 @@ def calculate_simulated_start_temp(
     zone_name: str, 
     neohub_name: str, 
     time_since_minutes: float,
-    forecast_temp: float
+    forecast_temp: float,
+    config: Dict[str, Any]
 ) -> float:
     """
     Calculates the predicted internal start temperature (T_start) for a zone
@@ -1437,7 +1438,6 @@ def calculate_simulated_start_temp(
     
     The rate of decay is proportional to the temperature differential.
     """
-    global config
     
     # 1. Fetch relevant config values with safe fallbacks
     hub_config = config.get("hub_settings", {}).get(neohub_name, {})
@@ -1711,7 +1711,8 @@ async def calculate_decay_metrics_and_attach(
                 zone_name=zone_name, 
                 neohub_name=neohub_name, 
                 time_since_minutes=time_since_minutes,
-                forecast_temp=forecast_temp
+                forecast_temp=forecast_temp,
+                config=config
             )
             
             # --- C. Calculate Preheat Time (T_required_rise and final_preheat_minutes) ---
