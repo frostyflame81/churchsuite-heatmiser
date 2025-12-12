@@ -1425,11 +1425,12 @@ async def get_forecast_temperature(target_datetime: datetime.datetime) -> Option
         return None
     
 def calculate_simulated_start_temp(
-    zone_name: str, 
-    neohub_name: str, 
+    zone_name: str,
     time_since_minutes: float,
     forecast_temp: float,
-    config: Dict[str, Any]
+    hub_heat_loss_constant: float,
+    zone_heat_loss_factor: float,
+    global_config: Dict[str, Any]
 ) -> float:
     """
     Calculates the predicted internal start temperature (T_start) for a zone
@@ -1440,17 +1441,9 @@ def calculate_simulated_start_temp(
     """
     
     # 1. Fetch relevant config values with safe fallbacks
-    hub_config = config.get("hub_settings", {}).get(neohub_name, {})
-    zone_props = config.get("zone_properties", {}).get(zone_name, {})
-    global_settings = config.get("global_settings", {})
-    
+    global_settings = global_config.get("global_settings", {})
     T_target = global_settings.get("DEFAULT_TEMPERATURE", 18.0)
     T_eco = global_settings.get("ECO_TEMPERATURE", 12.0)
-    
-    # Hub-specific base inertia (from hub_settings)
-    HEAT_LOSS_CONSTANT = hub_config.get("HEAT_LOSS_CONSTANT", 100.0)
-    # Zone-specific modifier (from zone_properties)
-    heat_loss_factor = zone_props.get("heat_loss_factor", 1.0)
     
     # Safety guard for extremely long breaks
     if time_since_minutes >= 60 * 24 * 7:
@@ -1467,7 +1460,7 @@ def calculate_simulated_start_temp(
         temp_differential = 0.0
     
     # Effective Thermal Mass: Hub constant * Zone factor. Higher value means slower decay.
-    effective_thermal_mass = HEAT_LOSS_CONSTANT * heat_loss_factor
+    effective_thermal_mass = hub_heat_loss_constant * zone_heat_loss_factor
     
     if effective_thermal_mass <= 0:
         logging.error(f"Effective thermal mass for {zone_name} is non-positive. Using default T_eco.")
@@ -1675,7 +1668,21 @@ async def calculate_decay_metrics_and_attach(
             continue
             
         neohub_name = location_config['neohub']
-        
+        #--- Fetch Hub Heat Loss Constant ---
+        hub_settings = config.get('hub_settings', {}).get(neohub_name, {})
+        HUB_HLC = hub_settings.get("HEAT_LOSS_CONSTANT", 100.0)
+        #--- Fetch Zone Heat Loss Factor for the PRIMARY zone ---
+        zones_list = location_config.get('zones', []) # e.g., ['Main Church', 'Raphael Room corridor and toilets']
+
+        if zones_list:
+            primary_zone_name = zones_list[0] # Takes 'Main Church'
+            
+            # Looks into {"zone_properties": {"Main Church": {"heat_loss_factor": 4.5}}}
+            zone_properties = config.get('zone_properties', {}).get(primary_zone_name, {})
+            ZONE_HLF_FOR_DECAY = zone_properties.get("heat_loss_factor", 1.0) 
+        else:
+            ZONE_HLF_FOR_DECAY = 1.0
+
         try:
             start_dt = dateutil.parser.parse(event_start_iso).astimezone(pytz.utc)
             end_dt = dateutil.parser.parse(event_end_iso).astimezone(pytz.utc)
@@ -1708,11 +1715,12 @@ async def calculate_decay_metrics_and_attach(
 
             # --- B. Calculate Simulated Start Temp (T_start) ---
             T_start = calculate_simulated_start_temp(
-                zone_name=zone_name, 
-                neohub_name=neohub_name, 
+                zone_name=zone_name,
                 time_since_minutes=time_since_minutes,
                 forecast_temp=forecast_temp,
-                config=config
+                hub_heat_loss_constant=HUB_HLC,
+                zone_heat_loss_factor=ZONE_HLF_FOR_DECAY,
+                global_config=config
             )
             
             # --- C. Calculate Preheat Time (T_required_rise and final_preheat_minutes) ---
