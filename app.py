@@ -1440,16 +1440,16 @@ def calculate_simulated_start_temp(
     global config
     
     # 1. Fetch relevant config values with safe fallbacks
-    hub_config = config.get("hubs_settings", {}).get(neohub_name, {})
-    zone_props = config.get("zones_properties", {}).get(zone_name, {})
+    hub_config = config.get("hub_settings", {}).get(neohub_name, {})
+    zone_props = config.get("zone_properties", {}).get(zone_name, {})
     global_settings = config.get("global_settings", {})
     
     T_target = global_settings.get("DEFAULT_TEMPERATURE", 18.0)
     T_eco = global_settings.get("ECO_TEMPERATURE", 12.0)
     
-    # Hub-specific base inertia (from hubs_settings)
+    # Hub-specific base inertia (from hub_settings)
     HEAT_LOSS_CONSTANT = hub_config.get("HEAT_LOSS_CONSTANT", 100.0)
-    # Zone-specific modifier (from zones_properties)
+    # Zone-specific modifier (from zone_properties)
     heat_loss_factor = zone_props.get("heat_loss_factor", 1.0)
     
     # Safety guard for extremely long breaks
