@@ -1433,6 +1433,7 @@ async def get_forecast_temperature(target_datetime: datetime.datetime) -> Option
         return None
     
 def calculate_simulated_start_temp(
+    event_id: int,
     zone_name: str,
     time_since_minutes: float,
     forecast_temp: float,
@@ -1485,7 +1486,7 @@ def calculate_simulated_start_temp(
     T_start = max(simulated_temp, T_eco)
     
     logging.debug(
-        f"Decay for {zone_name}: T_target={T_target:.1f}, T_forecast={forecast_temp:.1f}. "
+        f"Decay for {event_id} in {zone_name}: T_target={T_target:.1f}, T_forecast={forecast_temp:.1f}. "
         f"Differential={temp_differential:.1f}°C. Time since: {time_since_minutes:.1f} min. "
         f"Rate: {decay_rate_per_min:.3f}°C/min. Total Drop: {temp_drop:.2f}°C. T_start: {T_start:.2f}°C."
         f"HLC: {hub_heat_loss_constant}, HLF: {zone_heat_loss_factor}."
@@ -1730,6 +1731,7 @@ async def calculate_decay_metrics_and_attach(
 
             # --- B. Calculate Simulated Start Temp (T_start) ---
             T_start = calculate_simulated_start_temp(
+                event_id={event.get('id')},
                 zone_name=zone_name,
                 time_since_minutes=time_since_minutes,
                 forecast_temp=forecast_temp,
