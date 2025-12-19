@@ -744,13 +744,13 @@ def generate_neohub_reports(zone_statuses, hub_connectivity_status, zone_to_neoh
 async def check_ipc_flags():
     """Checks for IPC flag files created by the web GUI process."""
     if os.path.exists(CONFIG_RELOAD_FLAG):
-        logging.info("IPC: Config reload flag detected. Reloading configuration.")
+        logging.debug("IPC: Config reload flag detected. Reloading configuration.")
         reload_config_from_disk()
         os.remove(CONFIG_RELOAD_FLAG) # Clear the flag
         # You may want to call update_heating_schedule() after a config reload
 
     if os.path.exists(MANUAL_RUN_FLAG):
-        logging.info("IPC: Manual run flag detected. Triggering immediate update.")
+        logging.debug("IPC: Manual run flag detected. Triggering immediate update.")
         # Ensure the manual run is executed in the event loop
         await update_heating_schedule()
         os.remove(MANUAL_RUN_FLAG) # Clear the flag
