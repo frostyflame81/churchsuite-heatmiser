@@ -171,6 +171,9 @@
                         <option value="ALL">All Levels</option>
                         <option value="INFO">INFO Only</option>
                         <option value="DEBUG">DEBUG Only</option>
+                        <option value="WARNING">WARNING Only</option>
+                        <option value="ERROR">ERROR Only</option>
+                        <option value="CRITICAL">CRITICAL Only</option>
                     </select>
                 </div>
                 <div class="col-auto">
@@ -763,14 +766,23 @@
                     if (!tbody || !data.success) return;
 
                     // Map logs to table rows with Bootstrap styling for levels
-                    tbody.innerHTML = data.logs.map(log => `
-                        <tr>
-                            <td class="text-muted">${log.ts}</td>
-                            <td><span class="badge ${log.src === 'gui' ? 'bg-info text-dark' : 'bg-secondary'}">${log.src}</span></td>
-                            <td><span class="fw-bold ${log.lvl === 'DEBUG' ? 'text-warning' : 'text-success'}">${log.lvl}</span></td>
-                            <td class="text-wrap">${log.msg}</td>
-                        </tr>
-                    `).join('');
+                    tbody.innerHTML = data.logs.map(log => {
+                        // Determine badge color based on log level
+                        let levelClass = 'text-success'; // Default for INFO
+                        if (log.lvl === 'DEBUG') levelClass = 'text-info';
+                        if (log.lvl === 'WARNING') levelClass = 'text-warning';
+                        if (log.lvl === 'ERROR') levelClass = 'text-danger';
+                        if (log.lvl === 'CRITICAL') levelClass = 'text-danger fw-black text-uppercase border border-danger px-1'; // High visibility for Critical
+
+                        return `
+                            <tr>
+                                <td class="text-muted small">${log.ts}</td>
+                                <td><span class="badge ${log.src === 'gui' ? 'bg-info text-dark' : 'bg-secondary'}">${log.src}</span></td>
+                                <td><span class="fw-bold ${levelClass}">${log.lvl}</span></td>
+                                <td class="text-wrap">${log.msg}</td>
+                            </tr>
+                        `;
+                    }).join('');
                     
                     // Update pagination UI
                     const pageInfo = document.getElementById('page-info');
