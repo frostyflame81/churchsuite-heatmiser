@@ -292,49 +292,67 @@ def dashboard():
 
 @app.route('/api/logs', methods=['GET'])
 def get_logs():
-    level_filter = request.args.get('level', 'ALL')        # INFO, DEBUG, ALL
-    source_filter = request.args.getlist('sources')       # ['scheduler', 'gui']
-    timeframe = request.args.get('timeframe', '24h')      # 60m, 24h, 7d
+    # Supports: DEBUG, INFO, WARNING, ERROR, CRITICAL, ALL
+    level_filter = request.args.get('level', 'ALL').upper() 
+    source_filter = request.args.getlist('sources')
+    timeframe = request.args.get('timeframe', '24h')
     page = request.args.get('page', default=1, type=int)
     per_page = 50
 
-    # 1. Determine which files to read (7d requires checking backups)
     log_files = ["/app/logs/scheduler.log"]
     if timeframe == '7d':
         log_files += glob.glob("/app/logs/scheduler.log.*")
     
     all_parsed_logs = []
+    # Use .now() but be aware of timezone offsets if logs look 'empty'
     cutoff_time = datetime.datetime.now()
     if timeframe == '60m': cutoff_time -= datetime.timedelta(minutes=60)
     elif timeframe == '24h': cutoff_time -= datetime.timedelta(hours=24)
     else: cutoff_time -= datetime.timedelta(days=7)
 
     for file_path in log_files:
+        if not os.path.exists(file_path): continue
         try:
             with open(file_path, 'r') as f:
+                # OPTIMIZATION: Process lines in reverse or stop early if possible
                 for line in f:
                     parts = line.split(' | ')
                     if len(parts) < 4: continue
                     
-                    log_ts = datetime.datetime.strptime(parts[0].split(',')[0], '%Y-%m-%d %H:%M:%S')
-                    log_source = parts[1].strip()
-                    log_level = parts[2].strip()
-                    log_msg = parts[3].strip()
+                    try:
+                        # Split at comma to handle '2023-10-27 10:00:00,123' format
+                        ts_str = parts[0].split(',')[0]
+                        log_ts = datetime.datetime.strptime(ts_str, '%Y-%m-%d %H:%M:%S')
+                        
+                        # Apply Time Filter immediately to save memory
+                        if log_ts < cutoff_time: continue
+                        
+                        log_source = parts[1].strip()
+                        log_level = parts[2].strip().upper()
+                        log_msg = parts[3].strip()
 
-                    # Apply Filters
-                    if log_ts < cutoff_time: continue
-                    if level_filter != 'ALL' and log_level != level_filter: continue
-                    if source_filter and log_source not in source_filter: continue
+                        # Apply Level and Source Filters
+                        if level_filter != 'ALL' and log_level != level_filter: continue
+                        if source_filter and log_source not in source_filter: continue
 
-                    all_parsed_logs.append({
-                        "ts": parts[0], "src": log_source, "lvl": log_level, "msg": log_msg
-                    })
-        except Exception: continue
+                        all_parsed_logs.append({
+                            "ts": parts[0], 
+                            "src": log_source, 
+                            "lvl": log_level, 
+                            "msg": log_msg
+                        })
+                    except ValueError: continue # Skip lines with malformed timestamps
+        except Exception as e:
+            logging.error(f"Error reading {file_path}: {e}")
+            continue
 
     # Sort by newest first
     all_parsed_logs.sort(key=lambda x: x['ts'], reverse=True)
 
-    # Paginate
+    # Calculate Pagination
+    total_logs = len(all_parsed_logs)
+    total_pages = (total_logs + per_page - 1) // per_page
+    
     start = (page - 1) * per_page
     end = start + per_page
     paginated_logs = all_parsed_logs[start:end]
@@ -342,8 +360,9 @@ def get_logs():
     return jsonify({
         "success": True,
         "logs": paginated_logs,
-        "total_pages": (len(all_parsed_logs) // per_page) + 1,
-        "current_page": page
+        "total_pages": max(1, total_pages),
+        "current_page": page,
+        "total_count": total_logs
     })
 
 @app.route('/api/trigger-manual', methods=['POST'])
