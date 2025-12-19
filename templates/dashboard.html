@@ -57,107 +57,122 @@
                 <li><button class="dropdown-item" type="button" data-bs-theme-value="auto">Auto</button></li>
             </ul>
         </div>
-    </h1>    
-    <h2>Scheduler Status (PID: {{ scheduler_pid }})</h2>
-    <div 
-        id="status-header" 
-        class="p-3 mb-4 rounded border {{ status.display.color }}"
-    >
-        System Status: <strong id="status-text">{{ status.display.text }}</strong>
-        <small class="text-muted"> (Last run: <span id="status-timestamp">{{ status.timestamp }}</span>)</small>
-    </div>
+    </h1>
+    <ul class="nav nav-tabs mb-4" id="dashboardTabs" role="tablist">
+    <li class="nav-item" role="presentation">
+        <button class="nav-link active" id="home-tab" data-bs-toggle="tab" data-bs-target="#home-pane" type="button" role="tab" aria-controls="home-pane" aria-selected="true">Home</button>
+    </li>
+    <li class="nav-item" role="presentation">
+        <button class="nav-link" id="config-tab" data-bs-toggle="tab" data-bs-target="#config-pane" type="button" role="tab" aria-controls="config-pane" aria-selected="false">Config</button>
+    </li>
+    <li class="nav-item" role="presentation">
+        <button class="nav-link" id="logs-tab" data-bs-toggle="tab" data-bs-target="#logs-pane" type="button" role="tab" aria-controls="logs-pane" aria-selected="false">Logs</button>
+    </li>
+    <li class="nav-item" role="presentation">
+        <button class="nav-link" id="wizard-tab" data-bs-toggle="tab" data-bs-target="#wizard-pane" type="button" role="tab" aria-controls="wizard-pane" aria-selected="false">Wizard</button>
+    </li>
+    </ul>    
+    <div class="tab-content" id="dashboardTabsContent">
+        
+        <div class="tab-pane fade show active" id="home-pane" role="tabpanel" aria-labelledby="home-tab" tabindex="0">
+            <h2>Scheduler Status (PID: {{ scheduler_pid }})</h2>
+            <div id="status-header" class="p-3 mb-4 rounded border {{ status.display.color }}">
+                System Status: <strong id="status-text">{{ status.display.text }}</strong>
+                <small class="text-muted"> (Last run: <span id="status-timestamp">{{ status.timestamp }}</span>)</small>
+            </div>
 
-    <h2 id="reports-header">Status Reports ({{ status.neohub_reports | length if status.neohub_reports else 0 }} Hubs Processed)</h2>
+            <h2 id="reports-header">Status Reports ({{ status.neohub_reports | length if status.neohub_reports else 0 }} Hubs Processed)</h2>
+            <div id="status-reports-container"></div>
 
-    <div id="status-reports-container"></div>
-
-    <p>Control the scheduling process:</p>
-    <button class="btn btn-primary me-2" id="trigger-run-btn">Trigger Manual Update Now</button>
-    <button class="btn btn-primary me-2" id="reload-config-control-btn">Reload Configuration</button>
-    <hr>
-
-    <h2>2. Global Scheduler Configuration</h2>
-    <p>These settings affect all heating zones in the system.</p>
-
-    <table class="config-table" id="global-config-table">
-        <thead>
-            <tr><th>Setting</th><th>Value</th></tr>
-        </thead>
-        <tbody>
-            {% for k, v in config.global_settings.items() %}
-            <tr>
-                <th>{{ k | replace('_', ' ') | title }}</th>
-                <td contenteditable="true" data-key="{{ k }}" class="form-control">{{ v }}</td>
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
-
-    <button class="btn btn-primary me-2" id="save-config-btn">✏️ Save Config Changes</button>
-    <button class="btn btn-primary me-2" id="reload-config-scheduler-btn">🔄 Reload Config (Scheduler)</button>
-    <hr>
-
-    <h2>3. Hub Configuration (NeoHub Settings)</h2>
-    <p>These settings affect the entire NeoHub and are used for preheat calculations.</p>
-
-    <div id="hubs-container">
-        {% for key, hub in config.hub_settings.items() %}
-        <div class="location-card" data-key="{{ key }}">
-            <h3>{{ key | replace('_', ' ') | title }}</h3> 
-            <table class="config-table hub-data">
-                <tr><th>Heat Loss Constant</th><td contenteditable="true" data-key="HEAT_LOSS_CONSTANT" class="form-control">{{ hub.HEAT_LOSS_CONSTANT }}</td></tr>
-            </table>
-            <button class="btn btn-secondary me-2" onclick="removeHub('{{ key }}')">🗑️ Remove Hub</button>
+            <div class="mt-4">
+                <p>Control the scheduling process:</p>
+                <button class="btn btn-primary me-2" id="trigger-run-btn">Trigger Manual Update Now</button>
+                <button class="btn btn-primary me-2" id="reload-config-control-btn">Reload Configuration</button>
+            </div>
         </div>
-        {% endfor %}
-    </div>
 
-    <button class="btn btn-primary me-2" id="add-hub-btn">➕ Add New Hub</button>
-
-    <hr>
-
-    <h2>4. Location Configuration (Heating Zones)</h2>
-    <p>
-        Configure which ChurchSuite locations map to NeoHub zones, along with location-specific heating factors.
-        Use the <strong>NeoHub Name</strong> and <strong>Zone Name</strong> fields to map the location.
-    </p>
-
-    <div id="locations-container">
-        {% for key, location in config.locations.items() %}
-        <div class="location-card" data-key="{{ key }}">
-            <h3>{{ key | replace('_', ' ') | title }}</h3> <table class="config-table location-data">
-                <tr><th>NeoHub Name</th><td contenteditable="true" data-key="neohub" class="form-control">{{ location.neohub }}</td></tr>
-                <tr><th>Zone Name (CSV)</th><td contenteditable="true" data-key="zones" class="form-control">{{ location.zones | join(', ') }}</td></tr>
-                <tr><th>Heat Loss Factor</th><td contenteditable="true" data-key="heat_loss_factor" class="form-control">{{ location.heat_loss_factor }}</td></tr>
-                <tr><th>Min External Temp</th><td contenteditable="true" data-key="min_external_temp" class="form-control">{{ location.min_external_temp }}</td></tr>
+        <div class="tab-pane fade" id="config-pane" role="tabpanel" aria-labelledby="config-tab" tabindex="0">
+            <h2>2. Global Scheduler Configuration</h2>
+            <p>These settings affect all heating zones in the system.</p>
+            <table class="config-table mb-3" id="global-config-table">
+                <thead>
+                    <tr><th>Setting</th><th>Value</th></tr>
+                </thead>
+                <tbody>
+                    {% for k, v in config.global_settings.items() %}
+                    <tr>
+                        <th>{{ k | replace('_', ' ') | title }}</th>
+                        <td contenteditable="true" data-key="{{ k }}" class="form-control">{{ v }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
             </table>
-            <button class="btn btn-secondary me-2" onclick="removeLocation('{{ key }}')">🗑️ Remove Location</button>
+            <button class="btn btn-primary me-2" id="save-config-btn">✏️ Save Config Changes</button>
+            <button class="btn btn-primary me-2" id="reload-config-scheduler-btn">🔄 Reload Config (Scheduler)</button>
+            
+            <hr>
+
+            <h2>3. Hub Configuration (NeoHub Settings)</h2>
+            <div id="hubs-container">
+                {% for key, hub in config.hub_settings.items() %}
+                <div class="location-card" data-key="{{ key }}">
+                    <h3>{{ key | replace('_', ' ') | title }}</h3> 
+                    <table class="config-table hub-data">
+                        <tr><th>Heat Loss Constant</th><td contenteditable="true" data-key="HEAT_LOSS_CONSTANT" class="form-control">{{ hub.HEAT_LOSS_CONSTANT }}</td></tr>
+                    </table>
+                    <button class="btn btn-secondary me-2" onclick="removeHub('{{ key }}')">🗑️ Remove Hub</button>
+                </div>
+                {% endfor %}
+            </div>
+            <button class="btn btn-primary me-2" id="add-hub-btn">➕ Add New Hub</button>
+
+            <hr>
+
+            <h2>4. Location Configuration (Heating Zones)</h2>
+            <div id="locations-container">
+                {% for key, location in config.locations.items() %}
+                <div class="location-card" data-key="{{ key }}">
+                    <h3>{{ key | replace('_', ' ') | title }}</h3> 
+                    <table class="config-table location-data">
+                        <tr><th>NeoHub Name</th><td contenteditable="true" data-key="neohub" class="form-control">{{ location.neohub }}</td></tr>
+                        <tr><th>Zone Name (CSV)</th><td contenteditable="true" data-key="zones" class="form-control">{{ location.zones | join(', ') }}</td></tr>
+                        <tr><th>Heat Loss Factor</th><td contenteditable="true" data-key="heat_loss_factor" class="form-control">{{ location.heat_loss_factor }}</td></tr>
+                        <tr><th>Min External Temp</th><td contenteditable="true" data-key="min_external_temp" class="form-control">{{ location.min_external_temp }}</td></tr>
+                    </table>
+                    <button class="btn btn-secondary me-2" onclick="removeLocation('{{ key }}')">🗑️ Remove Location</button>
+                </div>
+                {% endfor %}
+            </div>
+            <button class="btn btn-primary me-2" id="add-location-btn">➕ Add New Location</button>
+
+            <hr>
+
+            <h2>5. Zone Properties (Shared Heating Factors)</h2>
+            <div id="zone-properties-container">
+                {% for zone_name, props in config.zone_properties.items() %}
+                <div class="location-card" data-key="{{ zone_name }}">
+                    <h3>{{ zone_name }}</h3> 
+                    <table class="config-table zone-data">
+                        <tr><th>Heat Loss Factor</th><td contenteditable="true" data-key="heat_loss_factor" class="form-control">{{ props.heat_loss_factor }}</td></tr>
+                    </table>
+                    <button class="btn btn-secondary me-2" onclick="removeZoneProperty('{{ zone_name }}')">🗑️ Remove Zone Property</button>
+                </div>
+                {% endfor %}
+            </div>
+            <button class="btn btn-primary me-2" id="add-zone-prop-btn">➕ Add New Zone Property</button>
         </div>
-        {% endfor %}
-    </div>
 
-    <button class="btn btn-primary me-2" id="add-location-btn">➕ Add New Location</button>
-    <hr>
-
-    <h2>5. Zone Properties (Shared Heating Factors)</h2>
-    <p>
-        Define shared heating factors for common NeoHub zones. This prevents repeated data entry across multiple locations that use the same zone(s).
-    </p>
-
-    <div id="zone-properties-container">
-        {% for zone_name, props in config.zone_properties.items() %}
-        <div class="location-card" data-key="{{ zone_name }}">
-            <h3>{{ zone_name }}</h3> 
-            <table class="config-table zone-data">
-                <tr><th>Heat Loss Factor</th><td contenteditable="true" data-key="heat_loss_factor" class="form-control">{{ props.heat_loss_factor }}</td></tr>
-            </table>
-            <button class="btn btn-secondary me-2" onclick="removeZoneProperty('{{ zone_name }}')">🗑️ Remove Zone Property</button>
+        <div class="tab-pane fade" id="logs-pane" role="tabpanel" aria-labelledby="logs-tab" tabindex="0">
+            <h2>System Logs</h2>
+            <p class="text-muted">Log retrieval and filtering functionality coming soon...</p>
         </div>
-        {% endfor %}
-    </div>
 
-    <button class="btn btn-primary me-2" id="add-zone-prop-btn">➕ Add New Zone Property</button>
-    <hr>
+        <div class="tab-pane fade" id="wizard-pane" role="tabpanel" aria-labelledby="wizard-tab" tabindex="0">
+            <h2>Setup Wizard</h2>
+            <p class="text-muted">Automated setup routine and first-run functionality coming soon...</p>
+        </div>
+
+    </div>
     
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js" integrity="sha384-YvpcrYf0tY3lHB60NNkmXc5s9fDVZLESaAA55NDzOxhy9GkcIdslK1eN7N6jIeHz" crossorigin="anonymous"></script>
     <script>
