@@ -162,10 +162,63 @@
             <button class="btn btn-primary me-2" id="add-zone-prop-btn">➕ Add New Zone Property</button>
         </div>
 
-        <div class="tab-pane fade" id="logs-pane" role="tabpanel" aria-labelledby="logs-tab" tabindex="0">
-            <h2>System Logs</h2>
-            <p class="text-muted">Log retrieval and filtering functionality coming soon...</p>
+<div class="tab-pane fade" id="logs-pane">
+    <div class="card shadow-sm mb-3">
+        <div class="card-body bg-light border-bottom">
+            <div class="row g-3 align-items-center">
+                <div class="col-auto">
+                    <select id="filter-level" class="form-select form-select-sm">
+                        <option value="ALL">All Levels</option>
+                        <option value="INFO">INFO Only</option>
+                        <option value="DEBUG">DEBUG Only</option>
+                    </select>
+                </div>
+                <div class="col-auto">
+                    <select id="filter-time" class="form-select form-select-sm">
+                        <option value="60m">Last 60 Mins</option>
+                        <option value="24h" selected>Last 24 Hours</option>
+                        <option value="7d">Last 7 Days</option>
+                    </select>
+                </div>
+                <div class="col-auto">
+                    <div class="form-check form-check-inline">
+                        <input class="form-check-input source-check" type="checkbox" value="scheduler" id="src-sch" checked>
+                        <label class="form-check-label" for="src-sch">Scheduler</label>
+                    </div>
+                    <div class="form-check form-check-inline">
+                        <input class="form-check-input source-check" type="checkbox" value="gui" id="src-gui" checked>
+                        <label class="form-check-label" for="src-gui">GUI</label>
+                    </div>
+                </div>
+                <div class="col text-end">
+                    <button class="btn btn-sm btn-primary" onclick="loadLogs(1)">Refresh</button>
+                </div>
+            </div>
         </div>
+        <div class="table-responsive" style="max-height: 600px;">
+            <table class="table table-dark table-hover table-sm mb-0" style="font-family: monospace; font-size: 0.8rem;">
+                <thead>
+                    <tr>
+                        <th style="width: 180px;">Timestamp</th>
+                        <th style="width: 100px;">Source</th>
+                        <th style="width: 80px;">Level</th>
+                        <th>Message</th>
+                    </tr>
+                </thead>
+                <tbody id="log-table-body"></tbody>
+            </table>
+        </div>
+        <div class="card-footer d-flex justify-content-between">
+            <span id="page-info" class="text-muted small">Page 1 of 1</span>
+            <nav>
+                <ul class="pagination pagination-sm mb-0">
+                    <li class="page-item"><a class="page-link" href="#" id="prev-page">Previous</a></li>
+                    <li class="page-item"><a class="page-link" href="#" id="next-page">Next</a></li>
+                </ul>
+            </nav>
+        </div>
+    </div>
+</div>
 
         <div class="tab-pane fade" id="wizard-pane" role="tabpanel" aria-labelledby="wizard-tab" tabindex="0">
             <h2>Setup Wizard</h2>
@@ -647,7 +700,30 @@
         document.addEventListener('DOMContentLoaded', () => {
             refreshStatus();
             setInterval(refreshStatus, 5000); // Poll every 5 seconds
-            
+            // --- LOG VIEWER BINDINGS ---
+    
+            // Refresh button manually reloads page 1
+            document.getElementById('refresh-logs-btn')?.addEventListener('click', () => loadLogs(1));
+
+            // Pagination: Previous Page
+            document.getElementById('prev-page')?.addEventListener('click', (e) => {
+                e.preventDefault();
+                if (currentLogPage > 1) loadLogs(currentLogPage - 1);
+            });
+
+            // Pagination: Next Page
+            document.getElementById('next-page')?.addEventListener('click', (e) => {
+                e.preventDefault();
+                loadLogs(currentLogPage + 1);
+            });
+
+            // Automatically fetch logs when the user clicks the "Logs" tab
+            const logsTab = document.getElementById('logs-tab');
+            if (logsTab) {
+                logsTab.addEventListener('shown.bs.tab', () => {
+                    loadLogs(1);
+                });
+            }
             // NEW: Event listeners for the main buttons, replacing onclick
             document.getElementById('trigger-run-btn')?.addEventListener('click', triggerRun);
             
@@ -663,6 +739,49 @@
             // NEW: Zone Property binding
             document.getElementById('add-zone-prop-btn')?.addEventListener('click', addNewZoneProperty); 
         });
+        // --- NEW LOG VIEWER LOGIC ---
+        let currentLogPage = 1;
+
+        /**
+         * Fetches logs from the API using current filter settings and updates the table.
+         * @param {number} page - The page number to retrieve.
+         */
+        function loadLogs(page = 1) {
+            currentLogPage = page;
+            const level = document.getElementById('filter-level')?.value || 'ALL';
+            const timeframe = document.getElementById('filter-time')?.value || '24h';
+            const sources = Array.from(document.querySelectorAll('.source-check:checked')).map(c => c.value);
+            
+            // Construct query parameters
+            let url = `/api/logs?page=${page}&level=${level}&timeframe=${timeframe}`;
+            sources.forEach(s => url += `&sources=${s}`);
+
+            fetch(url)
+                .then(response => response.json())
+                .then(data => {
+                    const tbody = document.getElementById('log-table-body');
+                    if (!tbody || !data.success) return;
+
+                    // Map logs to table rows with Bootstrap styling for levels
+                    tbody.innerHTML = data.logs.map(log => `
+                        <tr>
+                            <td class="text-muted">${log.ts}</td>
+                            <td><span class="badge ${log.src === 'gui' ? 'bg-info text-dark' : 'bg-secondary'}">${log.src}</span></td>
+                            <td><span class="fw-bold ${log.lvl === 'DEBUG' ? 'text-warning' : 'text-success'}">${log.lvl}</span></td>
+                            <td class="text-wrap">${log.msg}</td>
+                        </tr>
+                    `).join('');
+                    
+                    // Update pagination UI
+                    const pageInfo = document.getElementById('page-info');
+                    if (pageInfo) pageInfo.innerText = `Page ${data.current_page} of ${data.total_pages}`;
+                    
+                    // Handle pagination button states
+                    document.getElementById('prev-page')?.parentElement.classList.toggle('disabled', data.current_page <= 1);
+                    document.getElementById('next-page')?.parentElement.classList.toggle('disabled', data.current_page >= data.total_pages);
+                })
+                .catch(error => console.error('Error loading logs:', error));
+        }
     </script>
 </body>
 </html>

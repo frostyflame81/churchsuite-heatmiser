@@ -2,6 +2,7 @@ import asyncio
 import datetime
 import json
 import logging
+import logging.handlers
 import time
 import itertools
 import requests # type: ignore
@@ -53,13 +54,20 @@ MIN_FIRMWARE_VERSION = 2079
 REQUIRED_HEATING_LEVELS = 6
 LOGGING_LEVEL = os.environ.get("LOGGING_LEVEL", "INFO").upper()  # Get logging level from env
 # Set up logging
-numeric_level = getattr(logging, LOGGING_LEVEL, logging.INFO)
-logging.basicConfig(
-    level=numeric_level,
-    format='%(levelname)s:%(name)s:%(message)s'
-)
-# Suppress noisy logs from websockets
-logging.getLogger("websockets").setLevel(logging.INFO)
+LOG_DIR = "/app/logs"
+LOG_FILE = os.path.join(LOG_DIR, "scheduler.log")
+os.makedirs(LOG_DIR, exist_ok=True)
+
+# Format: Timestamp | Source | Level | Message
+log_formatter = logging.Formatter('%(asctime)s | scheduler | %(levelname)s | %(message)s')
+
+file_handler = logging.handlers.TimedRotatingFileHandler(LOG_FILE, when="D", interval=1, backupCount=7)
+file_handler.setFormatter(log_formatter)
+
+# Set the root logger to DEBUG so the file captures everything
+# The GUI will handle the visual filtering
+logging.basicConfig(level=logging.DEBUG, handlers=[file_handler, logging.StreamHandler()])
+logger = logging.getLogger("scheduler")
 
 # Type definitions
 ScheduleSegment = Union[float, str] # Can be a temperature (float) or a command (str like 'sleep')

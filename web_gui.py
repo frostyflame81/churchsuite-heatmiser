@@ -1,12 +1,20 @@
 import os
 import json
 import logging
+import logging.handlers
+import datetime
+import glob
 from flask import Flask, render_template, request, jsonify
 import asyncio
 from typing import Dict, Any
 
 # Configure Flask logging
-logging.basicConfig(level=logging.INFO)
+gui_formatter = logging.Formatter('%(asctime)s | gui | %(levelname)s | %(message)s')
+gui_handler = logging.handlers.TimedRotatingFileHandler("/app/logs/scheduler.log", when="D", interval=1, backupCount=7)
+gui_handler.setFormatter(gui_formatter)
+
+logging.basicConfig(level=logging.INFO, handlers=[gui_handler, logging.StreamHandler()])
+logger = logging.getLogger("gui")
 
 # Constants
 MANUAL_RUN_FLAG = '/tmp/manual_run_flag'
@@ -281,6 +289,62 @@ def dashboard():
         scheduler_pid=scheduler_pid,
         status=full_status # Pass the unified status object
     )
+
+@app.route('/api/logs', methods=['GET'])
+def get_logs():
+    level_filter = request.args.get('level', 'ALL')        # INFO, DEBUG, ALL
+    source_filter = request.args.getlist('sources')       # ['scheduler', 'gui']
+    timeframe = request.args.get('timeframe', '24h')      # 60m, 24h, 7d
+    page = request.args.get('page', default=1, type=int)
+    per_page = 50
+
+    # 1. Determine which files to read (7d requires checking backups)
+    log_files = ["/app/logs/scheduler.log"]
+    if timeframe == '7d':
+        log_files += glob.glob("/app/logs/scheduler.log.*")
+    
+    all_parsed_logs = []
+    cutoff_time = datetime.datetime.now()
+    if timeframe == '60m': cutoff_time -= datetime.timedelta(minutes=60)
+    elif timeframe == '24h': cutoff_time -= datetime.timedelta(hours=24)
+    else: cutoff_time -= datetime.timedelta(days=7)
+
+    for file_path in log_files:
+        try:
+            with open(file_path, 'r') as f:
+                for line in f:
+                    parts = line.split(' | ')
+                    if len(parts) < 4: continue
+                    
+                    log_ts = datetime.datetime.strptime(parts[0].split(',')[0], '%Y-%m-%d %H:%M:%S')
+                    log_source = parts[1].strip()
+                    log_level = parts[2].strip()
+                    log_msg = parts[3].strip()
+
+                    # Apply Filters
+                    if log_ts < cutoff_time: continue
+                    if level_filter != 'ALL' and log_level != level_filter: continue
+                    if source_filter and log_source not in source_filter: continue
+
+                    all_parsed_logs.append({
+                        "ts": parts[0], "src": log_source, "lvl": log_level, "msg": log_msg
+                    })
+        except Exception: continue
+
+    # Sort by newest first
+    all_parsed_logs.sort(key=lambda x: x['ts'], reverse=True)
+
+    # Paginate
+    start = (page - 1) * per_page
+    end = start + per_page
+    paginated_logs = all_parsed_logs[start:end]
+
+    return jsonify({
+        "success": True,
+        "logs": paginated_logs,
+        "total_pages": (len(all_parsed_logs) // per_page) + 1,
+        "current_page": page
+    })
 
 @app.route('/api/trigger-manual', methods=['POST'])
 def api_trigger_manual():
