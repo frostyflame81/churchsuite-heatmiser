@@ -2460,28 +2460,28 @@ def main():
                 logging.warning(f"Invalid float value for global setting '{key}'. Using default: {default_value}")
     
     # 2. Ensure 'hubs_settings' exists and has defaults for known hubs
-    if "hubs_settings" not in config:
-        config["hubs_settings"] = {}
+    if "hub_settings" not in config:
+        config["hub_settings"] = {}
         
     # Iterate over all defined NeoHubs to ensure they have a HEAT_LOSS_CONSTANT
     for neohub_name in config.get("neohubs", {}).keys():
-        if neohub_name not in config["hubs_settings"]:
-            config["hubs_settings"][neohub_name] = {}
+        if neohub_name not in config["hub_settings"]:
+            config["hub_settings"][neohub_name] = {}
         
-        hub_settings = config["hubs_settings"][neohub_name]
+        hub_settings = config["hub_settings"][neohub_name]
         
         # Apply default for HEAT_LOSS_CONSTANT (Building-specific thermal inertia)
         h_l_c = hub_settings.get("HEAT_LOSS_CONSTANT")
         if h_l_c is None:
-            hub_settings["HEAT_LOSS_CONSTANT"] = 5400.0
-            logging.info(f"Applied default HEAT_LOSS_CONSTANT to hub '{neohub_name}': 5400.0")
+            hub_settings["HEAT_LOSS_CONSTANT"] = 3000.0
+            logging.info(f"Applied default HEAT_LOSS_CONSTANT to hub '{neohub_name}': 3000.0")
         else:
             try:
                 # Ensure value is float
                 hub_settings["HEAT_LOSS_CONSTANT"] = float(h_l_c)
             except (ValueError, TypeError):
-                 hub_settings["HEAT_LOSS_CONSTANT"] = 100.0
-                 logging.warning(f"Invalid float value for HEAT_LOSS_CONSTANT on hub '{neohub_name}'. Using default: 100.0")
+                 hub_settings["HEAT_LOSS_CONSTANT"] = 3000.0
+                 logging.warning(f"Invalid float value for HEAT_LOSS_CONSTANT on hub '{neohub_name}'. Using default: 3000.0")
             
     # 3. Ensure 'zones_properties' exists (content will be validated elsewhere/manually added)
     if "zones_properties" not in config:
