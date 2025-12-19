@@ -196,6 +196,10 @@
                 <div class="col text-end">
                     <button class="btn btn-sm btn-primary" onclick="loadLogs(1)">Refresh</button>
                 </div>
+                <div class="col text-end">
+                    <button class="btn btn-sm btn-outline-secondary me-1" id="export-logs-btn">Export .log</button>
+                    <button class="btn btn-sm btn-primary px-3" id="refresh-logs-btn">Refresh</button>
+                </div>
             </div>
         </div>
         <div class="table-responsive" style="max-height: 600px;">
@@ -727,6 +731,10 @@
                     loadLogs(1);
                 });
             }
+            
+            // Export Logs button
+            document.getElementById('export-logs-btn')?.addEventListener('click', exportLogs);
+
             // NEW: Event listeners for the main buttons, replacing onclick
             document.getElementById('trigger-run-btn')?.addEventListener('click', triggerRun);
             
@@ -793,6 +801,45 @@
                     document.getElementById('next-page')?.parentElement.classList.toggle('disabled', data.current_page >= data.total_pages);
                 })
                 .catch(error => console.error('Error loading logs:', error));
+        }
+        // dashboard.html <script> section
+
+        /**
+         * Exports the currently loaded logs in the table to a .log file.
+         */
+        function exportLogs() {
+            const rows = document.querySelectorAll('#log-table-body tr');
+            if (rows.length === 0 || rows[0].querySelector('.no-zones-message')) {
+                showNotification('No logs available to export.');
+                return;
+            }
+
+            let logContent = "";
+            rows.forEach(row => {
+                const cols = row.querySelectorAll('td');
+                if (cols.length >= 4) {
+                    const ts = cols[0].innerText.trim();
+                    const src = cols[1].innerText.trim();
+                    const lvl = cols[2].innerText.trim();
+                    const msg = cols[3].innerText.trim();
+                    // Reconstruct the standard log line format
+                    logContent += `${ts} | ${src} | ${lvl} | ${msg}\n`;
+                }
+            });
+
+            // Generate filename: export_YYYY-MM-DD_HH-mm.log
+            const now = new Date();
+            const timestamp = now.toISOString().replace(/T/, '_').replace(/:/g, '-').split('.')[0];
+            const filename = `export_${timestamp}.log`;
+
+            // Create a Blob and trigger download
+            const blob = new Blob([logContent], { type: 'text/plain' });
+            const link = document.createElement('a');
+            link.href = window.URL.createObjectURL(blob);
+            link.download = filename;
+            link.click();
+            
+            showNotification(`Exported ${rows.length} log lines.`);
         }
     </script>
 </body>
