@@ -7,6 +7,7 @@ services:
     volumes:
       - .:/app
       - ./config:/config  # Mount the config directory
+      - ./logs:/app/logs # Mount the logs directory
     environment:
       - OPENWEATHERMAP_API_KEY=${OPENWEATHERMAP_API_KEY}
       - OPENWEATHERMAP_CITY=${OPENWEATHERMAP_CITY}
