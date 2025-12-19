@@ -1538,10 +1538,16 @@ def calculate_preheat_duration(
         logging.debug(
             f"Cold scaling applied: T_forecast={T_forecast:.1f}, Multiplier={multiplier:.2f}. "
             f"Base preheat {base_preheat:.1f}m -> {preheat_minutes:.1f}m."
+            f"HLF: {heat_loss_factor}, Zone: {zone_name})"
         )
     else:
         preheat_minutes = base_preheat
-
+        logging.debug(
+            f"No cold scaling applied."
+            f"Base preheat {base_preheat:.1f}m -> {preheat_minutes:.1f}m."
+            f"HLF: {heat_loss_factor}, Zone: {zone_name})"
+        )
+        
     return preheat_minutes
 
 def calculate_cold_multiplier(forecast_temp: float, config: Dict[str, Any]) -> float:
