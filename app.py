@@ -1547,7 +1547,7 @@ def calculate_preheat_duration(
             f"Base preheat {base_preheat:.1f}m -> {preheat_minutes:.1f}m."
             f"HLF: {heat_loss_factor}, Zone: {zone_name})"
         )
-        
+
     return preheat_minutes
 
 def calculate_cold_multiplier(forecast_temp: float, config: Dict[str, Any]) -> float:
@@ -1685,7 +1685,7 @@ async def calculate_decay_metrics_and_attach(
         neohub_name = location_config['neohub']
         #--- Fetch Hub Heat Loss Constant ---
         hub_settings = config.get('hub_settings', {}).get(neohub_name, {})
-        HUB_HLC = hub_settings.get("HEAT_LOSS_CONSTANT", 100.0)
+        HUB_HLC = hub_settings.get("HEAT_LOSS_CONSTANT", 3000.0)
         #--- Fetch Zone Heat Loss Factor for the PRIMARY zone ---
         zones_list = location_config.get('zones', []) # e.g., ['Main Church', 'Raphael Room corridor and toilets']
 
@@ -1765,7 +1765,7 @@ async def calculate_decay_metrics_and_attach(
                 "preheat_minutes": round(final_preheat_minutes, 1) # CRITICAL
             }
             
-            logging.debug(f"Decay for {zone_name} in event {event.get('id')}: T_start={T_start:.1f}C, Rise={T_required_rise:.1f}C, Preheat={final_preheat_minutes:.1f}min.")
+            logging.debug(f"Preheat for {zone_name} in event {event.get('id')}: T_start={T_start:.1f}C, Rise={T_required_rise:.1f}C, Preheat={final_preheat_minutes:.1f}min, HLF Used={HEAT_LOSS_FACTOR}, Cold Mult={COLD_MULTIPLIER:.2f}")
             
             # Update the last heat end time for this zone for the NEXT event.
             last_end_times[decay_tracking_key] = end_dt
