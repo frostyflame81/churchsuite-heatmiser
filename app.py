@@ -1488,6 +1488,7 @@ def calculate_simulated_start_temp(
         f"Decay for {zone_name}: T_target={T_target:.1f}, T_forecast={forecast_temp:.1f}. "
         f"Differential={temp_differential:.1f}°C. Time since: {time_since_minutes:.1f} min. "
         f"Rate: {decay_rate_per_min:.3f}°C/min. Total Drop: {temp_drop:.2f}°C. T_start: {T_start:.2f}°C."
+        f"HLC: {hub_heat_loss_constant}, HLF: {zone_heat_loss_factor}."
     )
     
     return T_start
