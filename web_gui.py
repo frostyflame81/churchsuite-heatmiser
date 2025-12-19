@@ -297,8 +297,8 @@ def get_logs():
     source_filter = request.args.getlist('sources')
     timeframe = request.args.get('timeframe', '24h')
     page = request.args.get('page', default=1, type=int)
-    per_page = 50
-
+    per_page = request.args.get('per_page', default=20, type=int)
+    per_page = min(per_page, 10000) # Safety cap
     log_files = ["/app/logs/scheduler.log"]
     if timeframe == '7d':
         log_files += glob.glob("/app/logs/scheduler.log.*")
