@@ -1636,6 +1636,38 @@ def get_bookings_and_locations() -> Optional[Dict[str, List[Dict[str, Any]]]]:
         logging.error(f"Failed to parse ChurchSuite response as JSON: {e}")
         return None
 
+def update_thermal_state_cache(new_states: Dict[Tuple[str, str], datetime.datetime], config: Dict[str, Any]):
+    """Persists the last known end times to a JSON file, purging obsolete locations."""
+    state_file = os.path.join("config", "thermal_state.json")
+    
+    # 1. Load existing cache if it exists
+    cache = {}
+    if os.path.exists(state_file):
+        try:
+            with open(state_file, 'r') as f:
+                cache = json.load(f)
+        except Exception:
+            cache = {}
+
+    # 2. Update with new data (converting tuple keys to strings for JSON)
+    for (hub, zone), end_dt in new_states.items():
+        cache[f"{hub}|{zone}"] = end_dt.isoformat()
+
+    # 3. Purge logic: Only keep keys that exist in current config
+    active_locations = config.get('locations', {})
+    active_pairs = set()
+    for loc_data in active_locations.values():
+        hub = loc_data.get('neohub')
+        for zone in loc_data.get('zones', []):
+            active_pairs.add(f"{hub}|{zone}")
+
+    # Remove stale data
+    final_cache = {k: v for k, v in cache.items() if k in active_pairs}
+
+    # 4. Save back to disk
+    with open(state_file, 'w') as f:
+        json.dump(final_cache, f, indent=4)
+
 async def calculate_decay_metrics_and_attach(
     booked_resources: List[Dict[str, Any]], 
     config: Dict[str, Any]
@@ -1659,8 +1691,20 @@ async def calculate_decay_metrics_and_attach(
         return booked_resources
 
     # --- Decay State Tracking Initialization ---
-    # Key: (neohub_name, zone_name), Value: last heating end time (datetime object, UTC)
     last_end_times: Dict[Tuple[str, str], datetime.datetime] = {}
+    state_file = os.path.join("config", "thermal_state.json")
+    
+    # Load persistent state from previous runs
+    if os.path.exists(state_file):
+        try:
+            with open(state_file, 'r') as f:
+                cache = json.load(f)
+                for key, iso_ts in cache.items():
+                    # Format is "hub|zone"
+                    h_name, z_name = key.split('|')
+                    last_end_times[(h_name, z_name)] = dateutil.parser.parse(iso_ts)
+        except Exception as e:
+            logging.error(f"Could not load thermal state cache: {e}")
     
     # Get config constants
     T_DEFAULT = config["global_settings"].get("DEFAULT_TEMPERATURE", 18.0)
@@ -1769,8 +1813,15 @@ async def calculate_decay_metrics_and_attach(
             
             logging.debug(f"Preheat for {zone_name} in event {event.get('id')}: T_start={T_start:.1f}C, Rise={T_required_rise:.1f}C, Preheat={final_preheat_minutes:.1f}min, HLF Used={HEAT_LOSS_FACTOR}, Cold Mult={COLD_MULTIPLIER:.2f}")
             
-            # Update the last heat end time for this zone for the NEXT event.
+            # Update the last heat end time for this zone for the NEXT event in this loop.
             last_end_times[decay_tracking_key] = end_dt
+
+            # --- Authoritative Cache Update ---
+            # If the event is in the past or starts very soon, save it to the persistent JSON.
+            now = datetime.datetime.now(pytz.utc)
+            if end_dt < now + datetime.timedelta(hours=1):
+                # This helper function handles the JSON writing and location purging
+                update_thermal_state_cache(last_end_times, config)
 
     return sorted_events
 
