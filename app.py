@@ -3,6 +3,7 @@ import datetime
 import json
 import logging
 import logging.handlers
+import math
 import time
 import itertools
 import requests # type: ignore
@@ -1461,35 +1462,32 @@ def calculate_simulated_start_temp(
     
     # 2. Calculate Heat Loss Rate and Drop
     
-    # Temperature differential driving the heat loss (T_target is the high-water mark)
-    temp_differential = T_target - forecast_temp 
-    
-    # If forecast temp is higher than T_target, assume no decay below T_target.
-    if temp_differential < 0:
-        temp_differential = 0.0
-    
-    # Effective Thermal Mass: Hub constant * Zone factor. Higher value means slower decay.
-    effective_thermal_mass = hub_heat_loss_constant * zone_heat_loss_factor
-    
-    if effective_thermal_mass <= 0:
-        logging.error(f"Effective thermal mass for {zone_name} is non-positive. Using default T_eco.")
+    # Effective Thermal Mass (k)
+    # A larger mass means a slower decay curve.
+    k = hub_heat_loss_constant * zone_heat_loss_factor
+
+    if k <= 0:
         return T_eco
-        
-    # Dynamic Decay Rate (Degrees lost per minute)
-    decay_rate_per_min = temp_differential / effective_thermal_mass
+
+    # Exponential Decay Formula: T_final = T_env + (T_initial - T_env) * e^(-t/k)
+    # This naturally handles cases where forecast_temp > T_target (no decay)
+    if forecast_temp >= T_target:
+        simulated_temp = T_target
+    else:
+        # The non-linear "curve"
+        exponent = -(time_since_minutes / k)
+        simulated_temp = forecast_temp + (T_target - forecast_temp) * math.exp(exponent)
     
-    # Total Temp Drop over the elapsed time
-    temp_drop = time_since_minutes * decay_rate_per_min
-    
-    # 3. Determine the Final Starting Temperature
-    simulated_temp = T_target - temp_drop
     T_start = max(simulated_temp, T_eco)
     
+    # 3. Logging and Reporting
+    temp_drop = T_target - T_start
+
     logging.debug(
-        f"Decay for Event ID {event_id} in {zone_name}: T_target={T_target:.1f}, T_forecast={forecast_temp:.1f}. "
-        f"Differential={temp_differential:.1f}°C. Time since: {time_since_minutes:.1f} min. "
-        f"Rate: {decay_rate_per_min:.3f}°C/min. Total Drop: {temp_drop:.2f}°C. T_start: {T_start:.2f}°C."
-        f"HLC: {hub_heat_loss_constant}, HLF: {zone_heat_loss_factor}."
+        f"Exponential Decay for Event {event_id} in {zone_name}: "
+        f"Target={T_target:.1f}°C, Forecast={forecast_temp:.1f}°C, "
+        f"Gap={time_since_minutes:.1f} min, Total Drop={temp_drop:.2f}°C, "
+        f"Resulting T_start={T_start:.2f}°C. (k={k:.1f})"
     )
     
     return T_start
