@@ -1,47 +1,84 @@
-# ChurchSuite Heatmiser Integration
+# **ChurchSuite Heatmiser Integration**
 
-## Status
-This project now has a stable release v1.0.0.0, there is a development branch for testing new features.
+## **Status**
 
-## Purpose
+This project is currently at stable release **v1.0.0.0**. It has evolved from a simple automation script into a robust service featuring a dedicated web management interface and an advanced thermal calculation engine. After releasing this version, further development will switch to a development branch.
 
-This application automates the control of Heatmiser neo heating systems based on bookings in ChurchSuite. It fetches booking data from ChurchSuite and adjusts the heating schedule for your venue, ensuring rooms are heated only when needed. It also includes a highly intuitive preheat calculation which is vastly superior
-to the original heatmiser technique and allows for the thermal dynamics of your particular building as well 
-as taking into account, the last event that the space was heated for. 
+## **Purpose**
 
-## Features
+This application automates Heatmiser neo heating systems based on ChurchSuite bookings. It fetches booking data and intelligently adjusts the heating schedule, ensuring rooms are warm exactly when needed while minimizing energy waste.
 
-* **Automated Heating Control:** Automatically adjusts heating based on ChurchSuite bookings.
-* **Multi-Zone Support:** Supports multiple Heatmiser neo zones.
-* **Pre-Heating:** Calculates and applies pre-heating time, adjustable based on external temperature.
-* **External Temperature Adjustment:** Optionally adjusts pre-heating time based on external temperature to optimize energy usage.
-* **Docker Deployment:** Designed to be deployed using Docker for easy setup and consistent operation.
-* **JSON Data:** Fetches data from ChurchSuite using JSON feeds.
-* **Websocket Communication:** Communicates with Heatmiser neo systems using Websockets.
-* **GPLv3 Licence:** This project is licenced under the GPLv3 licence.
+The core of this integration is its **Dynamic Thermal Model**, which calculates preheat times based on building insulation, external weather forecasts, and residual heat from previous events—vastly outperforming standard "fixed" preheat methods.
 
-## Prerequisites
+## **Features**
 
-Before you begin, ensure you have the following installed and configured:
+* **Automated Scheduling:** Syncs ChurchSuite venue bookings directly to Heatmiser profiles.  
+* **Web Dashboard (GUI):** A user-friendly interface to monitor system health, edit configurations, and view logs.  
+* **Advanced Preheat Engine:** Uses exponential decay (Newton's Law of Cooling) and weather compensation to determine the perfect start time.  
+* **Multi-Hub Support:** Control multiple NeoHubs across different physical sites from a single instance.  
+* **Log Export:** Granular logging with a built-in export tool for troubleshooting.  
+* **Docker Ready:** Simplified deployment using Docker and Docker Compose.
 
-* **Docker:** This application uses Docker to run in a container. Install Docker on your system. See the official Docker documentation for installation instructions:
-    * [Get Docker](https://docs.docker.com/get-docker/)
-* **Python:** Python 3.9 or later is required (if not using Docker).
-* **Git:** Git is required to clone the repository.
+## **Configuration Guide (config.json)**
+
+The configuration controls the "intelligence" of the system. These values can be edited via the **Config** tab in the Web GUI.
+
+### **Global Settings**
+
+These variables adjust the baseline logic for all zones.
+
+| Variable | Default | Logic & Adjustment |
+| :---- | :---- | :---- |
+| PREHEAT\_TIME\_MINUTES | 30.0 | **Fixed Offset.** The minimum time added to every booking. Increase if the system generally struggles to reach temperature even in mild weather. |
+| DEFAULT\_TEMPERATURE | 18.0 | **Occupied Temp.** The target temperature for the duration of a booking. |
+| ECO\_TEMPERATURE | 12.0 | **Setback Temp.** The temperature maintained when a room is vacant. |
+| HEAT\_LOSS\_MULTIPLIER\_MAX | 1.46 | **Weather Compensation.** The maximum scaling factor for preheat during extreme cold. (e.g., 1.5 would increase a 60min preheat to 90min). |
+| TEMP\_WARM\_THRESHOLD | 12.0 | External temp above which no extra "cold weather" scaling is applied. |
+| TEMP\_COLD\_THRESHOLD | \-5.0 | External temp at which the HEAT\_LOSS\_MULTIPLIER\_MAX is fully applied. |
+
+### **Advanced Thermal Variables**
+
+* **HEAT\_LOSS\_CONSTANT**: (Defined per Hub) This represents the building's thermal mass. A higher value (e.g., 2000\) is for modern, well-insulated buildings. A lower value (e.g., 800\) is for older, drafty stone churches.  
+* **heat\_loss\_factor**: (Defined per Location) A multiplier for specific zones. If a specific room (like a high-ceilinged hall) takes longer to heat than others on the same hub, increase this value (e.g., 1.5).  
+* **min\_external\_temp**: (Optional) A safety cutoff. If the external temperature is above this value, the system assumes the building hasn't cooled enough to require the full preheat calculation.
+
+## **The Web Dashboard (GUI)**
+
+The GUI is accessible at http://\<your-ip\>:5000.
+
+### **Current Functionality**
+
+1. **Dashboard:** Real-time view of the scheduler status. It displays which NeoHubs are online, which locations are currently "Active" (heating), and a summary of the most recent integration run.  
+2. **Config Management:** No more manual JSON editing. The Config tab allows you to update global settings and map ChurchSuite locations to specific Heatmiser zones. If you don’t have a config file on first run, the system will generate one for you.  
+3. **Log Viewer & Export:** View live application logs. You can filter logs by severity (INFO, DEBUG, ERROR) and export them as a .log file directly to your computer for remote support.  
+4. **Manual Overrides:** Trigger an immediate sync with ChurchSuite or force the scheduler to reload its configuration after making changes.
+
+### **Future Roadmap: The Setup Wizard**
+
+We are currently developing an **Initial Setup Wizard** to further simplify deployment. Planned features include:
+
+* **Auto-Discovery:** Polling the network to identify NeoHubs automatically.  
+* **Source Validation:** Testing the ChurchSuite API feed and OpenWeatherMap keys during setup.  
+* **Interactive Mapping:** A drag-and-drop interface to link your ChurchSuite "Rooms" to your Heatmiser "Zones" based on data polled directly from the devices.
 
 ## Important Notes on Network Configuration
 
-* **Server Location:** The server running this application must be located on the same local network as the Heatmiser neo hub(s) *unless* you have configured network address translation (NAT) and port forwarding.
-* **Remote Heatmiser neo Hubs:** If you need to control Heatmiser neo hubs on a remote network (e.g., in a separate building), you will need to:
-    * Configure your router at the remote location to forward port 4243 (the default Heatmiser neo port) to the internal IP address of the Heatmiser neo hub.
-    * Use a Dynamic DNS service (e.g., DuckDNS, No-IP) to provide a stable hostname for the remote network's public IP address.
-    * You will also need your heatmiser system to be using a 7-day program with 6 comfort zones, the software will fail if this configuration is not present. Please note, changing this setting on your heatmiser app will delete all current programs so please be aware.
+* **Server Location:** The server running this application must be located on the same local network as the Heatmiser neo hub(s) *unless* you have configured network address translation (NAT) and port forwarding.  
+* **Remote Heatmiser neo Hubs:** If you need to control Heatmiser neo hubs on a remote network (e.g., in a separate building), you will need to:  
+  * Configure your router at the remote location to forward port 4243 (the default Heatmiser neo port) to the internal IP address of the Heatmiser neo hub.  
+  * Use a Dynamic DNS service (e.g., DuckDNS, No-IP) to provide a stable hostname for the remote network's public IP address.  
+  * You will also need your heatmiser system to be using a 7-day program with 6 comfort zones, the software will fail if this configuration is not present. Please note, changing this setting on your heatmiser app will delete all current programs so please be aware.
 
-## Installation and Setup
+## **Installation**
 
-Follow these steps to get the application running:
+### **1\. Prerequisites**
 
-### 1. Clone the Repository
+* Docker and Docker Compose installed.  
+* An API key from [OpenWeatherMap](https://openweathermap.org/).  
+* IP address or hostname and API key from each Heatmiser NeoHub that you wish to control (generated from the mobile app).  
+* Your ChurchSuite JSON feed URL.
+
+### **2\. Clone the repository**
 
 Clone the repository to your local machine:
 
@@ -50,114 +87,26 @@ git clone https://github.com/frostyflame81/churchsuite-heatmiser
 cd churchsuite-heatmiser
 ```
 
-### 2. Prepare the Configuration
+### **3\. Deployment**
 
-* The repository already contains a `config` directory and a sample `config.json`, it will need to be manually edited before you start the app.
-* Your `config.json` should look something like this:
+Rename docker-compose.sample to docker-compose.yml. The following environment variables need to be set. The easiest way to do this is with a .env file in the project root, or directly in the docker-compose.yml
 
-    ```json
-    {
-        "global_settings": {
-        "PREHEAT_TIME_MINUTES": 30.0,
-        "DEFAULT_TEMPERATURE": 18.0,
-        "ECO_TEMPERATURE": 12.0,
-        "TEMPERATURE_SENSITIVITY": 10.0,
-        "PREHEAT_ADJUSTMENT_MINUTES_PER_DEGREE": 15.0,
-        "HEAT_LOSS_MULTIPLIER_MAX": 1.46,
-        "TEMP_WARM_THRESHOLD": 12.0,
-        "TEMP_COLD_THRESHOLD": -5.0
-            },
-        "hub_settings": {
-            "neohub_name": {
-                "HEAT_LOSS_CONSTANT": 5400.0
-            }
-        },
+* OPENWEATHERMAP\_API\_KEY: Your OpenWeatherMap API key. Get one from [https://openweathermap.org/api](https://openweathermap.org/api).  
+* OPENWEATHERMAP\_CITY: The city for which to retrieve weather data (e.g., "London").  
+* CHURCHSUITE\_URL: The URL of the ChurchSuite JSON feed for bookings and locations.  
+* NEOHUB\_ADDRESS\_MAIN: The IP address or hostname of your primary Heatmiser neo hub. If this is on a remote network, this should be the Dynamic DNS address.  
+* NEOHUB\_API\_KEY\_MAIN: The API key for your primary Heatmiser neo hub.  
+* NEOHUB\_ADDRESS\_CHURCH\_HALL: The IP address or hostname of your secondary Heatmiser neo hub. If this is on a remote network, this should be the Dynamic DNS address.  
+* NEOHUB\_API\_KEY\_CHURCH\_HALL: The API key for your secondary Heatmiser neo hub.
 
-        "locations": {
-            "Location Name in ChurchSuite": {
-                "neohub": "neohub_name",
-                "zones": ["Zone Name in Heatmiser"],
-                "heat_loss_factor": 1.5,
-                "min_external_temp": 7
-            }
-        },
-            "zone_properties": {
-            "Zone Name in Heatmiser": {
-                "heat_loss_factor": 6.7
-            }
-        }
-    }
-    ```
-* Edit the `config.json` file:
-    * **`locations`**: A dictionary mapping ChurchSuite location names to Heatmiser neo hub names and zone names.
-        * `neohub`: The name you will use to refer to this Heatmiser neo hub in the `docker-compose.yml` file.
-        * `zones`: A list of Heatmiser neo zone names that correspond to this ChurchSuite location.
-        * `heat_loss_factor`: an adjustment to compenstate pre-heat time based on heat loss.
-        * `min_external_temp`: a location specific value, used together with temperature sensitivity.
-    * **`preheat_time_minutes`**: The default time in minutes to start heating a venue before a booking.
-    * **`default_temperature`**: The target temperature in degrees Celsius when a room is occupied.
-    * **`eco_temperature`**: The temperature to set when a room is not occupied.
-    * `temperature_sensitivity`: A setting for future expansion that fills out the heatmiser profile.
-    * `preheat_adjustment_minutes_per_degree`: Minutes added to preheat per degree below sensitivity, multiplied by heat\_loss\_factor.
+Once the environment is configured, launch run:
 
-    Most of these values can now be adjusted from the gui available on port 5000
+docker-compose up \-d
 
-### 3. Set up Environment Variables
+### **3\. Initial Config**
 
-The following environment variables need to be set. The easiest way to do this is with a `.env` file in the project root, or directly in the `docker-compose.yml`
+After the container is running, visit the Web GUI to set up your config.json via the browser. Or manually set it up with the editor of your choice.
 
-* `OPENWEATHERMAP_API_KEY`: Your OpenWeatherMap API key. Get one from <https://openweathermap.org/api>.
-* `OPENWEATHERMAP_CITY`: The city for which to retrieve weather data (e.g., "London").
-* `CHURCHSUITE_URL`: The URL of the ChurchSuite JSON feed for bookings and locations.
-* `NEOHUB_ADDRESS_MAIN`: The IP address or hostname of your primary Heatmiser neo hub. If this is on a remote network, this should be the Dynamic DNS address.
-* `NEOHUB_API_KEY_MAIN`: The API key for your primary Heatmiser neo hub.
-* `NEOHUB_ADDRESS_CHURCH_HALL`: The IP address or hostname of your secondary Heatmiser neo hub. If this is on a remote network, this should be the Dynamic DNS address.
-* `NEOHUB_API_KEY_CHURCH_HALL`: The API key for your secondary Heatmiser neo hub.
+## **License**
 
-### 4. `docker-compose.yml`
-
-Use the included `docker-compose.sample` file and rename to `docker-compose.yml` or generate your own based on the example below:
-
-```yaml
-version: '3.8'
-services:
-  web:
-    build: .
-    ports:
-      - "4243:4243"
-    volumes:
-      - .:/app
-      - ./config:/config  # Mount the config directory
-    environment:
-      - OPENWEATHERMAP_API_KEY=${OPENWEATHERMAP_API_KEY}
-      - OPENWEATHERMAP_CITY=${OPENWEATHERMAP_CITY}
-      - CHURCHSUITE_URL=${CHURCHSUITE_URL}  # Add the ChurchSuite URL here
-      - PREHEAT_TIME_MINUTES=${PREHEAT_TIME_MINUTES}
-      - DEFAULT_TEMPERATURE=${DEFAULT_TEMPERATURE}
-      - ECO_TEMPERATURE=${ECO_TEMPERATURE}
-      - TEMPERATURE_SENSITIVITY=${TEMPERATURE_SENSITIVITY}
-      - PREHEAT_ADJUSTMENT_MINUTES_PER_DEGREE=${PREHEAT_ADJUSTMENT_MINUTES_PER_DEGREE}
-      - CONFIG_FILE=${CONFIG_FILE}
-      - LOGGING_LEVEL=${LOGGING_LEVEL} #Optional, default is INFO
-      # Neohub Configuration (Example - can be overridden by individual NEOHUB_* variables)
-      - NEOHUB_1_NAME=Neohub1
-      - NEOHUB_1_ADDRESS=192.168.1.100  # Replace with actual address, can also be hostname
-      - NEOHUB_1_PORT=4243
-      - NEOHUB_1_TOKEN=your_neohub_api_key  # Replace with your API key
-    restart: unless-stopped
-```
-
-### 5. Run with Docker Compose
-
-Start the application using Docker Compose:
-
-```
-docker-compose up -d
-```
-
-This will build the Docker image and start the container in detached mode. The application will now run in the background, automatically adjusting your heating schedule based on ChurchSuite bookings.
-
-To tweak the config or check the status of the program, connect to localhost:5000
-
-In the Gui you can add and remove zones and locations as well as match them up. 
-You can also push a manual sync and reload the config from changes made in the gui form. 
+This project is licensed under the **GPLv3 License**.
