@@ -2,7 +2,7 @@
 
 ## **Status**
 
-This project is currently at stable release **v1.0.0.0**. It has evolved from a simple automation script into a robust service featuring a dedicated web management interface and an advanced thermal calculation engine. After releasing this version, further development will switch to a development branch.
+This project is currently at stable release **v1.0.0**. It has evolved from a simple automation script into a robust service featuring a dedicated web management interface and an advanced thermal calculation engine. After releasing this version, further development will switch to a development branch.
 
 ## **Purpose**
 
